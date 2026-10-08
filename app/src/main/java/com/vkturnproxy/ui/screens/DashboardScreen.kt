@@ -6,8 +6,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -21,10 +23,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vkturnproxy.BuildConfig
 import com.vkturnproxy.model.ServerConfig
 import com.vkturnproxy.model.TunnelStats
 import com.vkturnproxy.service.VpnStatus
 import com.vkturnproxy.ui.theme.*
+import com.vkturnproxy.update.UpdateInfo
+import com.vkturnproxy.update.UpdateState
+import java.io.File
 
 @Composable
 fun DashboardScreen(
@@ -33,11 +39,16 @@ fun DashboardScreen(
     activeServer: ServerConfig?,
     isRootHotspotEnabled: Boolean,
     splitTunnelAppCount: Int,
+    updateState: UpdateState = UpdateState.Idle,
     onToggleVpn: () -> Unit,
     onSelectServerClicked: () -> Unit,
     onHotspotClicked: () -> Unit,
     onSplitTunnelClicked: () -> Unit,
-    onSpeedTestClicked: () -> Unit
+    onSpeedTestClicked: () -> Unit,
+    onCheckUpdateClicked: () -> Unit = {},
+    onDownloadUpdateClicked: (UpdateInfo) -> Unit = {},
+    onInstallApkClicked: (File) -> Unit = {},
+    onDismissUpdateClicked: () -> Unit = {}
 ) {
     val isConnected = status == VpnStatus.CONNECTED
     val isConnecting = status == VpnStatus.CONNECTING || status == VpnStatus.WAITING_TURN
@@ -63,6 +74,10 @@ fun DashboardScreen(
         label = "buttonColor"
     )
 
+    val availableUpdate = (updateState as? UpdateState.Available)?.info
+        ?: (updateState as? UpdateState.Downloading)?.info
+        ?: (updateState as? UpdateState.Downloaded)?.info
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -71,66 +86,154 @@ fun DashboardScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // Top Server Card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onSelectServerClicked() },
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = SurfaceDark)
-        ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Header: Title + Version + Update Check Icon
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(SurfaceVariantDark),
-                        contentAlignment = Alignment.Center
+                    Text(
+                        text = "VK TURN",
+                        color = TextPrimary,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = SurfaceVariantDark
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.VpnLock,
-                            contentDescription = null,
-                            tint = PrimaryBlue
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
                         Text(
-                            text = activeServer?.name ?: "Сервер не выбран",
-                            color = TextPrimary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
-                        )
-                        Text(
-                            text = "${activeServer?.mode?.name ?: "SRTP"} • ${activeServer?.numConnections ?: 30} conns",
+                            text = "v${BuildConfig.VERSION_NAME}",
                             color = TextSecondary,
-                            fontSize = 13.sp
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
                 }
-                Icon(
-                    imageVector = Icons.Default.ChevronRight,
-                    contentDescription = null,
-                    tint = TextSecondary
-                )
+
+                IconButton(
+                    onClick = onCheckUpdateClicked,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = if (availableUpdate != null) Icons.Default.SystemUpdateAlt else Icons.Default.Sync,
+                        contentDescription = "Проверить обновления",
+                        tint = if (availableUpdate != null) AccentGreen else TextSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            // Update Available Notice Banner
+            if (updateState is UpdateState.Available) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                        .clickable { onDownloadUpdateClicked(updateState.info) },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = PrimaryBlue.copy(alpha = 0.15f)),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryBlue.copy(alpha = 0.6f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = null,
+                                tint = PrimaryBlue,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Доступно обновление v${updateState.info.versionName}",
+                                color = TextPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        Text(
+                            text = "Обновить",
+                            color = PrimaryBlue,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            // Top Server Card
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onSelectServerClicked() },
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(SurfaceVariantDark),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VpnLock,
+                                contentDescription = null,
+                                tint = PrimaryBlue
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = activeServer?.name ?: "Сервер не выбран",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                            Text(
+                                text = "${activeServer?.mode?.name ?: "SRTP"} • ${activeServer?.numConnections ?: 30} conns",
+                                color = TextSecondary,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = TextSecondary
+                    )
+                }
             }
         }
 
         // Center Connect Button & Status
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(vertical = 24.dp)
+            modifier = Modifier.padding(vertical = 16.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(180.dp)
+                    .size(175.dp)
                     .scale(if (isConnecting) pulseScale else 1f)
                     .clip(CircleShape)
                     .background(
@@ -144,7 +247,7 @@ fun DashboardScreen(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(140.dp)
+                        .size(135.dp)
                         .clip(CircleShape)
                         .background(
                             Brush.linearGradient(
@@ -162,7 +265,7 @@ fun DashboardScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
             val statusText = when (status) {
                 VpnStatus.DISCONNECTED -> "ОТКЛЮЧЕНО"
@@ -341,6 +444,213 @@ fun DashboardScreen(
                     }
                 }
             }
+        }
+    }
+
+    // Modal Update Dialog
+    UpdateDialog(
+        state = updateState,
+        onDownload = onDownloadUpdateClicked,
+        onInstall = onInstallApkClicked,
+        onDismiss = onDismissUpdateClicked
+    )
+}
+
+@Composable
+fun UpdateDialog(
+    state: UpdateState,
+    onDownload: (UpdateInfo) -> Unit,
+    onInstall: (File) -> Unit,
+    onDismiss: () -> Unit
+) {
+    when (state) {
+        is UpdateState.Checking -> {
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                containerColor = SurfaceDark,
+                title = { Text("Обновление", color = TextPrimary) },
+                text = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    ) {
+                        CircularProgressIndicator(color = PrimaryBlue, modifier = Modifier.size(24.dp))
+                        Text("Проверка наличия обновлений…", color = TextSecondary, fontSize = 14.sp)
+                    }
+                },
+                confirmButton = {}
+            )
+        }
+
+        is UpdateState.Available -> {
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                containerColor = SurfaceDark,
+                title = {
+                    Text("Доступно обновление v${state.info.versionName}", color = TextPrimary, fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        if (state.info.fileSize > 0) {
+                            Text(
+                                text = "Размер: ${formatBytes(state.info.fileSize)}",
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+                        Text(
+                            text = "Что нового:",
+                            color = TextPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = state.info.changelog,
+                            color = TextSecondary,
+                            fontSize = 13.sp
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { onDownload(state.info) },
+                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                    ) {
+                        Text("Скачать и обновить")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = onDismiss) {
+                        Text("Позже", color = TextSecondary)
+                    }
+                }
+            )
+        }
+
+        is UpdateState.Downloading -> {
+            AlertDialog(
+                onDismissRequest = {}, // prevent dismissing mid-download
+                containerColor = SurfaceDark,
+                title = {
+                    Text("Загрузка обновления…", color = TextPrimary, fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                        LinearProgressIndicator(
+                            progress = { state.progress },
+                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                            color = PrimaryBlue,
+                            trackColor = SurfaceVariantDark
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "${(state.progress * 100).toInt()}%",
+                                color = TextPrimary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}",
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                },
+                confirmButton = {}
+            )
+        }
+
+        is UpdateState.Downloaded -> {
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                containerColor = SurfaceDark,
+                title = {
+                    Text("Обновление готово к установке", color = TextPrimary, fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Text(
+                        text = "Файл обновления успешно загружен. Нажмите кнопку ниже для запуска системной установки.",
+                        color = TextSecondary,
+                        fontSize = 14.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { onInstall(state.apkFile) },
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+                    ) {
+                        Text("Установить сейчас")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = onDismiss) {
+                        Text("Закрыть", color = TextSecondary)
+                    }
+                }
+            )
+        }
+
+        is UpdateState.UpToDate -> {
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                containerColor = SurfaceDark,
+                title = { Text("Обновлений не найдено", color = TextPrimary) },
+                text = {
+                    Text(
+                        text = "У вас установлена самая актуальная версия v${BuildConfig.VERSION_NAME}.",
+                        color = TextSecondary,
+                        fontSize = 14.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                    ) {
+                        Text("Понятно")
+                    }
+                }
+            )
+        }
+
+        is UpdateState.Error -> {
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                containerColor = SurfaceDark,
+                title = { Text("Ошибка обновления", color = AccentRed) },
+                text = {
+                    Text(
+                        text = state.message,
+                        color = TextSecondary,
+                        fontSize = 14.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceVariantDark)
+                    ) {
+                        Text("Закрыть", color = TextPrimary)
+                    }
+                }
+            )
+        }
+
+        UpdateState.Idle -> {
+            // Nothing to render
         }
     }
 }

@@ -3,6 +3,7 @@ package com.vkturnproxy
 import android.app.Application
 import com.vkturnproxy.data.ServerRepository
 import com.vkturnproxy.service.SplitTunnelManager
+import com.vkturnproxy.update.UpdateManager
 
 class VkTurnApp : Application() {
 
@@ -12,11 +13,15 @@ class VkTurnApp : Application() {
     lateinit var splitTunnelManager: SplitTunnelManager
         private set
 
+    lateinit var updateManager: UpdateManager
+        private set
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         serverRepository = ServerRepository(this)
         splitTunnelManager = SplitTunnelManager(this)
+        updateManager = UpdateManager(this)
         com.vkturnproxy.auth.VKCookieStore.init(this)
     }
 

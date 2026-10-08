@@ -5,4 +5,18 @@
     <string name="status_waiting_turn">Ожидание TURN аллокации…</string>
     <string name="status_connected">Подключено</string>
     <string name="status_error">Ошибка подключения</string>
+
+    <!-- Quick Settings Tile -->
+    <string name="qs_tile_label">Free Turn</string>
+    <string name="qs_tile_subtitle_connected">Подключено</string>
+    <string name="qs_tile_subtitle_disconnected">Отключено</string>
+    <string name="qs_tile_subtitle_connecting">Подключение…</string>
+
+    <!-- Auto Update -->
+    <string name="update_available_title">Доступно обновление</string>
+    <string name="update_download_btn">Скачать и установить</string>
+    <string name="update_install_btn">Установить</string>
+    <string name="update_checking">Проверка обновлений…</string>
+    <string name="update_latest">У вас последняя версия</string>
+    <string name="update_error">Ошибка проверки обновлений</string>
 </resources>

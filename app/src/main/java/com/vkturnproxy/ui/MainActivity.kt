@@ -16,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.vkturnproxy.BuildConfig
 import com.vkturnproxy.VkTurnApp
 import com.vkturnproxy.model.ServerConfig
 import com.vkturnproxy.parser.ConfigParser
@@ -103,15 +104,22 @@ class MainActivity : ComponentActivity() {
 
         val serverRepo = VkTurnApp.instance.serverRepository
         val splitTunnelMgr = VkTurnApp.instance.splitTunnelManager
+        val updateMgr = VkTurnApp.instance.updateManager
 
         val servers by serverRepo.serversFlow.collectAsState()
         val activeServer by serverRepo.activeServerFlow.collectAsState()
         val vpnStatus by VkTurnVpnService.statusFlow.collectAsState()
         val vpnStats by VkTurnVpnService.statsFlow.collectAsState()
+        val updateState by updateMgr.updateState.collectAsState()
 
         val prefs = remember { getSharedPreferences("vkturn_settings", Context.MODE_PRIVATE) }
         var isRootHotspotEnabled by remember { mutableStateOf(prefs.getBoolean("root_hotspot_enabled", false)) }
         var splitTunnelAppCount by remember { mutableStateOf(splitTunnelMgr.getSelectedPackages().size) }
+
+        // Silent background update check on app launch
+        LaunchedEffect(Unit) {
+            updateMgr.checkForUpdates(BuildConfig.VERSION_NAME, silent = true)
+        }
 
         Scaffold(
             bottomBar = {
@@ -162,11 +170,24 @@ class MainActivity : ComponentActivity() {
                             activeServer = activeServer,
                             isRootHotspotEnabled = isRootHotspotEnabled,
                             splitTunnelAppCount = splitTunnelAppCount,
+                            updateState = updateState,
                             onToggleVpn = { toggleVpn() },
                             onSelectServerClicked = { currentScreen = Screen.SERVERS },
                             onHotspotClicked = { currentScreen = Screen.HOTSPOT },
                             onSplitTunnelClicked = { currentScreen = Screen.SPLIT_TUNNEL },
-                            onSpeedTestClicked = { currentScreen = Screen.SPEEDTEST }
+                            onSpeedTestClicked = { currentScreen = Screen.SPEEDTEST },
+                            onCheckUpdateClicked = {
+                                updateMgr.checkForUpdates(BuildConfig.VERSION_NAME, silent = false)
+                            },
+                            onDownloadUpdateClicked = { info ->
+                                updateMgr.downloadAndInstall(info)
+                            },
+                            onInstallApkClicked = { file ->
+                                updateMgr.installApk(file)
+                            },
+                            onDismissUpdateClicked = {
+                                updateMgr.dismiss()
+                            }
                         )
 
                         Screen.SERVERS -> ServersScreen(
