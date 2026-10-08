@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">VK TURN Proxy</string>
+    <string name="status_disconnected">Отключено</string>
+    <string name="status_connecting">Подключение…</string>
+    <string name="status_waiting_turn">Ожидание TURN аллокации…</string>
+    <string name="status_connected">Подключено</string>
+    <string name="status_error">Ошибка подключения</string>
+</resources>
