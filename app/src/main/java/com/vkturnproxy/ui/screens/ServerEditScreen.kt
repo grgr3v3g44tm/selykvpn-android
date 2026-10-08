@@ -215,7 +215,7 @@ fun ServerEditScreen(
                         onValueChange = { peerAddress = it },
                         label = { Text("Адрес прокси (IP:Port)") },
                         modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("144.31.75.2:56000") }
+                        placeholder = { Text("example.com:56000") }
                     )
 
                     Column {

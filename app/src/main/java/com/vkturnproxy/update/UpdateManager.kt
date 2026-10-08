@@ -153,11 +153,10 @@ class UpdateManager(private val context: Context) {
                 val releases: Array<GithubRelease> = gson.fromJson(json, Array<GithubRelease>::class.java)
                 if (releases.isEmpty()) continue
 
-                // Find candidate release: first vkturn tagged, or latest with APK
+                // Find candidate release: must contain VK TURN APK assets
                 val candidate = releases.firstOrNull { rel ->
-                    rel.tagName.startsWith("vkturn-v", ignoreCase = true) ||
-                        rel.assets.any { it.name.contains("vkturn", ignoreCase = true) }
-                } ?: releases.firstOrNull { it.assets.any { a -> a.name.endsWith(".apk") } }
+                    rel.assets.any { isVkTurnApk(it.name) }
+                }
 
                 if (candidate != null) {
                     val remoteVersion = extractVersion(candidate.tagName)
@@ -183,8 +182,15 @@ class UpdateManager(private val context: Context) {
         null
     }
 
+    private fun isVkTurnApk(name: String): Boolean {
+        if (!name.endsWith(".apk", ignoreCase = true)) return false
+        val lower = name.lowercase()
+        if (lower.startsWith("koala") || lower.contains("koala.clash")) return false
+        return lower.startsWith("vkturn") || lower.contains("vkturnproxy")
+    }
+
     private fun pickAssetForDevice(assets: List<GithubAsset>): GithubAsset? {
-        val apkAssets = assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
+        val apkAssets = assets.filter { isVkTurnApk(it.name) }
         if (apkAssets.isEmpty()) return null
 
         val deviceAbis = Build.SUPPORTED_ABIS ?: emptyArray()
@@ -202,11 +208,13 @@ class UpdateManager(private val context: Context) {
 
         // 2. Check universal APK
         val universal = apkAssets.firstOrNull {
-            it.name.contains("universal", ignoreCase = true) || it.name.contains("all", ignoreCase = true)
+            it.name.contains("universal", ignoreCase = true) ||
+                it.name.contains("all", ignoreCase = true) ||
+                it.name.equals("vkturnproxy-android.apk", ignoreCase = true)
         }
         if (universal != null) return universal
 
-        // 3. Fallback to first available APK
+        // 3. Fallback to first available VK TURN APK
         return apkAssets.first()
     }
 
