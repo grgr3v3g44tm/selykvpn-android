@@ -45,6 +45,7 @@ class VkTurnVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         createNotificationChannel()
         // Register this service for native socket protection
         WgTurnCore.registerSocketProtector(this)
@@ -184,7 +185,7 @@ class VkTurnVpnService : VpnService() {
                     return@launch
                 }
                 tunPfd = pfd
-                val tunFd = pfd.detachFd()
+                val tunFd = pfd.fd
                 Log.i(TAG, "TUN interface established, fd=$tunFd")
 
                 // 5. Attach TUN to WireGuard or CSQTT engine
@@ -207,6 +208,12 @@ class VkTurnVpnService : VpnService() {
                 if (isHotspotEnabled) {
                     val firstDns = dnsServers.split(",").firstOrNull()?.trim() ?: "1.1.1.1"
                     TetheringManager.applyRules(enable = true, tunnelIface = "tun+", dnsServer = firstDns)
+                }
+
+                // 7. Auto-start LAN Proxy if enabled
+                val isLocalProxyEnabled = prefs.getBoolean("local_proxy_enabled", false)
+                if (isLocalProxyEnabled) {
+                    HttpProxyServer.start(8080, 1080)
                 }
 
                 _statusFlow.value = VpnStatus.CONNECTED
@@ -264,31 +271,45 @@ class VkTurnVpnService : VpnService() {
             TetheringManager.applyRules(enable = false)
         }
 
+        // Stop LAN proxy if it was running
+        HttpProxyServer.stop()
+
         if (tunnelHandle > 0) {
             val handle = tunnelHandle
             tunnelHandle = -1
-            serviceScope.launch {
+            try {
                 if (isCsqttMode) {
                     WgTurnCore.csqttTurnOff(handle)
                 } else {
                     WgTurnCore.turnOff(handle)
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error stopping tunnel handle $handle", e)
             }
         }
 
         try {
             tunPfd?.close()
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.w(TAG, "Error closing tunPfd", e)
+        }
         tunPfd = null
 
         _statusFlow.value = VpnStatus.DISCONNECTED
         _statsFlow.value = TunnelStats()
+
+        val nm = getSystemService(NotificationManager::class.java)
+        nm?.cancel(NOTIFICATION_ID)
+
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onDestroy() {
         stopTunnel()
+        if (instance == this) {
+            instance = null
+        }
         super.onDestroy()
     }
 
@@ -326,6 +347,9 @@ class VkTurnVpnService : VpnService() {
     }
 
     companion object {
+        var instance: VkTurnVpnService? = null
+            private set
+
         const val ACTION_START = "com.vkturnproxy.ACTION_START"
         const val ACTION_STOP = "com.vkturnproxy.ACTION_STOP"
         const val EXTRA_CONFIG_JSON = "EXTRA_CONFIG_JSON"

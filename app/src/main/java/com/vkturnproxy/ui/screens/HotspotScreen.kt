@@ -1,6 +1,8 @@
 package com.vkturnproxy.ui.screens
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -8,6 +10,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -231,7 +234,7 @@ fun HotspotScreen(
                     }
                 }
             } else {
-                // NON-ROOT LAN HTTP PROXY Card
+                // NON-ROOT LAN HTTP / SOCKS5 PROXY Card
                 Card(
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = SurfaceDark)
@@ -251,9 +254,9 @@ fun HotspotScreen(
                                 )
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text("LAN HTTP Прокси-сервер", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                    Text("LAN Прокси (HTTP & SOCKS5)", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                                     Text(
-                                        if (isProxyRunning) "Слушает 0.0.0.0:8080" else "Остановлен",
+                                        if (isProxyRunning) "HTTP: 8080 • SOCKS5: 1080" else "Остановлен",
                                         color = if (isProxyRunning) AccentGreen else TextSecondary,
                                         fontSize = 12.sp
                                     )
@@ -262,12 +265,13 @@ fun HotspotScreen(
                             Switch(
                                 checked = isProxyRunning,
                                 onCheckedChange = { start ->
+                                    prefs.edit().putBoolean("local_proxy_enabled", start).apply()
                                     if (start) {
-                                        val ok = HttpProxyServer.start(8080)
+                                        val ok = HttpProxyServer.start(8080, 1080)
                                         if (ok) {
-                                            Toast.makeText(context, "LAN Прокси запущен на порту 8080", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "LAN Прокси запущен (HTTP: 8080, SOCKS5: 1080)", Toast.LENGTH_SHORT).show()
                                         } else {
-                                            Toast.makeText(context, "Не удалось открыть порт 8080", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "Не удалось открыть порт 8080 / 1080", Toast.LENGTH_SHORT).show()
                                         }
                                     } else {
                                         HttpProxyServer.stop()
@@ -281,41 +285,42 @@ fun HotspotScreen(
 
                         // Address details
                         val primaryIp = lanAddresses.firstOrNull()?.ipAddress ?: "192.168.43.1"
-                        Text("Адрес для подключения клиентов:", color = TextSecondary, fontSize = 12.sp)
+                        Text("Адрес и порты для подключения клиентов:", color = TextSecondary, fontSize = 12.sp)
 
+                        // IP Box (Full width)
+                        OutlinedCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.outlinedCardColors(containerColor = SurfaceVariantDark)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column {
+                                    Text("IP адрес точки доступа", color = TextSecondary, fontSize = 11.sp)
+                                    Text(primaryIp, color = PrimaryBlue, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                }
+                                IconButton(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(primaryIp))
+                                        Toast.makeText(context, "IP $primaryIp скопирован", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = "Копировать IP", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+
+                        // Ports Row: HTTP (8080) and SOCKS5 (1080)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            // IP Box
-                            OutlinedCard(
-                                modifier = Modifier.weight(1.5f),
-                                colors = CardDefaults.outlinedCardColors(containerColor = SurfaceVariantDark)
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Column {
-                                        Text("IP адрес", color = TextSecondary, fontSize = 11.sp)
-                                        Text(primaryIp, color = PrimaryBlue, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                    }
-                                    IconButton(
-                                        onClick = {
-                                            clipboardManager.setText(AnnotatedString(primaryIp))
-                                            Toast.makeText(context, "IP $primaryIp скопирован", Toast.LENGTH_SHORT).show()
-                                        },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(Icons.Default.ContentCopy, contentDescription = "Копировать", tint = TextSecondary, modifier = Modifier.size(16.dp))
-                                    }
-                                }
-                            }
-
-                            // Port Box
+                            // HTTP Port Box
                             OutlinedCard(
                                 modifier = Modifier.weight(1f),
                                 colors = CardDefaults.outlinedCardColors(containerColor = SurfaceVariantDark)
@@ -328,7 +333,7 @@ fun HotspotScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Column {
-                                        Text("Порт", color = TextSecondary, fontSize = 11.sp)
+                                        Text("HTTP Порт", color = TextSecondary, fontSize = 11.sp)
                                         Text("8080", color = PrimaryBlue, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                                     }
                                     IconButton(
@@ -339,6 +344,92 @@ fun HotspotScreen(
                                         modifier = Modifier.size(32.dp)
                                     ) {
                                         Icon(Icons.Default.ContentCopy, contentDescription = "Копировать", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+
+                            // SOCKS5 Port Box
+                            OutlinedCard(
+                                modifier = Modifier.weight(1f),
+                                colors = CardDefaults.outlinedCardColors(containerColor = SurfaceVariantDark)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column {
+                                        Text("SOCKS5 Порт", color = TextSecondary, fontSize = 11.sp)
+                                        Text("1080", color = AccentGreen, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            clipboardManager.setText(AnnotatedString("1080"))
+                                            Toast.makeText(context, "Порт 1080 скопирован", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.ContentCopy, contentDescription = "Копировать", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+
+                        // Telegram Fast Connect Card
+                        Card(
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceVariantDark)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = PrimaryBlue, modifier = Modifier.size(18.dp))
+                                    Text("Быстрое подключение для Telegram", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                }
+                                Text(
+                                    "Telegram использует протокол SOCKS5 на порту 1080. Вы можете подключить его в 1 клик или скопировать ссылку для отправки на устройство:",
+                                    color = TextSecondary,
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            val tgUri = Uri.parse("tg://socks?server=$primaryIp&port=1080")
+                                            val intent = Intent(Intent.ACTION_VIEW, tgUri)
+                                            try {
+                                                context.startActivity(intent)
+                                            } catch (_: Exception) {
+                                                clipboardManager.setText(AnnotatedString(tgUri.toString()))
+                                                Toast.makeText(context, "Telegram не найден. Ссылка tg:// скопирована!", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                                    ) {
+                                        Text("Открыть в TG", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            val tMeUrl = "https://t.me/socks?server=$primaryIp&port=1080"
+                                            clipboardManager.setText(AnnotatedString(tMeUrl))
+                                            Toast.makeText(context, "TG ссылка скопирована в буфер", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("TG Ссылка", fontSize = 12.sp)
                                     }
                                 }
                             }
@@ -353,12 +444,12 @@ fun HotspotScreen(
                         )
                         Text(
                             "1. Включите Точку доступа Wi-Fi или USB-модем в системных настройках телефона.\n\n" +
-                            "2. Подключите ноутбук, ТВ или другое устройство к этой Wi-Fi сети.\n\n" +
-                            "3. В свойствах Wi-Fi на подключаемом устройстве укажите прокси:\n" +
-                            "   • IP: $primaryIp\n" +
-                            "   • Порт: 8080\n" +
-                            "   • Тип: HTTP / HTTPS\n\n" +
-                            "4. Весь трафик устройства сразу пойдет через зашифрованный туннель VK TURN!",
+                            "2. Подключите ноутбук, ТВ или другой смартфон к этой Wi-Fi сети.\n\n" +
+                            "3. В свойствах Wi-Fi сети на подключенном устройстве укажите прокси:\n" +
+                            "   • IP адрес: $primaryIp\n" +
+                            "   • Порт: 8080 (HTTP/HTTPS) или 1080 (SOCKS5)\n\n" +
+                            "4. Для Telegram: нажмите кнопку выше или настройте SOCKS5: $primaryIp:1080 (без логина и пароля).\n\n" +
+                            "5. Весь трафик подключенного устройства пойдет через защищенный туннель VK TURN!",
                             color = TextSecondary,
                             fontSize = 12.sp,
                             lineHeight = 17.sp
