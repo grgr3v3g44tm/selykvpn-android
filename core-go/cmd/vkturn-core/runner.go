@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/cacggghp/vk-turn-proxy/pkg/turnbind"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
+	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
 type TunnelRunner struct {
@@ -118,6 +120,23 @@ func (r *TunnelRunner) Start(req StartRequest) error {
 }
 
 func (r *TunnelRunner) startAsync(req StartRequest) error {
+	// 0. VK Cookie Auth
+	if req.UseCookieAuth && req.CookieHeader != "" {
+		links := []string{}
+		if req.Profile.VKLink != "" {
+			for _, l := range strings.Split(req.Profile.VKLink, "\n") {
+				l = strings.TrimSpace(l)
+				if l != "" {
+					links = append(links, l)
+				}
+			}
+		}
+		logInfo("Enabling VK Cookie Auth with %d link(s)", len(links))
+		proxy.SetVKCookieAuth(true, req.CookieHeader, links)
+	} else {
+		proxy.SetVKCookieAuth(false, "", nil)
+	}
+
 	// 1. Build proxy.Config
 	pcfg := proxy.Config{
 		PeerAddr: req.Profile.WireGuard.Endpoint,
@@ -165,6 +184,7 @@ func (r *TunnelRunner) startAsync(req StartRequest) error {
 	r.mu.Unlock()
 
 	var tunDev tun.Device
+	var tnet *netstack.Net
 
 	if r.mode == "tun" {
 		logInfo("Initializing Wintun network adapter 'VK TURN Proxy'...")
@@ -174,6 +194,7 @@ func (r *TunnelRunner) startAsync(req StartRequest) error {
 			req.Profile.WireGuard.Address,
 			req.Profile.WireGuard.DNS,
 			turnIP,
+			req.Profile.WireGuard.Endpoint,
 			req.BypassRu,
 			req.BypassLan,
 		)
@@ -184,6 +205,27 @@ func (r *TunnelRunner) startAsync(req StartRequest) error {
 		r.mu.Lock()
 		r.platformTun = pt
 		r.mu.Unlock()
+	} else {
+		logInfo("Initializing userspace Netstack WireGuard tunnel...")
+		cleanIP := req.Profile.WireGuard.Address
+		if idx := strings.Index(cleanIP, "/"); idx != -1 {
+			cleanIP = cleanIP[:idx]
+		}
+		localAddr, err := netip.ParseAddr(cleanIP)
+		if err != nil {
+			localAddr, _ = netip.ParseAddr("10.77.77.2")
+		}
+		dnsAddr, _ := netip.ParseAddr("10.77.77.1")
+		mtu := req.Profile.WireGuard.MTU
+		if mtu <= 0 {
+			mtu = 1280
+		}
+		dev, ns, err := netstack.CreateNetTUN([]netip.Addr{localAddr}, []netip.Addr{dnsAddr}, mtu)
+		if err != nil {
+			return fmt.Errorf("Netstack CreateNetTUN failed: %w", err)
+		}
+		tunDev = dev
+		tnet = ns
 	}
 
 	if tunDev != nil {
@@ -217,6 +259,9 @@ func (r *TunnelRunner) startAsync(req StartRequest) error {
 	}
 
 	dialer := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if tnet != nil {
+			return tnet.DialContext(ctx, network, addr)
+		}
 		var d net.Dialer
 		d.Timeout = 15 * time.Second
 		return d.DialContext(ctx, network, addr)

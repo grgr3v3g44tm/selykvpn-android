@@ -41,8 +41,8 @@ data class ServerConfig(
     var peerPublicKey: String = "",
     var presharedKey: String = "",
     var tunnelAddress: String = "10.77.77.2/24",
-    var dnsServers: String = "1.1.1.1, 77.88.8.8",
-    var mtu: Int = 1420
+    var dnsServers: String = "10.77.77.1",
+    var mtu: Int = 1280
 ) {
     fun toProxyConfigJson(): String {
         val map = mutableMapOf<String, Any>()

@@ -18,17 +18,20 @@ type StartRequest struct {
 	BypassRu      bool          `json:"bypass_ru"`
 	BypassLan     bool          `json:"bypass_lan"`
 	CustomDNS     string        `json:"custom_dns"`
+	CookieHeader  string        `json:"cookie_header,omitempty"`
+	UseCookieAuth bool          `json:"use_cookie_auth,omitempty"`
 }
 
 type ProfileConfig struct {
-	Name      string          `json:"name"`
-	VKLink    string          `json:"vk_link"`
-	UseSRTP   bool            `json:"use_srtp"`
-	UseDTLS   bool            `json:"use_dtls"`
-	UseWrap   bool            `json:"use_wrap"`
-	WrapKey   string          `json:"wrap_key"`
-	NumConns  int             `json:"num_conns"`
-	WireGuard WireGuardConfig `json:"wireguard"`
+	Name          string          `json:"name"`
+	VKLink        string          `json:"vk_link"`
+	UseSRTP       bool            `json:"use_srtp"`
+	UseDTLS       bool            `json:"use_dtls"`
+	UseWrap       bool            `json:"use_wrap"`
+	WrapKey       string          `json:"wrap_key"`
+	NumConns      int             `json:"num_conns"`
+	UseCookieAuth bool            `json:"use_cookie_auth,omitempty"`
+	WireGuard     WireGuardConfig `json:"wireguard"`
 }
 
 type WireGuardConfig struct {

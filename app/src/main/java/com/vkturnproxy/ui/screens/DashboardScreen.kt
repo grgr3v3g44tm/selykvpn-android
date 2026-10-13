@@ -78,13 +78,16 @@ fun DashboardScreen(
         ?: (updateState as? UpdateState.Downloading)?.info
         ?: (updateState as? UpdateState.Downloaded)?.info
 
+    val scrollState = rememberScrollState()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(BgDark)
+            .verticalScroll(scrollState)
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             // Header: Title + Version + Update Check Icon

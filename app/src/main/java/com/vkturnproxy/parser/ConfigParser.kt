@@ -87,8 +87,8 @@ object ConfigParser {
                 ?: "10.77.77.2/24"
             val dnsServers = settings.get("dnsServers")?.asString
                 ?: settings.get("dns_servers")?.asString
-                ?: "1.1.1.1, 77.88.8.8"
-            val mtu = settings.get("mtu")?.asInt ?: 1420
+                ?: "10.77.77.1"
+            val mtu = settings.get("mtu")?.asInt ?: 1280
 
             val useCookieAuth = settings.get("useCookieAuth")?.asBoolean
                 ?: settings.get("use_cookie_auth")?.asBoolean
@@ -171,7 +171,7 @@ object ConfigParser {
                         "privatekey" -> config.privateKey = value
                         "address" -> config.tunnelAddress = value
                         "dns" -> config.dnsServers = value
-                        "mtu" -> config.mtu = value.toIntOrNull() ?: 1420
+                        "mtu" -> config.mtu = value.toIntOrNull() ?: 1280
                     }
                 }
                 "peer" -> {

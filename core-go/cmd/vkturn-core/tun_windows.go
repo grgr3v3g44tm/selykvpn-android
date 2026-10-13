@@ -12,88 +12,111 @@ import (
 )
 
 type WindowsTUN struct {
-	dev         tun.Device
-	name        string
-	clientIP    string
-	turnIP      string
-	defGateway  string
-	bypassRu    bool
-	bypassLan   bool
+	dev        tun.Device
+	name       string
+	clientIP   string
+	turnIP     string
+	peerIP     string
+	defGateway string
+	bypassRu   bool
+	bypassLan  bool
 }
 
-func createPlatformTUN(name string, mtu int, clientIP string, dns string, turnIP string, bypassRu bool, bypassLan bool) (*WindowsTUN, tun.Device, error) {
+func createPlatformTUN(name string, mtu int, clientIP string, dns string, turnIP string, peerEndpoint string, bypassRu bool, bypassLan bool) (*WindowsTUN, tun.Device, error) {
 	if mtu <= 0 {
-		mtu = 1420
+		mtu = 1280
 	}
 	dev, err := tun.CreateTUN(name, mtu)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create Wintun adapter: %w", err)
 	}
 
-	w := &WindowsTUN{
-		dev:       dev,
-		name:      name,
-		clientIP:  clientIP,
-		turnIP:    turnIP,
-		bypassRu:  bypassRu,
-		bypassLan: bypassLan,
-	}
-
-	// 1. Configure IP address on the adapter
 	cleanIP := clientIP
 	if idx := strings.Index(cleanIP, "/"); idx != -1 {
 		cleanIP = cleanIP[:idx]
 	}
 
+	peerHost := peerEndpoint
+	if idx := strings.Index(peerHost, ":"); idx != -1 {
+		peerHost = peerHost[:idx]
+	}
+
+	w := &WindowsTUN{
+		dev:       dev,
+		name:      name,
+		clientIP:  cleanIP,
+		turnIP:    turnIP,
+		peerIP:    peerHost,
+		bypassRu:  bypassRu,
+		bypassLan: bypassLan,
+	}
+
+	// 1. Configure IP address on the adapter with gateway 10.77.77.1
+	gw := "10.77.77.1"
 	cmd := exec.Command("netsh", "interface", "ipv4", "set", "address",
-		fmt.Sprintf("name=\"%s\"", name),
+		fmt.Sprintf("name=%s", name),
 		"source=static",
 		fmt.Sprintf("address=%s", cleanIP),
-		"mask=255.255.255.255",
+		"mask=255.255.255.0",
+		fmt.Sprintf("gateway=%s", gw),
+		"gwmetric=1",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		logWarn("netsh set address error (%v): %s", err, string(out))
 	} else {
-		logInfo("Configured adapter IP %s on %s", cleanIP, name)
+		logInfo("Configured adapter IP %s/24 gateway %s on %s", cleanIP, gw, name)
 	}
 
-	// 2. Configure DNS on the adapter if provided
-	if dns != "" {
-		primaryDNS := strings.Split(dns, ",")[0]
-		primaryDNS = strings.TrimSpace(primaryDNS)
-		if primaryDNS != "" {
-			cmdDNS := exec.Command("netsh", "interface", "ipv4", "set", "dns",
-				fmt.Sprintf("name=\"%s\"", name),
-				"static",
-				primaryDNS,
-			)
-			if out, err := cmdDNS.CombinedOutput(); err != nil {
-				logWarn("netsh set dns error (%v): %s", err, string(out))
+	// 2. Configure DNS on the adapter
+	if dns == "" {
+		dns = "10.77.77.1"
+	}
+	primaryDNS := strings.TrimSpace(strings.Split(dns, ",")[0])
+	if primaryDNS != "" {
+		cmdDNS := exec.Command("netsh", "interface", "ipv4", "set", "dns",
+			fmt.Sprintf("name=%s", name),
+			"source=static",
+			fmt.Sprintf("address=%s", primaryDNS),
+			"validate=no",
+		)
+		if out, err := cmdDNS.CombinedOutput(); err != nil {
+			logWarn("netsh set dns error (%v): %s", err, string(out))
+		} else {
+			logInfo("Configured DNS %s on %s", primaryDNS, name)
+		}
+	}
+
+	// 3. Find physical default gateway to prevent route loop to TURN server and Peer
+	physGW := findDefaultGateway()
+	w.defGateway = physGW
+	if physGW != "" {
+		if turnIP != "" {
+			cmdHost := exec.Command("route", "add", turnIP, "mask", "255.255.255.255", physGW, "metric", "1")
+			if out, err := cmdHost.CombinedOutput(); err != nil {
+				logWarn("route add turnIP error (%v): %s", err, string(out))
 			} else {
-				logInfo("Configured DNS %s on %s", primaryDNS, name)
+				logInfo("Pinned host route for TURN server %s via physical gateway %s", turnIP, physGW)
+			}
+		}
+		if peerHost != "" && peerHost != turnIP {
+			if ip := net.ParseIP(peerHost); ip != nil {
+				cmdPeer := exec.Command("route", "add", peerHost, "mask", "255.255.255.255", physGW, "metric", "1")
+				if out, err := cmdPeer.CombinedOutput(); err != nil {
+					logWarn("route add peerIP error (%v): %s", err, string(out))
+				} else {
+					logInfo("Pinned host route for Peer server %s via physical gateway %s", peerHost, physGW)
+				}
 			}
 		}
 	}
 
-	// 3. Find default gateway to prevent route loop to TURN server
-	gw := findDefaultGateway()
-	w.defGateway = gw
-	if gw != "" && turnIP != "" {
-		cmdHost := exec.Command("route", "add", turnIP, "mask", "255.255.255.255", gw, "metric", "1")
-		if out, err := cmdHost.CombinedOutput(); err != nil {
-			logWarn("route add turnIP error (%v): %s", err, string(out))
-		} else {
-			logInfo("Added host route for TURN server %s via gateway %s", turnIP, gw)
-		}
-	}
-
-	// 4. Override default routes with 0.0.0.0/1 and 128.0.0.0/1 pointing to adapter IP
-	cmdR1 := exec.Command("route", "add", "0.0.0.0", "mask", "128.0.0.0", cleanIP, "metric", "1")
+	// 4. Override default routes with 0.0.0.0/1 and 128.0.0.0/1 pointing to TUN gateway
+	cmdR1 := exec.Command("route", "add", "0.0.0.0", "mask", "128.0.0.0", gw, "metric", "1")
 	if out, err := cmdR1.CombinedOutput(); err != nil {
 		logWarn("route add 0.0.0.0/1 error (%v): %s", err, string(out))
 	}
 
-	cmdR2 := exec.Command("route", "add", "128.0.0.0", "mask", "128.0.0.0", cleanIP, "metric", "1")
+	cmdR2 := exec.Command("route", "add", "128.0.0.0", "mask", "128.0.0.0", gw, "metric", "1")
 	if out, err := cmdR2.CombinedOutput(); err != nil {
 		logWarn("route add 128.0.0.0/1 error (%v): %s", err, string(out))
 	}
@@ -107,18 +130,16 @@ func (w *WindowsTUN) Close() error {
 		return nil
 	}
 
-	cleanIP := w.clientIP
-	if idx := strings.Index(cleanIP, "/"); idx != -1 {
-		cleanIP = cleanIP[:idx]
-	}
-
 	// Remove default override routes
 	exec.Command("route", "delete", "0.0.0.0", "mask", "128.0.0.0").Run()
 	exec.Command("route", "delete", "128.0.0.0", "mask", "128.0.0.0").Run()
 
-	// Remove host route
+	// Remove host routes
 	if w.turnIP != "" {
 		exec.Command("route", "delete", w.turnIP).Run()
+	}
+	if w.peerIP != "" {
+		exec.Command("route", "delete", w.peerIP).Run()
 	}
 
 	logInfo("Cleaned up Windows routes for adapter %s", w.name)
@@ -140,7 +161,7 @@ func findDefaultGateway() string {
 		fields := strings.Fields(line)
 		if len(fields) >= 3 && fields[0] == "0.0.0.0" && fields[1] == "0.0.0.0" {
 			gw := fields[2]
-			if ip := net.ParseIP(gw); ip != nil && !ip.IsUnspecified() {
+			if ip := net.ParseIP(gw); ip != nil && !ip.IsUnspecified() && !strings.HasPrefix(gw, "10.77.77.") {
 				return gw
 			}
 		}

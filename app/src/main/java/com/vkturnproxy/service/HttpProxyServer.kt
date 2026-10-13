@@ -84,7 +84,9 @@ object HttpProxyServer {
                 val client = serverSocket.accept()
                 // CRITICAL: Protect the local hotspot client socket so return packets go back over Wi-Fi, NOT tun0!
                 vpnService?.protect(client)
-                client.soTimeout = 30000
+                client.tcpNoDelay = true
+                client.keepAlive = true
+                client.soTimeout = 15000 // Handshake timeout; cleared to 0 once connection is piped
                 clientSockets.add(client)
 
                 scope.launch {
@@ -213,8 +215,9 @@ object HttpProxyServer {
         val remote = try {
             val targetIp = resolveIPv4(targetHost)
             val sock = Socket()
-            sock.soTimeout = 30000
-            sock.connect(InetSocketAddress(targetIp, targetPort), 15000)
+            sock.tcpNoDelay = true
+            sock.keepAlive = true
+            sock.connect(InetSocketAddress(targetIp, targetPort), 10000)
             sock
         } catch (e: Exception) {
             // Reply 0x04 (Host unreachable)
@@ -234,7 +237,9 @@ object HttpProxyServer {
             return@withContext
         }
 
-        // 5. Bidirectional data pipe
+        // 5. Bidirectional data pipe (clear timeouts for active persistent streaming)
+        client.soTimeout = 0
+        remote.soTimeout = 0
         pipeBidirectional(client, remote)
     }
 
@@ -268,8 +273,9 @@ object HttpProxyServer {
             val remote = try {
                 val targetIp = resolveIPv4(host)
                 val sock = Socket()
-                sock.soTimeout = 30000
-                sock.connect(InetSocketAddress(targetIp, remotePort), 15000)
+                sock.tcpNoDelay = true
+                sock.keepAlive = true
+                sock.connect(InetSocketAddress(targetIp, remotePort), 10000)
                 sock
             } catch (e: Exception) {
                 try {
@@ -288,6 +294,8 @@ object HttpProxyServer {
                 return@withContext
             }
 
+            client.soTimeout = 0
+            remote.soTimeout = 0
             pipeBidirectional(client, remote)
         } else {
             // Plain HTTP Proxy
@@ -313,8 +321,9 @@ object HttpProxyServer {
                 val remote = try {
                     val targetIp = resolveIPv4(host)
                     val sock = Socket()
-                    sock.soTimeout = 30000
-                    sock.connect(InetSocketAddress(targetIp, remotePort), 15000)
+                    sock.tcpNoDelay = true
+                    sock.keepAlive = true
+                    sock.connect(InetSocketAddress(targetIp, remotePort), 10000)
                     sock
                 } catch (e: Exception) {
                     try {
@@ -332,6 +341,8 @@ object HttpProxyServer {
                     return@withContext
                 }
 
+                client.soTimeout = 0
+                remote.soTimeout = 0
                 pipeBidirectional(client, remote)
             }
         }
@@ -350,7 +361,95 @@ object HttpProxyServer {
         return firstLine
     }
 
+    private fun skipDnsName(dis: java.io.DataInputStream) {
+        while (true) {
+            val len = dis.readUnsignedByte()
+            if (len == 0) break
+            if ((len and 0xC0) == 0xC0) {
+                dis.readUnsignedByte() // skip pointer second byte
+                break // pointer terminates the name
+            }
+            dis.skipBytes(len)
+        }
+    }
+
+    private fun resolveViaVpnDns(host: String, dnsServerIp: String = "10.77.77.1"): InetAddress? {
+        var socket: java.net.DatagramSocket? = null
+        try {
+            socket = java.net.DatagramSocket()
+            socket.soTimeout = 800 // Fast 800ms timeout
+            val txId = (Math.random() * 65535).toInt()
+            val baos = java.io.ByteArrayOutputStream()
+            val dos = java.io.DataOutputStream(baos)
+            dos.writeShort(txId)
+            dos.writeShort(0x0100) // standard query, recursion desired
+            dos.writeShort(1)      // 1 question
+            dos.writeShort(0)
+            dos.writeShort(0)
+            dos.writeShort(0)
+
+            for (part in host.split(".")) {
+                if (part.isEmpty()) continue
+                val bytes = part.toByteArray(Charsets.US_ASCII)
+                dos.writeByte(bytes.size)
+                dos.write(bytes)
+            }
+            dos.writeByte(0)
+            dos.writeShort(1) // QTYPE = A
+            dos.writeShort(1) // QCLASS = IN
+            dos.flush()
+
+            val queryData = baos.toByteArray()
+            val packet = java.net.DatagramPacket(queryData, queryData.size, InetAddress.getByName(dnsServerIp), 53)
+            socket.send(packet)
+
+            val respBuf = ByteArray(512)
+            val respPacket = java.net.DatagramPacket(respBuf, respBuf.size)
+            socket.receive(respPacket)
+
+            val dis = java.io.DataInputStream(java.io.ByteArrayInputStream(respBuf, 0, respPacket.length))
+            val rTxId = dis.readUnsignedShort()
+            if (rTxId != txId) return null
+            dis.readUnsignedShort() // flags
+            val qdCount = dis.readUnsignedShort()
+            val anCount = dis.readUnsignedShort()
+            dis.readUnsignedShort()
+            dis.readUnsignedShort()
+
+            for (i in 0 until qdCount) {
+                skipDnsName(dis)
+                dis.skipBytes(4)
+            }
+
+            for (i in 0 until anCount) {
+                skipDnsName(dis)
+                val aType = dis.readUnsignedShort()
+                dis.skipBytes(2)
+                dis.skipBytes(4)
+                val rdLen = dis.readUnsignedShort()
+                if (aType == 1 && rdLen == 4) {
+                    val ipBytes = ByteArray(4)
+                    dis.readFully(ipBytes)
+                    return InetAddress.getByAddress(ipBytes)
+                } else {
+                    dis.skipBytes(rdLen)
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            runCatching { socket?.close() }
+        }
+        return null
+    }
+
     private fun resolveIPv4(host: String): InetAddress {
+        if (host.matches(Regex("""^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"""))) {
+            return InetAddress.getByName(host)
+        }
+        val vpnDnsResult = resolveViaVpnDns(host)
+        if (vpnDnsResult != null) {
+            return vpnDnsResult
+        }
         return try {
             val addrs = InetAddress.getAllByName(host)
             addrs.firstOrNull { it is Inet4Address } ?: addrs.first()
@@ -392,7 +491,7 @@ object HttpProxyServer {
 
         coroutineScope {
             val jobClientToRemote = launch {
-                val buffer = ByteArray(16384)
+                val buffer = ByteArray(32768)
                 try {
                     while (isActive) {
                         val n = clientIn.read(buffer)
@@ -407,7 +506,7 @@ object HttpProxyServer {
             }
 
             val jobRemoteToClient = launch {
-                val buffer = ByteArray(16384)
+                val buffer = ByteArray(32768)
                 try {
                     while (isActive) {
                         val n = remoteIn.read(buffer)
