@@ -63,6 +63,14 @@ func createPlatformTUN(name string, mtu int, clientIP string, dns string, turnIP
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		logWarn("netsh set address error (%v): %s", err, string(out))
+		// PowerShell fallback
+		psCmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+			fmt.Sprintf("New-NetIPAddress -InterfaceAlias '%s' -IPAddress '%s' -PrefixLength 24 -DefaultGateway '%s' -ErrorAction SilentlyContinue; Set-NetIPInterface -InterfaceAlias '%s' -InterfaceMetric 1 -ErrorAction SilentlyContinue", name, cleanIP, gw, name))
+		if psOut, psErr := psCmd.CombinedOutput(); psErr != nil {
+			logWarn("powershell fallback set address error (%v): %s", psErr, string(psOut))
+		} else {
+			logInfo("Configured adapter IP via PowerShell fallback on %s", name)
+		}
 	} else {
 		logInfo("Configured adapter IP %s/24 gateway %s on %s", cleanIP, gw, name)
 	}
@@ -81,6 +89,13 @@ func createPlatformTUN(name string, mtu int, clientIP string, dns string, turnIP
 		)
 		if out, err := cmdDNS.CombinedOutput(); err != nil {
 			logWarn("netsh set dns error (%v): %s", err, string(out))
+			psDNS := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+				fmt.Sprintf("Set-DnsClientServerAddress -InterfaceAlias '%s' -ServerAddresses '%s' -ErrorAction SilentlyContinue", name, primaryDNS))
+			if psDNSOut, psDNSErr := psDNS.CombinedOutput(); psDNSErr != nil {
+				logWarn("powershell fallback set dns error (%v): %s", psDNSErr, string(psDNSOut))
+			} else {
+				logInfo("Configured DNS via PowerShell fallback on %s", name)
+			}
 		} else {
 			logInfo("Configured DNS %s on %s", primaryDNS, name)
 		}

@@ -187,9 +187,9 @@ func (r *TunnelRunner) startAsync(req StartRequest) error {
 	var tnet *netstack.Net
 
 	if r.mode == "tun" {
-		logInfo("Initializing Wintun network adapter 'VK TURN Proxy'...")
+		logInfo("Initializing Wintun network adapter 'vkturn-tun'...")
 		pt, dev, err := createPlatformTUN(
-			"VK TURN Proxy",
+			"vkturn-tun",
 			req.Profile.WireGuard.MTU,
 			req.Profile.WireGuard.Address,
 			req.Profile.WireGuard.DNS,
