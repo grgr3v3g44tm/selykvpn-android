@@ -87,7 +87,7 @@ object ConfigParser {
                 ?: "10.77.77.2/24"
             val dnsServers = settings.get("dnsServers")?.asString
                 ?: settings.get("dns_servers")?.asString
-                ?: "10.77.77.1"
+                ?: "1.1.1.1, 77.88.8.8, 10.77.77.1"
             val mtu = settings.get("mtu")?.asInt ?: 1280
 
             val useCookieAuth = settings.get("useCookieAuth")?.asBoolean

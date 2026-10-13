@@ -448,6 +448,8 @@ fun DashboardScreen(
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(56.dp))
     }
 
     // Modal Update Dialog

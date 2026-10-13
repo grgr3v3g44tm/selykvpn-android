@@ -17,11 +17,11 @@ func main() {
 	flag.Parse()
 
 	if *versionFlag {
-		fmt.Println("vkturn-core version 1.4.41 (windows/amd64)")
+		fmt.Println("vkturn-core version 1.4.42 (windows/amd64)")
 		os.Exit(0)
 	}
 
-	logInfo("Starting VK TURN Proxy Core Engine v1.4.41...")
+	logInfo("Starting VK TURN Proxy Core Engine v1.4.42...")
 	addr := fmt.Sprintf("127.0.0.1:%d", *apiPort)
 	server := newApiServer(addr, *apiToken)
 

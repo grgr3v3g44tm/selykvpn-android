@@ -17,7 +17,9 @@ object NetworkUtils {
             for (intf in interfaces) {
                 if (!intf.isUp || intf.isLoopback) continue
                 val name = intf.name.lowercase()
-                if (name.startsWith("tun") || name.startsWith("dummy") || name.startsWith("p2p")) continue
+                if (name.startsWith("tun") || name.startsWith("dummy") || name.startsWith("p2p") ||
+                    name.startsWith("rmnet") || name.startsWith("ccmni") || name.startsWith("pdp") ||
+                    name.startsWith("wwan") || name.startsWith("radio")) continue
 
                 for (addr in intf.inetAddresses) {
                     if (addr is Inet4Address && !addr.isLoopbackAddress) {

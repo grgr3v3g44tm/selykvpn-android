@@ -131,7 +131,7 @@ func (s *ApiServer) handleSpeedtest(w http.ResponseWriter, r *http.Request) {
 func (s *ApiServer) handleVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"version": "1.4.41",
+		"version": "1.4.42",
 		"service": "vkturn-core",
 		"target":  "windows",
 	})

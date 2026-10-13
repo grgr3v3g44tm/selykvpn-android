@@ -446,15 +446,13 @@ object HttpProxyServer {
         if (host.matches(Regex("""^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"""))) {
             return InetAddress.getByName(host)
         }
-        val vpnDnsResult = resolveViaVpnDns(host)
-        if (vpnDnsResult != null) {
-            return vpnDnsResult
-        }
         return try {
             val addrs = InetAddress.getAllByName(host)
             addrs.firstOrNull { it is Inet4Address } ?: addrs.first()
         } catch (_: Exception) {
-            InetAddress.getByName(host)
+            val vpnDnsResult = resolveViaVpnDns(host, "10.77.77.1")
+                ?: resolveViaVpnDns(host, "1.1.1.1")
+            vpnDnsResult ?: InetAddress.getByName(host)
         }
     }
 
