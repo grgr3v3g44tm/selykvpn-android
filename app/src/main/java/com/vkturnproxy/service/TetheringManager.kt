@@ -43,16 +43,18 @@ object TetheringManager {
                     }
                 }
 
-                // Global Forwarding and MASQUERADE
+                // Global Forwarding, TCPMSS clamping and MASQUERADE
                 cmds.add("iptables -D FORWARD -j ACCEPT 2>/dev/null")
                 cmds.add("iptables -t nat -D POSTROUTING -o $tunnelIface -j MASQUERADE 2>/dev/null")
+                cmds.add("iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null")
 
                 if (enable) {
                     cmds.add("iptables -I FORWARD -j ACCEPT")
                     cmds.add("iptables -t nat -I POSTROUTING -o $tunnelIface -j MASQUERADE")
+                    cmds.add("iptables -t mangle -I FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu")
                     cmds.add("sysctl -w net.ipv4.ip_forward=1 2>/dev/null")
                     cmds.add("echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null")
-                    Log.i(TAG, "Root tethering iptables rules applied for $tunnelIface (DNS -> $dnsServer)")
+                    Log.i(TAG, "Root tethering iptables rules applied for $tunnelIface (DNS -> $dnsServer, TCPMSS clamped)")
                 } else {
                     Log.i(TAG, "Root tethering iptables rules cleared")
                 }

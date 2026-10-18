@@ -176,6 +176,18 @@ class MainActivity : ComponentActivity() {
                             onHotspotClicked = { currentScreen = Screen.HOTSPOT },
                             onSplitTunnelClicked = { currentScreen = Screen.SPLIT_TUNNEL },
                             onSpeedTestClicked = { currentScreen = Screen.SPEEDTEST },
+                            onCallCreated = { newLink ->
+                                val active = activeServer
+                                if (active != null) {
+                                    val currentLinks = active.vkLink
+                                    val updatedVkLink = if (currentLinks.isBlank()) newLink else "$currentLinks\n$newLink"
+                                    val updated = active.copy(vkLink = updatedVkLink)
+                                    serverRepo.saveServer(updated)
+                                    Toast.makeText(this@MainActivity, "Звонок VK создан и привязан к «${updated.name}»!", Toast.LENGTH_LONG).show()
+                                } else {
+                                    Toast.makeText(this@MainActivity, "Звонок VK создан и скопирован в буфер!", Toast.LENGTH_LONG).show()
+                                }
+                            },
                             onCheckUpdateClicked = {
                                 updateMgr.checkForUpdates(BuildConfig.VERSION_NAME, silent = false)
                             },

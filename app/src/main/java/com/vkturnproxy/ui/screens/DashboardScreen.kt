@@ -1,5 +1,9 @@
 package com.vkturnproxy.ui.screens
 
+import android.app.StatusBarManager
+import android.content.ComponentName
+import android.os.Build
+import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -20,12 +24,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vkturnproxy.BuildConfig
+import com.vkturnproxy.R
+import com.vkturnproxy.auth.VKCallCreatorDialog
 import com.vkturnproxy.model.ServerConfig
 import com.vkturnproxy.model.TunnelStats
+import com.vkturnproxy.service.VkTurnTileService
 import com.vkturnproxy.service.VpnStatus
 import com.vkturnproxy.ui.theme.*
 import com.vkturnproxy.update.UpdateInfo
@@ -45,6 +55,7 @@ fun DashboardScreen(
     onHotspotClicked: () -> Unit,
     onSplitTunnelClicked: () -> Unit,
     onSpeedTestClicked: () -> Unit,
+    onCallCreated: (String) -> Unit = {},
     onCheckUpdateClicked: () -> Unit = {},
     onDownloadUpdateClicked: (UpdateInfo) -> Unit = {},
     onInstallApkClicked: (File) -> Unit = {},
@@ -77,6 +88,44 @@ fun DashboardScreen(
     val availableUpdate = (updateState as? UpdateState.Available)?.info
         ?: (updateState as? UpdateState.Downloading)?.info
         ?: (updateState as? UpdateState.Downloaded)?.info
+
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    var showVKCallCreatorDialog by remember { mutableStateOf(false) }
+
+    if (showVKCallCreatorDialog) {
+        VKCallCreatorDialog(
+            onDismiss = { showVKCallCreatorDialog = false },
+            onCallCreated = { newLink ->
+                clipboardManager.setText(AnnotatedString(newLink))
+                onCallCreated(newLink)
+                showVKCallCreatorDialog = false
+            }
+        )
+    }
+
+    val onAddTileClicked = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            try {
+                val sbm = context.getSystemService(StatusBarManager::class.java)
+                val componentName = ComponentName(context, VkTurnTileService::class.java)
+                sbm?.requestAddTileService(
+                    componentName,
+                    context.getString(R.string.qs_tile_label),
+                    android.graphics.drawable.Icon.createWithResource(context, R.drawable.ic_qs_vpn),
+                    context.mainExecutor
+                ) { result ->
+                    if (result == StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED) {
+                        Toast.makeText(context, "Плитка VK TURN добавлена в шторку!", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Toast.makeText(context, "Опустите шторку и добавьте плитку через карандаш ✏️", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            Toast.makeText(context, "Опустите шторку и перетащите плитку VK TURN через редактирование ✏️", Toast.LENGTH_LONG).show()
+        }
+    }
 
     val scrollState = rememberScrollState()
 
@@ -376,6 +425,64 @@ fun DashboardScreen(
                             color = TextSecondary,
                             fontSize = 11.sp
                         )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Quick Actions row: Create VK Call & Add QS Tile
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Card(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { showVKCallCreatorDialog = true },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Call,
+                            contentDescription = null,
+                            tint = PrimaryBlue,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text("Звонок VK", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text("Создать ссылку", color = TextSecondary, fontSize = 11.sp)
+                        }
+                    }
+                }
+
+                Card(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onAddTileClicked() },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = null,
+                            tint = PrimaryBlue,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text("В шторку", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text("Добавить плитку", color = TextSecondary, fontSize = 11.sp)
+                        }
                     }
                 }
             }

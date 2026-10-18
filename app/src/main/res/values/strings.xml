@@ -7,7 +7,7 @@
     <string name="status_error">Ошибка подключения</string>
 
     <!-- Quick Settings Tile -->
-    <string name="qs_tile_label">Free Turn</string>
+    <string name="qs_tile_label">VK TURN</string>
     <string name="qs_tile_subtitle_connected">Подключено</string>
     <string name="qs_tile_subtitle_disconnected">Отключено</string>
     <string name="qs_tile_subtitle_connecting">Подключение…</string>

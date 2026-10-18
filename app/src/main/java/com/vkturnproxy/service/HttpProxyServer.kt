@@ -5,6 +5,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.selects.select
 import java.io.EOFException
 import java.io.InputStream
 import java.io.OutputStream
@@ -442,18 +443,39 @@ object HttpProxyServer {
         return null
     }
 
+    /* ─── Fast Thread-Safe DNS Cache ─── */
+    private val dnsCache = ConcurrentHashMap<String, Pair<InetAddress, Long>>()
+    private const val DNS_TTL_MS = 300_000L // 5 minutes
+
     private fun resolveIPv4(host: String): InetAddress {
         if (host.matches(Regex("""^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"""))) {
             return InetAddress.getByName(host)
         }
-        return try {
-            val addrs = InetAddress.getAllByName(host)
-            addrs.firstOrNull { it is Inet4Address } ?: addrs.first()
-        } catch (_: Exception) {
+        val now = System.currentTimeMillis()
+        val cached = dnsCache[host]
+        if (cached != null && (now - cached.second) < DNS_TTL_MS) {
+            return cached.first
+        }
+
+        // Fast resolution via VPN DNS or system getaddrinfo
+        val resolved = try {
             val vpnDnsResult = resolveViaVpnDns(host, "10.77.77.1")
                 ?: resolveViaVpnDns(host, "1.1.1.1")
-            vpnDnsResult ?: InetAddress.getByName(host)
+            vpnDnsResult ?: run {
+                val addrs = InetAddress.getAllByName(host)
+                addrs.firstOrNull { it is Inet4Address } ?: addrs.first()
+            }
+        } catch (_: Exception) {
+            try {
+                val addrs = InetAddress.getAllByName(host)
+                addrs.firstOrNull { it is Inet4Address } ?: addrs.first()
+            } catch (_: Exception) {
+                InetAddress.getByName(host)
+            }
         }
+
+        dnsCache[host] = Pair(resolved, now)
+        return resolved
     }
 
     private fun readFully(input: InputStream, buffer: ByteArray) {
@@ -480,8 +502,12 @@ object HttpProxyServer {
         }
     }
 
-    /* ─── Non-Deadlocking Bidirectional Pipe ─── */
+    /* ─── Non-Deadlocking Bidirectional Pipe with Idle Timeouts ─── */
     private suspend fun pipeBidirectional(client: Socket, remote: Socket) = withContext(Dispatchers.IO) {
+        // Set 60-second idle timeouts so abandoned or half-open connections never leak file descriptors
+        client.soTimeout = 60_000
+        remote.soTimeout = 60_000
+
         val clientIn = client.getInputStream()
         val clientOut = client.getOutputStream()
         val remoteIn = remote.getInputStream()
@@ -519,9 +545,20 @@ object HttpProxyServer {
             }
 
             try {
-                jobClientToRemote.join()
-                jobRemoteToClient.join()
+                // When either direction finishes, allow a short graceful drain (up to 3s) for the other side, then close
+                val firstDone = select<String> {
+                    jobClientToRemote.onJoin { "client" }
+                    jobRemoteToClient.onJoin { "remote" }
+                }
+                if (firstDone == "client") {
+                    withTimeoutOrNull(4000) { jobRemoteToClient.join() }
+                } else {
+                    withTimeoutOrNull(2000) { jobClientToRemote.join() }
+                }
+            } catch (_: Exception) {
             } finally {
+                jobClientToRemote.cancel()
+                jobRemoteToClient.cancel()
                 runCatching { remote.close() }
                 runCatching { client.close() }
             }

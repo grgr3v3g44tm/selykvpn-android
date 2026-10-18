@@ -236,6 +236,7 @@ class VkTurnVpnService : VpnService() {
         lastRxBytes = 0
         lastTxBytes = 0
         statsJob = serviceScope.launch {
+            var tickCount = 0
             while (isActive && tunnelHandle > 0) {
                 try {
                     val statsJson = if (isCsqttMode) {
@@ -255,10 +256,23 @@ class VkTurnVpnService : VpnService() {
                             speedTxBps = speedTx,
                             turnServer = turnIp
                         )
+
+                        // Update notification with live speed every 2 seconds
+                        if (++tickCount % 2 == 0 && _statusFlow.value == VpnStatus.CONNECTED) {
+                            updateNotification("Подключено — $currentServerName | ↓ ${formatSpeedShort(speedRx)} ↑ ${formatSpeedShort(speedTx)}")
+                        }
                     }
                 } catch (_: Exception) {}
                 delay(1000)
             }
+        }
+    }
+
+    private fun formatSpeedShort(bytesPerSec: Long): String {
+        return when {
+            bytesPerSec >= 1_048_576 -> "%.1f MB/s".format(bytesPerSec / 1_048_576.0)
+            bytesPerSec >= 1024 -> "%.0f KB/s".format(bytesPerSec / 1024.0)
+            else -> "$bytesPerSec B/s"
         }
     }
 
@@ -332,11 +346,20 @@ class VkTurnVpnService : VpnService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val stopIntent = Intent(this, VkTurnVpnService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this, 1, stopIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("VK TURN Proxy")
             .setContentText(text)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(pendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Отключить", stopPendingIntent)
             .setOngoing(true)
             .build()
     }

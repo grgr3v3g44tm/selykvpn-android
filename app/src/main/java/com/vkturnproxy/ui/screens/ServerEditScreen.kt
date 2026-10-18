@@ -254,17 +254,31 @@ fun ServerEditScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Ссылки на звонки VK", color = PrimaryBlue, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        val validLinksCount = vkLink.lines().map { it.trim() }.filter { it.startsWith("http") }.size
-                        if (validLinksCount > 0) {
-                            Badge(containerColor = if (validLinksCount > 1) AccentGreen else SurfaceVariantDark) {
-                                Text(
-                                    "$validLinksCount звон. → ${validLinksCount * 2} релея",
-                                    color = if (validLinksCount > 1) Color.Black else TextSecondary,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Ссылки на звонки VK", color = PrimaryBlue, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            val validLinksCount = vkLink.lines().map { it.trim() }.filter { it.startsWith("http") }.size
+                            if (validLinksCount > 0) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Badge(containerColor = if (validLinksCount > 1) AccentGreen else SurfaceVariantDark) {
+                                    Text(
+                                        "$validLinksCount звон. → ${validLinksCount * 2} релея",
+                                        color = if (validLinksCount > 1) Color.Black else TextSecondary,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
+                        }
+
+                        Button(
+                            onClick = { showVKCallCreatorDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) {
+                            Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("+ Создать звонок", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
 
