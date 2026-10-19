@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import com.vkturnproxy.BuildConfig
 import com.vkturnproxy.R
 import com.vkturnproxy.auth.VKCallCreatorDialog
+import com.vkturnproxy.model.ProxyMode
 import com.vkturnproxy.model.ServerConfig
 import com.vkturnproxy.model.TunnelStats
 import com.vkturnproxy.service.VkTurnTileService
@@ -276,6 +277,39 @@ fun DashboardScreen(
                     )
                 }
             }
+
+            // Warning if call link is not specified
+            if (activeServer != null && activeServer?.mode != ProxyMode.SRTP_WRAP_A && activeServer?.vkLink.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showVKCallCreatorDialog = true },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = AccentRed.copy(alpha = 0.15f)),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, AccentRed.copy(alpha = 0.5f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = AccentRed, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Ссылка на звонок не указана! Нажмите, чтобы создать звонок.",
+                                color = TextPrimary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        Text("Создать", color = PrimaryBlue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
 
         // Center Connect Button & Status
@@ -294,7 +328,13 @@ fun DashboardScreen(
                         )
                     )
                     .border(3.dp, buttonColor.copy(alpha = 0.8f), CircleShape)
-                    .clickable { onToggleVpn() },
+                    .clickable {
+                        if (activeServer != null && activeServer?.mode != ProxyMode.SRTP_WRAP_A && activeServer?.vkLink.isNullOrBlank()) {
+                            showVKCallCreatorDialog = true
+                        } else {
+                            onToggleVpn()
+                        }
+                    },
                 contentAlignment = Alignment.Center
             ) {
                 Box(

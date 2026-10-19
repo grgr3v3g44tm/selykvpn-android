@@ -292,6 +292,15 @@ fun ServerEditScreen(
                         placeholder = { Text("https://vk.ru/call/join/...\nhttps://vk.ru/call/join/...") }
                     )
 
+                    if (vkLink.isBlank() && mode != ProxyMode.SRTP_WRAP_A) {
+                        Text(
+                            "⚠️ Ссылка на звонок обязательна для подключения к VPN. Нажмите кнопку «+ Создать звонок» выше для автоматического создания.",
+                            color = AccentRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+
                     Text(
                         "Каждая ссылка с новой строки добавляет 2 независимых TURN релея. Нагрузка равномерно распределяется между ними для максимальной стабильности.",
                         color = TextSecondary,

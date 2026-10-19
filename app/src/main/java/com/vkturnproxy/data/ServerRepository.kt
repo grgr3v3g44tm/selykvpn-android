@@ -9,7 +9,7 @@ import com.vkturnproxy.parser.ConfigParser
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-class ServerRepository(context: Context) {
+class ServerRepository(private val context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("vkturn_servers", Context.MODE_PRIVATE)
     private val gson = Gson()
@@ -43,10 +43,23 @@ class ServerRepository(context: Context) {
         saveServers(list)
     }
 
+    fun purgeCredCache() {
+        try {
+            listOf(context.cacheDir, context.filesDir).forEach { dir ->
+                java.io.File(dir, "creds-pool.json").delete()
+                java.io.File(dir, "creds-pool-csqtt.json").delete()
+            }
+        } catch (_: Exception) {}
+    }
+
     fun saveServer(config: ServerConfig) {
         val current = _serversFlow.value.toMutableList()
         val index = current.indexOfFirst { it.id == config.id }
         if (index >= 0) {
+            val old = current[index]
+            if (old.vkLink != config.vkLink) {
+                purgeCredCache()
+            }
             current[index] = config
         } else {
             current.add(config)
@@ -58,6 +71,7 @@ class ServerRepository(context: Context) {
     }
 
     fun deleteServer(id: String) {
+        purgeCredCache()
         val current = _serversFlow.value.toMutableList()
         current.removeAll { it.id == id }
         saveServers(current)

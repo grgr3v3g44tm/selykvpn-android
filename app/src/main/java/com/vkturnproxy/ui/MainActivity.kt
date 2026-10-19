@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.vkturnproxy.BuildConfig
 import com.vkturnproxy.VkTurnApp
+import com.vkturnproxy.model.ProxyMode
 import com.vkturnproxy.model.ServerConfig
 import com.vkturnproxy.parser.ConfigParser
 import com.vkturnproxy.service.VkTurnVpnService
@@ -90,11 +91,15 @@ class MainActivity : ComponentActivity() {
 
     private fun connectActiveServer() {
         val active = VkTurnApp.instance.serverRepository.activeServerFlow.value
-        if (active != null) {
-            VkTurnVpnService.start(this, active)
-        } else {
+        if (active == null) {
             Toast.makeText(this, "Сначала выберите или добавьте сервер", Toast.LENGTH_SHORT).show()
+            return
         }
+        if (active.mode != ProxyMode.SRTP_WRAP_A && active.vkLink.trim().isBlank()) {
+            Toast.makeText(this, "Не указана ссылка на звонок VK. Создайте звонок или вставьте ссылку в настройках.", Toast.LENGTH_LONG).show()
+            return
+        }
+        VkTurnVpnService.start(this, active)
     }
 
     @Composable

@@ -212,7 +212,8 @@ fun VKAuthDialog(
                                 factory = { ctx ->
                                     WebView(ctx).apply {
                                         webViewInstance = this
-                                        setBackgroundColor(android.graphics.Color.parseColor("#0B0F19"))
+                                        setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+                                        setBackgroundColor(android.graphics.Color.WHITE)
                                         val cm = CookieManager.getInstance()
                                         cm.setAcceptCookie(true)
                                         cm.setAcceptThirdPartyCookies(this, true)
@@ -227,6 +228,8 @@ fun VKAuthDialog(
                                             allowFileAccess = false
                                             allowContentAccess = false
                                             cacheMode = WebSettings.LOAD_DEFAULT
+                                            useWideViewPort = true
+                                            loadWithOverviewMode = true
                                         }
 
                                         webChromeClient = object : WebChromeClient() {
@@ -284,6 +287,23 @@ fun VKAuthDialog(
                                             override fun onPageFinished(view: WebView?, url: String?) {
                                                 super.onPageFinished(view, url)
                                                 canGoBack = view?.canGoBack() == true
+                                                // Dismiss "Вход без пароля" / "Войти через приложение" popup in favor of manual entry fields
+                                                view?.evaluateJavascript("""
+                                                    (function() {
+                                                        var btns = document.querySelectorAll('button, span, div, a');
+                                                        for (var i = 0; i < btns.length; i++) {
+                                                            var t = btns[i].innerText || btns[i].textContent;
+                                                            if (t && (t.indexOf('Ввести данные вручную') !== -1 || t.indexOf('вручную') !== -1)) {
+                                                                btns[i].click();
+                                                                return;
+                                                            }
+                                                        }
+                                                        var closeBtn = document.querySelector('[aria-label="Закрыть"], .vkuiModalDismissButton, [data-testid="box-layout__close-button"], [data-test-id="modal-close-button"]');
+                                                        if (closeBtn) {
+                                                            closeBtn.click();
+                                                        }
+                                                    })();
+                                                """.trimIndent(), null)
                                                 checkCookies(cm) { header -> handleSuccess(header) }
                                             }
 
@@ -312,7 +332,7 @@ fun VKAuthDialog(
                                             }
                                         }
 
-                                        loadUrl("https://m.vk.com/login?forced_color_scheme_mode=dark")
+                                        loadUrl("https://vk.com/login")
                                     }
                                 }
                             )

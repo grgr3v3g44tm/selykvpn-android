@@ -69,6 +69,14 @@ class VkTurnVpnService : VpnService() {
     }
 
     private fun startTunnel(config: ServerConfig) {
+        if (config.mode != ProxyMode.SRTP_WRAP_A && config.vkLink.trim().isBlank()) {
+            Log.e(TAG, "Cannot start tunnel: VK call link is missing")
+            _statusFlow.value = VpnStatus.DISCONNECTED
+            updateNotification("Ошибка: ссылка на звонок не указана")
+            stopSelf()
+            return
+        }
+
         currentServerName = config.name
         _statusFlow.value = VpnStatus.CONNECTING
         startForeground(NOTIFICATION_ID, buildNotification("Инициализация звонка VK…"))

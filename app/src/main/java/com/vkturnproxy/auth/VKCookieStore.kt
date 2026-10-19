@@ -100,6 +100,7 @@ object VKCookieStore {
         val stored = load() ?: return false
         if (stored.expiryTimestamp <= now) return false
         val header = stored.cookieHeader
+        if (header.contains("test_") || header.contains("dummy") || header.contains("token_123")) return false
         return header.contains("remixsid=") && header.contains("p=")
     }
 

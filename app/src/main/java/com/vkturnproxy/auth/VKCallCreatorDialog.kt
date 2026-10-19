@@ -293,7 +293,8 @@ fun VKCallCreatorDialog(
                                 modifier = Modifier.fillMaxSize(),
                                 factory = { ctx ->
                                     WebView(ctx).apply {
-                                        setBackgroundColor(android.graphics.Color.parseColor("#0B0F19"))
+                                        setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+                                        setBackgroundColor(android.graphics.Color.WHITE)
                                         val cm = CookieManager.getInstance()
                                         cm.setAcceptCookie(true)
                                         cm.setAcceptThirdPartyCookies(this, true)
@@ -347,7 +348,7 @@ fun VKCallCreatorDialog(
 
                                             override fun onPageFinished(view: WebView?, url: String?) {
                                                 super.onPageFinished(view, url)
-                                                // Dismiss "Вход без пароля" popup in favor of manual entry fields
+                                                // Dismiss "Вход без пароля" / "Войти через приложение" popup in favor of manual entry fields
                                                 view?.evaluateJavascript("""
                                                     (function() {
                                                         var btns = document.querySelectorAll('button, span, div, a');
@@ -355,8 +356,12 @@ fun VKCallCreatorDialog(
                                                             var t = btns[i].innerText || btns[i].textContent;
                                                             if (t && (t.indexOf('Ввести данные вручную') !== -1 || t.indexOf('вручную') !== -1)) {
                                                                 btns[i].click();
-                                                                break;
+                                                                return;
                                                             }
+                                                        }
+                                                        var closeBtn = document.querySelector('[aria-label="Закрыть"], .vkuiModalDismissButton, [data-testid="box-layout__close-button"], [data-test-id="modal-close-button"]');
+                                                        if (closeBtn) {
+                                                            closeBtn.click();
                                                         }
                                                     })();
                                                 """.trimIndent(), null)
@@ -370,7 +375,7 @@ fun VKCallCreatorDialog(
                                             }
                                         }
 
-                                        loadUrl("https://m.vk.com/login?forced_color_scheme_mode=dark")
+                                        loadUrl("https://vk.com/login")
                                     }
                                 }
                             )
@@ -514,7 +519,8 @@ fun VKCallCreatorDialog(
                                     factory = { ctx ->
                                         WebView(ctx).apply {
                                             webViewInstance = this
-                                            setBackgroundColor(android.graphics.Color.parseColor("#0B0F19"))
+                                            setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+                                        setBackgroundColor(android.graphics.Color.WHITE)
                                             val cm = CookieManager.getInstance()
                                             cm.setAcceptCookie(true)
                                             cm.setAcceptThirdPartyCookies(this, true)
@@ -658,7 +664,7 @@ fun VKCallCreatorDialog(
                                     }
                                 }
 
-                                if (isLoading) {
+                                if (isLoading && isTokenHandled) {
                                     Box(
                                         modifier = Modifier
                                             .fillMaxSize()
@@ -720,16 +726,12 @@ private fun plantCookiesAndLoad(webView: WebView, cookieManager: CookieManager, 
         if (!p.isNullOrBlank()) {
             cookieManager.setCookie("https://login.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure; SameSite=None")
             cookieManager.setCookie("https://login.vk.com/", "p=$p; Domain=.login.vk.com; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://vk.ru/", "p=$p; Domain=.vk.ru; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://vk.com/", "p=$p; Domain=.vk.com; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://oauth.vk.ru/", "p=$p; Domain=.vk.ru; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://oauth.vk.com/", "p=$p; Domain=.vk.com; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://id.vk.ru/", "p=$p; Domain=.vk.ru; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://id.vk.com/", "p=$p; Domain=.vk.com; Path=/; Secure; SameSite=None")
         }
 
         cookieManager.flush()
-        webView.loadUrl(VK_OAUTH_AUTHORIZE_URL)
+        webView.post {
+            webView.loadUrl(VK_OAUTH_AUTHORIZE_URL)
+        }
     }
 }
 
