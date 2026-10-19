@@ -54,16 +54,38 @@ class SplitTunnelManager(context: Context) {
     }
 
     fun applyToBuilder(builder: VpnService.Builder, myPackageName: String) {
-        if (!isEnabled) {
-            // By default, just ensure the VPN app itself doesn't loop if not protected
-            return
-        }
-
+        val splitEnabled = isEnabled
+        val splitMode = mode
         val selected = getSelectedPackages()
-        Log.i("SplitTunnelManager", "Applying split tunneling (mode=$mode, count=${selected.size})")
 
-        when (mode) {
-            SplitTunnelMode.DISALLOW_SELECTED -> {
+        if (splitEnabled && splitMode == SplitTunnelMode.ALLOW_SELECTED) {
+            // Whitelist mode: ONLY apps explicitly added via addAllowedApplication go through VPN.
+            // All other apps (including this app) automatically bypass the VPN.
+            // Do NOT call addDisallowedApplication here because Android throws UnsupportedOperationException
+            // if both addAllowedApplication and addDisallowedApplication are called on the same builder.
+            Log.i("SplitTunnelManager", "Applying split tunneling (mode=ALLOW_SELECTED, count=${selected.size})")
+            for (pkg in selected) {
+                if (pkg == myPackageName) continue // Never route self into VPN
+                try {
+                    builder.addAllowedApplication(pkg)
+                } catch (e: PackageManager.NameNotFoundException) {
+                    Log.w("SplitTunnelManager", "Package not found: $pkg")
+                } catch (e: Exception) {
+                    Log.w("SplitTunnelManager", "Cannot allow $pkg: ${e.message}")
+                }
+            }
+        } else {
+            // Default / Blacklist mode: all apps go through VPN EXCEPT disallowed apps.
+            // ALWAYS disallow the VPN app itself so OAuth webviews, APIs and background checks never get trapped in a broken tunnel.
+            try {
+                builder.addDisallowedApplication(myPackageName)
+                Log.i("SplitTunnelManager", "Disallowed $myPackageName from VPN tunnel")
+            } catch (e: Exception) {
+                Log.w("SplitTunnelManager", "Cannot disallow $myPackageName: ${e.message}")
+            }
+
+            if (splitEnabled && splitMode == SplitTunnelMode.DISALLOW_SELECTED) {
+                Log.i("SplitTunnelManager", "Applying split tunneling (mode=DISALLOW_SELECTED, count=${selected.size})")
                 for (pkg in selected) {
                     if (pkg == myPackageName) continue
                     try {
@@ -72,17 +94,6 @@ class SplitTunnelManager(context: Context) {
                         Log.w("SplitTunnelManager", "Package not found: $pkg")
                     } catch (e: Exception) {
                         Log.w("SplitTunnelManager", "Cannot disallow $pkg: ${e.message}")
-                    }
-                }
-            }
-            SplitTunnelMode.ALLOW_SELECTED -> {
-                for (pkg in selected) {
-                    try {
-                        builder.addAllowedApplication(pkg)
-                    } catch (e: PackageManager.NameNotFoundException) {
-                        Log.w("SplitTunnelManager", "Package not found: $pkg")
-                    } catch (e: Exception) {
-                        Log.w("SplitTunnelManager", "Cannot allow $pkg: ${e.message}")
                     }
                 }
             }

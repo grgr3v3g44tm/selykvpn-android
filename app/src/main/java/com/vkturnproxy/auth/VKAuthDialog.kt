@@ -27,9 +27,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.vkturnproxy.service.VkTurnVpnService
+import com.vkturnproxy.service.VpnStatus
 import com.vkturnproxy.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -44,6 +47,7 @@ fun VKAuthDialog(
     onDismiss: () -> Unit,
     onSuccess: (cookieHeader: String) -> Unit
 ) {
+    val context = LocalContext.current
     var statusText by remember { mutableStateOf("Войдите в аккаунт или создайте новый") }
     var isDone by remember { mutableStateOf(false) }
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
@@ -51,6 +55,14 @@ fun VKAuthDialog(
     var canGoBack by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    // Ensure direct physical network routing (Wi-Fi/Cellular) while performing VK Auth
+    LaunchedEffect(Unit) {
+        if (VkTurnVpnService.statusFlow.value != VpnStatus.DISCONNECTED) {
+            Log.i(TAG, "Stopping active VPN tunnel to ensure direct network connection for VK Auth")
+            VkTurnVpnService.stop(context)
+        }
+    }
 
     fun handleSuccess(header: String) {
         if (!isDone) {
@@ -215,7 +227,6 @@ fun VKAuthDialog(
                                             allowFileAccess = false
                                             allowContentAccess = false
                                             cacheMode = WebSettings.LOAD_DEFAULT
-                                            userAgentString = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
                                         }
 
                                         webChromeClient = object : WebChromeClient() {
@@ -286,6 +297,14 @@ fun VKAuthDialog(
                                                     val scheme = request.url?.scheme?.lowercase()
                                                     if (scheme != "http" && scheme != "https") return
                                                     if (error?.errorCode == WebViewClient.ERROR_UNSUPPORTED_SCHEME) return
+
+                                                    val reqUrl = request.url?.toString() ?: ""
+                                                    if (reqUrl.contains("vk.com")) {
+                                                        val fallbackUrl = reqUrl.replace("vk.com", "vk.ru")
+                                                        Log.w(TAG, "Failed loading $reqUrl (error ${error?.errorCode}), falling back to $fallbackUrl")
+                                                        view?.loadUrl(fallbackUrl)
+                                                        return
+                                                    }
 
                                                     val desc = error?.description?.toString() ?: "Сетевая ошибка"
                                                     loadError = "$desc (код: ${error?.errorCode ?: -1})"

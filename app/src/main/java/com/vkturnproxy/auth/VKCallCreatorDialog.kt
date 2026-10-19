@@ -32,7 +32,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.platform.LocalContext
 import com.google.gson.Gson
+import com.vkturnproxy.service.VkTurnVpnService
+import com.vkturnproxy.service.VpnStatus
 import com.vkturnproxy.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -55,6 +58,7 @@ fun VKCallCreatorDialog(
     onDismiss: () -> Unit,
     onCallCreated: (joinLink: String) -> Unit
 ) {
+    val context = LocalContext.current
     var hasLogin by remember { mutableStateOf(VKCookieStore.hasValidLogin()) }
     var isLoggingIn by remember { mutableStateOf(false) }
 
@@ -66,6 +70,14 @@ fun VKCallCreatorDialog(
     var canGoBack by remember { mutableStateOf(false) }
     var isTokenHandled by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    // Ensure direct physical network routing (Wi-Fi/Cellular) while creating calls
+    LaunchedEffect(Unit) {
+        if (VkTurnVpnService.statusFlow.value != VpnStatus.DISCONNECTED) {
+            Log.i(TAG, "Stopping active VPN tunnel to ensure direct network connection for VK Call creation")
+            VkTurnVpnService.stop(context)
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -296,7 +308,6 @@ fun VKCallCreatorDialog(
                                             allowFileAccess = false
                                             allowContentAccess = false
                                             cacheMode = WebSettings.LOAD_DEFAULT
-                                            userAgentString = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
                                         }
 
                                         webChromeClient = object : WebChromeClient() {
@@ -427,12 +438,16 @@ fun VKCallCreatorDialog(
                                         tint = TextPrimary
                                     )
                                 }
-                                TextButton(onClick = {
+                                IconButton(onClick = {
                                     VKCookieStore.clearCookies()
                                     hasLogin = false
                                     isLoggingIn = true
                                 }) {
-                                    Text("Сменить аккаунт", color = PrimaryBlue, fontSize = 12.sp)
+                                    Icon(
+                                        Icons.Default.AccountCircle,
+                                        contentDescription = "Сменить аккаунт",
+                                        tint = PrimaryBlue
+                                    )
                                 }
                             },
                             colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceDark)
@@ -514,7 +529,6 @@ fun VKCallCreatorDialog(
                                                 allowFileAccess = false
                                                 allowContentAccess = false
                                                 cacheMode = WebSettings.LOAD_DEFAULT
-                                                userAgentString = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
                                             }
 
                                             webChromeClient = object : WebChromeClient() {
@@ -607,6 +621,14 @@ fun VKCallCreatorDialog(
                                                     if (request?.isForMainFrame != true) return
                                                     if (reqUrl.contains("access_token=") || isOAuthBlankPage(reqUrl)) return
 
+                                                    // Auto fallback from oauth.vk.ru to oauth.vk.com if carrier routing fails
+                                                    if (reqUrl.contains("oauth.vk.ru")) {
+                                                        val fallbackUrl = reqUrl.replace("oauth.vk.ru", "oauth.vk.com")
+                                                        Log.w(TAG, "Failed loading $reqUrl (error ${error?.errorCode}), falling back to $fallbackUrl")
+                                                        view?.loadUrl(fallbackUrl)
+                                                        return
+                                                    }
+
                                                     val desc = error?.description?.toString() ?: "Сетевая ошибка"
                                                     errorMessage = "$desc (код: ${error?.errorCode ?: -1})"
                                                 }
@@ -690,14 +712,20 @@ private fun plantCookiesAndLoad(webView: WebView, cookieManager: CookieManager, 
             cookieManager.setCookie("https://vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None")
             cookieManager.setCookie("https://vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure; SameSite=None")
             cookieManager.setCookie("https://oauth.vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None")
+            cookieManager.setCookie("https://oauth.vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure; SameSite=None")
             cookieManager.setCookie("https://id.vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None")
+            cookieManager.setCookie("https://id.vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure; SameSite=None")
         }
 
         if (!p.isNullOrBlank()) {
             cookieManager.setCookie("https://login.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure; SameSite=None")
             cookieManager.setCookie("https://login.vk.com/", "p=$p; Domain=.login.vk.com; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://oauth.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://id.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure; SameSite=None")
+            cookieManager.setCookie("https://vk.ru/", "p=$p; Domain=.vk.ru; Path=/; Secure; SameSite=None")
+            cookieManager.setCookie("https://vk.com/", "p=$p; Domain=.vk.com; Path=/; Secure; SameSite=None")
+            cookieManager.setCookie("https://oauth.vk.ru/", "p=$p; Domain=.vk.ru; Path=/; Secure; SameSite=None")
+            cookieManager.setCookie("https://oauth.vk.com/", "p=$p; Domain=.vk.com; Path=/; Secure; SameSite=None")
+            cookieManager.setCookie("https://id.vk.ru/", "p=$p; Domain=.vk.ru; Path=/; Secure; SameSite=None")
+            cookieManager.setCookie("https://id.vk.com/", "p=$p; Domain=.vk.com; Path=/; Secure; SameSite=None")
         }
 
         cookieManager.flush()
