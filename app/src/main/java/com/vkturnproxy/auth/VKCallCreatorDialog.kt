@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Build
 import android.os.Message
 import android.util.Log
 import android.view.View
@@ -23,6 +24,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountCircle
@@ -37,6 +40,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -486,13 +490,13 @@ fun VKCallCreatorDialog(
                         }
                     }
                 } else {
-                    Box(modifier = Modifier.fillMaxSize().background(BgDark)) {
+                    Box(modifier = Modifier.fillMaxSize().background(Color.White)) {
                         AndroidView(
                             modifier = Modifier.fillMaxSize(),
                             factory = { ctx ->
                                 WebView(ctx).apply {
                                     webViewInstance = this
-                                    setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                                    setLayerType(View.LAYER_TYPE_NONE, null)
                                     setBackgroundColor(android.graphics.Color.WHITE)
                                     val cm = CookieManager.getInstance()
                                     cm.setAcceptCookie(true)
@@ -513,6 +517,16 @@ fun VKCallCreatorDialog(
                                         textZoom = 100
                                         val defaultUa = userAgentString ?: ""
                                         userAgentString = defaultUa.replace("; wv", "").replace("Version/4.0 ", "")
+
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                            isAlgorithmicDarkeningAllowed = false
+                                        }
+                                        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                                            WebSettingsCompat.setForceDark(this, WebSettingsCompat.FORCE_DARK_OFF)
+                                        }
+                                        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                                            WebSettingsCompat.setAlgorithmicDarkeningAllowed(this, false)
+                                        }
                                     }
 
                                     webChromeClient = object : WebChromeClient() {
@@ -583,13 +597,35 @@ fun VKCallCreatorDialog(
                                                 return false
                                             }
 
+                                            // Try extracting fallback URL for intent:, vk:, vkconnect:
+                                            var fallbackUrl: String? = null
+                                            if (url.startsWith("intent:") || url.startsWith("android-app:")) {
+                                                try {
+                                                    val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                                                    fallbackUrl = intent.getStringExtra("browser_fallback_url")
+                                                    if (fallbackUrl.isNullOrEmpty()) {
+                                                        val data = intent.dataString
+                                                        if (!data.isNullOrEmpty() && (data.startsWith("http://") || data.startsWith("https://"))) {
+                                                            fallbackUrl = data
+                                                        }
+                                                    }
+                                                } catch (e: Exception) {
+                                                    Log.w(TAG, "Failed parsing intent URI: $url", e)
+                                                }
+                                            }
+
+                                            if (fallbackUrl.isNullOrEmpty()) {
+                                                fallbackUrl = uri.getQueryParameter("fallback_url")
+                                                    ?: uri.getQueryParameter("redirect_uri")
+                                            }
+
+                                            if (!fallbackUrl.isNullOrEmpty() && (fallbackUrl.startsWith("http://") || fallbackUrl.startsWith("https://"))) {
+                                                view?.loadUrl(fallbackUrl)
+                                                return true
+                                            }
+
                                             // Keep all VK authentication flows inside WebView — do NOT launch external VK app
                                             if (url.startsWith("vk:") || url.startsWith("vkconnect:") || url.contains("vk.com") || url.contains("vk.ru")) {
-                                                val fallbackUrl = uri.getQueryParameter("fallback_url")
-                                                    ?: uri.getQueryParameter("redirect_uri")
-                                                if (!fallbackUrl.isNullOrEmpty()) {
-                                                    view?.loadUrl(fallbackUrl)
-                                                }
                                                 return true
                                             }
 
@@ -604,11 +640,6 @@ fun VKCallCreatorDialog(
                                                 val pm = context.packageManager
                                                 if (intent.resolveActivity(pm) != null) {
                                                     context.startActivity(intent)
-                                                } else {
-                                                    val fallbackUrl = intent.getStringExtra("browser_fallback_url")
-                                                    if (!fallbackUrl.isNullOrEmpty()) {
-                                                        view?.loadUrl(fallbackUrl)
-                                                    }
                                                 }
                                             } catch (e: Exception) {
                                                 Log.w(TAG, "Failed to resolve external scheme: $url", e)
@@ -639,6 +670,29 @@ fun VKCallCreatorDialog(
                                                 isLoading = true
                                                 statusText = "Создаем звонок через VK API…"
                                             }
+
+                                            // Inject CSS & modal dismissal to guarantee clean white visibility on Realme/ColorOS
+                                            view?.evaluateJavascript("""
+                                                (function() {
+                                                    var css = 'html, body { background: #FFFFFF !important; color: #000000 !important; } .vkid__root, .VKIDPanel { visibility: visible !important; opacity: 1 !important; }';
+                                                    var head = document.head || document.getElementsByTagName('head')[0];
+                                                    if (head) {
+                                                        var style = document.createElement('style');
+                                                        style.type = 'text/css';
+                                                        style.appendChild(document.createTextNode(css));
+                                                        head.appendChild(style);
+                                                    }
+                                                    var btns = document.querySelectorAll('button, span, div, a');
+                                                    for (var i = 0; i < btns.length; i++) {
+                                                        var t = btns[i].innerText || btns[i].textContent;
+                                                        if (t && (t.indexOf('Ввести данные вручную') !== -1 || t.indexOf('вручную') !== -1)) {
+                                                            btns[i].click();
+                                                            break;
+                                                        }
+                                                    }
+                                                })();
+                                            """.trimIndent(), null)
+
                                             inspectUrl(url, view)
                                             inspectUrl(view?.url, view)
 

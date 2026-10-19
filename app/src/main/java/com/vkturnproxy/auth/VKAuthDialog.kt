@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Build
 import android.os.Message
 import android.util.Log
 import android.view.View
@@ -16,6 +17,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -214,13 +217,21 @@ fun VKAuthDialog(
                     }
                 }
             } else {
-                Box(modifier = Modifier.fillMaxSize().background(BgDark)) {
+                Box(modifier = Modifier.fillMaxSize().background(Color.White)) {
+                    fun inspectUrl(url: String?) {
+                        if (url.isNullOrBlank()) return
+                        val token = extractAccessToken(url)
+                        if (token != null) {
+                            VKCookieStore.saveToken(token)
+                        }
+                    }
+
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
                         factory = { ctx ->
                             WebView(ctx).apply {
                                 webViewInstance = this
-                                setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                                setLayerType(View.LAYER_TYPE_NONE, null)
                                 setBackgroundColor(android.graphics.Color.WHITE)
                                 val cm = CookieManager.getInstance()
                                 cm.setAcceptCookie(true)
@@ -241,6 +252,16 @@ fun VKAuthDialog(
                                     textZoom = 100
                                     val defaultUa = userAgentString ?: ""
                                     userAgentString = defaultUa.replace("; wv", "").replace("Version/4.0 ", "")
+
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        isAlgorithmicDarkeningAllowed = false
+                                    }
+                                    if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                                        WebSettingsCompat.setForceDark(this, WebSettingsCompat.FORCE_DARK_OFF)
+                                    }
+                                    if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                                        WebSettingsCompat.setAlgorithmicDarkeningAllowed(this, false)
+                                    }
                                 }
 
                                 webChromeClient = object : WebChromeClient() {
@@ -248,6 +269,7 @@ fun VKAuthDialog(
                                         super.onProgressChanged(view, newProgress)
                                         webProgress = newProgress
                                         canGoBack = view?.canGoBack() == true
+                                        inspectUrl(view?.url)
                                     }
 
                                     override fun onCreateWindow(
@@ -291,18 +313,42 @@ fun VKAuthDialog(
                                         val url = uri.toString()
                                         val scheme = uri.scheme?.lowercase() ?: return false
 
+                                        inspectUrl(url)
+
                                         // Allow standard web schemes to load inside WebView
                                         if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "javascript" || scheme == "data") {
                                             return false
                                         }
 
+                                        // Try extracting fallback URL for intent:, vk:, vkconnect:
+                                        var fallbackUrl: String? = null
+                                        if (url.startsWith("intent:") || url.startsWith("android-app:")) {
+                                            try {
+                                                val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                                                fallbackUrl = intent.getStringExtra("browser_fallback_url")
+                                                if (fallbackUrl.isNullOrEmpty()) {
+                                                    val data = intent.dataString
+                                                    if (!data.isNullOrEmpty() && (data.startsWith("http://") || data.startsWith("https://"))) {
+                                                        fallbackUrl = data
+                                                    }
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.w(TAG, "Failed parsing intent URI: $url", e)
+                                            }
+                                        }
+
+                                        if (fallbackUrl.isNullOrEmpty()) {
+                                            fallbackUrl = uri.getQueryParameter("fallback_url")
+                                                ?: uri.getQueryParameter("redirect_uri")
+                                        }
+
+                                        if (!fallbackUrl.isNullOrEmpty() && (fallbackUrl.startsWith("http://") || fallbackUrl.startsWith("https://"))) {
+                                            view?.loadUrl(fallbackUrl)
+                                            return true
+                                        }
+
                                         // Keep all VK authentication flows inside WebView — do NOT launch external VK app
                                         if (url.startsWith("vk:") || url.startsWith("vkconnect:") || url.contains("vk.com") || url.contains("vk.ru")) {
-                                            val fallbackUrl = uri.getQueryParameter("fallback_url")
-                                                ?: uri.getQueryParameter("redirect_uri")
-                                            if (!fallbackUrl.isNullOrEmpty()) {
-                                                view?.loadUrl(fallbackUrl)
-                                            }
                                             return true
                                         }
 
@@ -317,11 +363,6 @@ fun VKAuthDialog(
                                             val pm = context.packageManager
                                             if (intent.resolveActivity(pm) != null) {
                                                 context.startActivity(intent)
-                                            } else {
-                                                val fallbackUrl = intent.getStringExtra("browser_fallback_url")
-                                                if (!fallbackUrl.isNullOrEmpty()) {
-                                                    view?.loadUrl(fallbackUrl)
-                                                }
                                             }
                                         } catch (e: Exception) {
                                             Log.w(TAG, "Failed to resolve external scheme: $url", e)
@@ -332,12 +373,37 @@ fun VKAuthDialog(
                                     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                         super.onPageStarted(view, url, favicon)
                                         canGoBack = view?.canGoBack() == true
+                                        inspectUrl(url)
                                         checkCookies(cm) { header -> handleSuccess(header) }
                                     }
 
                                     override fun onPageFinished(view: WebView?, url: String?) {
                                         super.onPageFinished(view, url)
                                         canGoBack = view?.canGoBack() == true
+
+                                        // Inject CSS & modal dismissal to guarantee clean white visibility on Realme/ColorOS
+                                        view?.evaluateJavascript("""
+                                            (function() {
+                                                var css = 'html, body { background: #FFFFFF !important; color: #000000 !important; } .vkid__root, .VKIDPanel { visibility: visible !important; opacity: 1 !important; }';
+                                                var head = document.head || document.getElementsByTagName('head')[0];
+                                                if (head) {
+                                                    var style = document.createElement('style');
+                                                    style.type = 'text/css';
+                                                    style.appendChild(document.createTextNode(css));
+                                                    head.appendChild(style);
+                                                }
+                                                var btns = document.querySelectorAll('button, span, div, a');
+                                                for (var i = 0; i < btns.length; i++) {
+                                                    var t = btns[i].innerText || btns[i].textContent;
+                                                    if (t && (t.indexOf('Ввести данные вручную') !== -1 || t.indexOf('вручную') !== -1)) {
+                                                        btns[i].click();
+                                                        break;
+                                                    }
+                                                }
+                                            })();
+                                        """.trimIndent(), null)
+
+                                        inspectUrl(url)
                                         checkCookies(cm) { header -> handleSuccess(header) }
                                     }
 
@@ -383,6 +449,34 @@ fun VKAuthDialog(
             }
         }
     }
+}
+
+private fun extractAccessToken(rawUrl: String?): String? {
+    if (rawUrl.isNullOrBlank()) return null
+    val clean = rawUrl.trim('"', '\'', ' ')
+    if (!clean.contains("access_token=")) return null
+
+    try {
+        val uri = Uri.parse(clean)
+        val fragment = uri.fragment
+        if (!fragment.isNullOrBlank() && fragment.contains("access_token=")) {
+            for (param in fragment.split("&")) {
+                if (param.startsWith("access_token=")) {
+                    val token = param.removePrefix("access_token=").trim()
+                    if (token.isNotEmpty()) return token
+                }
+            }
+        }
+    } catch (_: Exception) {}
+
+    val tokenPart = clean.substringAfter("access_token=")
+    val token = tokenPart.substringBefore('&')
+        .substringBefore('#')
+        .substringBefore(';')
+        .substringBefore('"')
+        .substringBefore('\'')
+        .trim()
+    return if (token.isNotEmpty()) token else null
 }
 
 private fun checkCookies(cookieManager: CookieManager, onFound: (String) -> Unit) {

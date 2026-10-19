@@ -11,8 +11,8 @@ android {
         applicationId = "com.vkturnproxy.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "1.4.51"
+        versionCode = 17
+        versionName = "1.4.52"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -74,6 +74,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.webkit:webkit:1.12.1")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
