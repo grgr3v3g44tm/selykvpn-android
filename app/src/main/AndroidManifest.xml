@@ -43,6 +43,14 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".auth.VKAuthActivity"
+            android:exported="false"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
+            android:theme="@style/Theme.VkTurnProxy" />
+
         <service
             android:name=".service.VkTurnVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"

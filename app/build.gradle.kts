@@ -11,8 +11,8 @@ android {
         applicationId = "com.vkturnproxy.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "1.4.52"
+        versionCode = 18
+        versionName = "1.4.53"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
