@@ -59,7 +59,7 @@ fun VKCallCreatorDialog(
     var isTokenHandled by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    // 1. Fast path: check if we already have a valid stored token
+    // 1. Fast path: check if we already have a valid stored token or valid cookies
     LaunchedEffect(Unit) {
         val cachedToken = VKCookieStore.getToken()
         if (!cachedToken.isNullOrBlank()) {
@@ -69,14 +69,36 @@ fun VKCallCreatorDialog(
                 if (link != null) {
                     onCallCreated(link)
                     onDismiss()
-                } else {
-                    Log.d(TAG, "Cached token failed ($err), proceeding with web auth")
-                    VKCookieStore.clearToken()
-                    isLoading = false
-                    statusText = "Войдите или нажмите «Продолжить как…»"
+                    return@createCallWithToken
                 }
+                Log.d(TAG, "Cached token failed ($err), clearing")
+                VKCookieStore.clearToken()
             }
         }
+
+        val stored = VKCookieStore.load()
+        if (stored != null && stored.cookieHeader.contains("remixsid")) {
+            isLoading = true
+            statusText = "Авторизация по аккаунту VK…"
+            val token = VKCookieStore.fetchWebToken(stored.cookieHeader)
+            if (!token.isNullOrBlank()) {
+                statusText = "Создаем звонок через VK API…"
+                createCallWithToken(token) { link, err ->
+                    if (link != null) {
+                        onCallCreated(link)
+                        onDismiss()
+                        return@createCallWithToken
+                    }
+                    Log.d(TAG, "Direct call creation failed ($err), falling back to WebView")
+                    isLoading = false
+                    statusText = "Подтвердите доступ к звонкам…"
+                }
+                return@LaunchedEffect
+            }
+        }
+
+        isLoading = false
+        statusText = "Войдите или нажмите «Продолжить как…»"
     }
 
     DisposableEffect(Unit) {
@@ -152,13 +174,11 @@ fun VKCallCreatorDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         VkTurnTheme {
             Surface(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding(),
+                modifier = Modifier.fillMaxSize(),
                 color = BgDark
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
@@ -289,12 +309,21 @@ fun VKCallCreatorDialog(
                                         // Plant stored cookies if available
                                         val stored = VKCookieStore.load()
                                         if (stored != null) {
-                                            val domains = listOf(".vk.ru", ".vk.com", ".login.vk.ru", ".login.vk.com", ".oauth.vk.ru", ".oauth.vk.com", ".id.vk.ru", ".id.vk.com")
-                                            for (item in stored.cookieHeader.split(";")) {
-                                                val part = item.trim()
-                                                if (part.startsWith("remixsid=") || part.startsWith("p=")) {
-                                                    for (d in domains) {
-                                                        cm.setCookie(d, "$part; path=/; domain=$d; Secure")
+                                            val urls = listOf(
+                                                "https://vk.ru/",
+                                                "https://vk.com/",
+                                                "https://login.vk.ru/",
+                                                "https://login.vk.com/",
+                                                "https://oauth.vk.ru/",
+                                                "https://oauth.vk.com/",
+                                                "https://id.vk.ru/",
+                                                "https://id.vk.com/"
+                                            )
+                                            for (cookieUrl in urls) {
+                                                for (item in stored.cookieHeader.split(";")) {
+                                                    val part = item.trim()
+                                                    if (part.startsWith("remixsid=") || part.startsWith("p=")) {
+                                                        cm.setCookie(cookieUrl, "$part; path=/; Secure; SameSite=None")
                                                     }
                                                 }
                                             }
@@ -334,8 +363,12 @@ fun VKCallCreatorDialog(
                                                 inspectUrl(url, view)
                                                 inspectUrl(view?.url, view)
 
-                                                if (url.contains("access_token=") || isOAuthBlankPage(url)) {
-                                                    return true
+                                                if (isOAuthBlankPage(url) || url.contains("access_token=")) {
+                                                    isLoading = true
+                                                    statusText = "Авторизация подтверждена, создание звонка…"
+                                                    // CRITICAL: DO NOT return true! Returning true cancels navigation in Android WebView.
+                                                    // We return false so Chromium navigates and populates DOM / window.location.hash!
+                                                    return false
                                                 }
 
                                                 // Allow standard web schemes inside WebView
@@ -352,6 +385,10 @@ fun VKCallCreatorDialog(
                                             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                                 super.onPageStarted(view, url, favicon)
                                                 canGoBack = view?.canGoBack() == true
+                                                if (isOAuthBlankPage(url) || url?.contains("access_token=") == true) {
+                                                    isLoading = true
+                                                    statusText = "Создаем звонок через VK API…"
+                                                }
                                                 inspectUrl(url, view)
                                                 inspectUrl(view?.url, view)
                                                 harvestCookies(cm)
@@ -360,6 +397,10 @@ fun VKCallCreatorDialog(
                                             override fun onPageFinished(view: WebView?, url: String?) {
                                                 super.onPageFinished(view, url)
                                                 canGoBack = view?.canGoBack() == true
+                                                if (isOAuthBlankPage(url) || url?.contains("access_token=") == true) {
+                                                    isLoading = true
+                                                    statusText = "Создаем звонок через VK API…"
+                                                }
                                                 inspectUrl(url, view)
                                                 inspectUrl(view?.url, view)
                                                 harvestCookies(cm)

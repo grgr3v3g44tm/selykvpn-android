@@ -33,6 +33,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.vkturnproxy.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 private const val TAG = "VKAuthDialog"
 
@@ -49,6 +50,23 @@ fun VKAuthDialog(
     var webProgress by remember { mutableIntStateOf(0) }
     var canGoBack by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun handleSuccess(header: String) {
+        if (!isDone) {
+            isDone = true
+            val expiry = System.currentTimeMillis() + 365L * 24 * 3600 * 1000
+            VKCookieStore.save(header, expiry)
+            VKCookieStore.isEnabled = true
+            scope.launch {
+                try {
+                    VKCookieStore.fetchWebToken(header)
+                } catch (_: Exception) {}
+            }
+            onSuccess(header)
+            onDismiss()
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -254,31 +272,13 @@ fun VKAuthDialog(
                                             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                                 super.onPageStarted(view, url, favicon)
                                                 canGoBack = view?.canGoBack() == true
-                                                checkCookies(cm) { header ->
-                                                    if (!isDone) {
-                                                        isDone = true
-                                                        val expiry = System.currentTimeMillis() + 365L * 24 * 3600 * 1000
-                                                        VKCookieStore.save(header, expiry)
-                                                        VKCookieStore.isEnabled = true
-                                                        onSuccess(header)
-                                                        onDismiss()
-                                                    }
-                                                }
+                                                checkCookies(cm) { header -> handleSuccess(header) }
                                             }
 
                                             override fun onPageFinished(view: WebView?, url: String?) {
                                                 super.onPageFinished(view, url)
                                                 canGoBack = view?.canGoBack() == true
-                                                checkCookies(cm) { header ->
-                                                    if (!isDone) {
-                                                        isDone = true
-                                                        val expiry = System.currentTimeMillis() + 365L * 24 * 3600 * 1000
-                                                        VKCookieStore.save(header, expiry)
-                                                        VKCookieStore.isEnabled = true
-                                                        onSuccess(header)
-                                                        onDismiss()
-                                                    }
-                                                }
+                                                checkCookies(cm) { header -> handleSuccess(header) }
                                             }
 
                                             override fun onReceivedError(
@@ -307,16 +307,7 @@ fun VKAuthDialog(
                             LaunchedEffect(Unit) {
                                 val cm = CookieManager.getInstance()
                                 while (isActive && !isDone) {
-                                    checkCookies(cm) { header ->
-                                        if (!isDone) {
-                                            isDone = true
-                                            val expiry = System.currentTimeMillis() + 365L * 24 * 3600 * 1000
-                                            VKCookieStore.save(header, expiry)
-                                            VKCookieStore.isEnabled = true
-                                            onSuccess(header)
-                                            onDismiss()
-                                        }
-                                    }
+                                    checkCookies(cm) { header -> handleSuccess(header) }
                                     delay(1000)
                                 }
                             }
