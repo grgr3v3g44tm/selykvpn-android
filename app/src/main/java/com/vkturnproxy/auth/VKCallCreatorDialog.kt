@@ -4,8 +4,12 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.net.http.SslError
+import android.os.Message
 import android.util.Log
+import android.view.View
 import android.webkit.CookieManager
+import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -69,7 +73,7 @@ fun VKCallCreatorDialog(
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     var hasLogin by remember { mutableStateOf(VKCookieStore.hasValidLogin()) }
-    var isLoggingIn by remember { mutableStateOf(false) }
+    var showAuthWebView by remember { mutableStateOf(hasLogin) }
 
     var statusText by remember { mutableStateOf("Подтвердите аккаунт для создания звонка…") }
     var isLoading by remember { mutableStateOf(false) }
@@ -81,12 +85,12 @@ fun VKCallCreatorDialog(
     var manualLinkInput by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
-    // Handle physical back button: navigate webview history, or cancel login, or dismiss
+    // Handle physical back button: navigate webview history, or return to options card, or dismiss
     BackHandler {
         if (canGoBack && webViewInstance?.canGoBack() == true) {
             webViewInstance?.goBack()
-        } else if (isLoggingIn) {
-            isLoggingIn = false
+        } else if (showAuthWebView && !VKCookieStore.hasValidLogin()) {
+            showAuthWebView = false
         } else {
             onDismiss()
         }
@@ -193,8 +197,8 @@ fun VKCallCreatorDialog(
         modifier = Modifier.fillMaxSize(),
         color = BgDark
     ) {
-        // 1. GATE STATE: User is not logged into VK yet
-        if (!hasLogin && !isLoggingIn) {
+        // 1. GATE STATE: User has not opened the OAuth WebView yet (or prefers fast options)
+        if (!showAuthWebView) {
             val scrollState = rememberScrollState()
             Column(
                 modifier = Modifier
@@ -277,7 +281,7 @@ fun VKCallCreatorDialog(
 
                         // Fast Option 2: Automatic OAuth API flow
                         OutlinedButton(
-                            onClick = { isLoggingIn = true },
+                            onClick = { showAuthWebView = true },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(46.dp),
@@ -359,160 +363,8 @@ fun VKCallCreatorDialog(
                     }
                 }
             }
-        } else if (isLoggingIn) {
-            // 2. LOGIN WEBVIEW: User performs regular VK login
-            Column(modifier = Modifier.fillMaxSize()) {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(
-                                "Вход в аккаунт VK",
-                                color = TextPrimary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 17.sp
-                            )
-                            Text(
-                                "Войдите в аккаунт (поддерживается 2FA)",
-                                color = TextSecondary,
-                                fontSize = 12.sp,
-                                maxLines = 1
-                            )
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = { isLoggingIn = false }) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Назад",
-                                tint = TextPrimary
-                            )
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = onDismiss) {
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = "Закрыть",
-                                tint = TextPrimary
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceDark)
-                )
-
-                if (webProgress in 1..99) {
-                    LinearProgressIndicator(
-                        progress = { webProgress / 100f },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(3.dp),
-                        color = PrimaryBlue,
-                        trackColor = SurfaceVariantDark
-                    )
-                }
-
-                Box(modifier = Modifier.fillMaxSize().background(BgDark)) {
-                    AndroidView(
-                        modifier = Modifier.fillMaxSize(),
-                        factory = { ctx ->
-                            WebView(ctx).apply {
-                                setBackgroundColor(android.graphics.Color.WHITE)
-                                val cm = CookieManager.getInstance()
-                                cm.setAcceptCookie(true)
-                                cm.setAcceptThirdPartyCookies(this, true)
-
-                                settings.apply {
-                                    javaScriptEnabled = true
-                                    domStorageEnabled = true
-                                    databaseEnabled = true
-                                    setSupportMultipleWindows(false)
-                                    javaScriptCanOpenWindowsAutomatically = true
-                                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                                    allowFileAccess = false
-                                    allowContentAccess = false
-                                    cacheMode = WebSettings.LOAD_DEFAULT
-                                }
-
-                                webChromeClient = object : WebChromeClient() {
-                                    override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                        super.onProgressChanged(view, newProgress)
-                                        webProgress = newProgress
-                                    }
-                                }
-
-                                webViewClient = object : WebViewClient() {
-                                    override fun shouldOverrideUrlLoading(
-                                        view: WebView?,
-                                        request: WebResourceRequest?
-                                    ): Boolean {
-                                        val uri = request?.url ?: return false
-                                        val url = uri.toString()
-                                        val scheme = uri.scheme?.lowercase() ?: return false
-
-                                        if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "javascript" || scheme == "data") {
-                                            return false
-                                        }
-
-                                        try {
-                                            val intent = when {
-                                                url.startsWith("intent:") -> Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-                                                url.startsWith("android-app:") -> Intent.parseUri(url, Intent.URI_ANDROID_APP_SCHEME)
-                                                else -> Intent(Intent.ACTION_VIEW, uri)
-                                            }
-                                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            val pm = context.packageManager
-                                            if (intent.resolveActivity(pm) != null) {
-                                                context.startActivity(intent)
-                                            }
-                                        } catch (_: Exception) {}
-                                        return true
-                                    }
-
-                                    override fun onPageFinished(view: WebView?, url: String?) {
-                                        super.onPageFinished(view, url)
-                                        checkLoginCookies(cm) { header ->
-                                            VKCookieStore.save(header, System.currentTimeMillis() + 365L * 86400 * 1000)
-                                            VKCookieStore.isEnabled = true
-                                            hasLogin = true
-                                            isLoggingIn = false
-                                        }
-                                    }
-
-                                    override fun onReceivedError(
-                                        view: WebView?,
-                                        request: WebResourceRequest?,
-                                        error: WebResourceError?
-                                    ) {
-                                        val reqUrl = request?.url?.toString() ?: ""
-                                        if (request?.isForMainFrame == true && reqUrl.contains("vk.com")) {
-                                            val fallbackUrl = reqUrl.replace("vk.com", "vk.ru")
-                                            view?.loadUrl(fallbackUrl)
-                                        }
-                                    }
-                                }
-
-                                loadUrl("https://vk.com/login")
-                            }
-                        }
-                    )
-
-                    // Polling watcher for login cookies
-                    LaunchedEffect(Unit) {
-                        val cm = CookieManager.getInstance()
-                        while (isActive && !hasLogin) {
-                            checkLoginCookies(cm) { header ->
-                                VKCookieStore.save(header, System.currentTimeMillis() + 365L * 86400 * 1000)
-                                VKCookieStore.isEnabled = true
-                                hasLogin = true
-                                isLoggingIn = false
-                            }
-                            delay(1000)
-                        }
-                    }
-                }
-            }
         } else {
-            // 3. OAUTH CALL CREATOR WEBVIEW: Plants cookies and loads oauth.vk.ru/authorize
+            // 2. OAUTH CALL CREATOR WEBVIEW: Plants cookies and loads oauth.vk.ru/authorize
             Column(modifier = Modifier.fillMaxSize()) {
                 TopAppBar(
                     title = {
@@ -535,6 +387,8 @@ fun VKCallCreatorDialog(
                         IconButton(onClick = {
                             if (canGoBack && webViewInstance?.canGoBack() == true) {
                                 webViewInstance?.goBack()
+                            } else if (!VKCookieStore.hasValidLogin()) {
+                                showAuthWebView = false
                             } else {
                                 onDismiss()
                             }
@@ -561,8 +415,11 @@ fun VKCallCreatorDialog(
                         }
                         IconButton(onClick = {
                             VKCookieStore.clearCookies()
+                            VKCookieStore.clearToken()
+                            CookieManager.getInstance().removeAllCookies(null)
+                            CookieManager.getInstance().flush()
                             hasLogin = false
-                            isLoggingIn = true
+                            webViewInstance?.loadUrl(VK_OAUTH_AUTHORIZE_URL)
                         }) {
                             Icon(
                                 Icons.Default.AccountCircle,
@@ -635,6 +492,7 @@ fun VKCallCreatorDialog(
                             factory = { ctx ->
                                 WebView(ctx).apply {
                                     webViewInstance = this
+                                    setLayerType(View.LAYER_TYPE_HARDWARE, null)
                                     setBackgroundColor(android.graphics.Color.WHITE)
                                     val cm = CookieManager.getInstance()
                                     cm.setAcceptCookie(true)
@@ -644,12 +502,17 @@ fun VKCallCreatorDialog(
                                         javaScriptEnabled = true
                                         domStorageEnabled = true
                                         databaseEnabled = true
-                                        setSupportMultipleWindows(false)
+                                        setSupportMultipleWindows(true)
                                         javaScriptCanOpenWindowsAutomatically = true
                                         mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                                         allowFileAccess = false
                                         allowContentAccess = false
                                         cacheMode = WebSettings.LOAD_DEFAULT
+                                        useWideViewPort = false
+                                        loadWithOverviewMode = false
+                                        textZoom = 100
+                                        val defaultUa = userAgentString ?: ""
+                                        userAgentString = defaultUa.replace("; wv", "").replace("Version/4.0 ", "")
                                     }
 
                                     webChromeClient = object : WebChromeClient() {
@@ -659,9 +522,40 @@ fun VKCallCreatorDialog(
                                             canGoBack = view?.canGoBack() == true
                                             inspectUrl(view?.url, view)
                                         }
+
+                                        override fun onCreateWindow(
+                                            view: WebView?,
+                                            isDialog: Boolean,
+                                            isUserGesture: Boolean,
+                                            resultMsg: Message?
+                                        ): Boolean {
+                                            if (resultMsg == null) return false
+                                            val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                                            transport.webView = view
+                                            resultMsg.sendToTarget()
+                                            return true
+                                        }
                                     }
 
                                     webViewClient = object : WebViewClient() {
+                                        override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+                                            val failingUrl = error?.url?.lowercase() ?: ""
+                                            val isVkDomain = failingUrl.contains("vk.ru") ||
+                                                    failingUrl.contains("vk.com") ||
+                                                    failingUrl.contains("mail.ru") ||
+                                                    failingUrl.contains("ok.ru") ||
+                                                    failingUrl.contains("okcdn.ru") ||
+                                                    failingUrl.contains("vk-portal.net") ||
+                                                    failingUrl.contains("userapi.com") ||
+                                                    failingUrl.contains("vkuserphoto.ru")
+                                            if (isVkDomain) {
+                                                Log.i(TAG, "Proceeding Russian CA SSL certificate for VK domain: $failingUrl")
+                                                handler?.proceed()
+                                            } else {
+                                                super.onReceivedSslError(view, handler, error)
+                                            }
+                                        }
+
                                         override fun shouldOverrideUrlLoading(
                                             view: WebView?,
                                             request: WebResourceRequest?
@@ -684,10 +578,41 @@ fun VKCallCreatorDialog(
                                                 return false
                                             }
 
+                                            // Keep web traffic inside WebView
                                             if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "javascript" || scheme == "data") {
                                                 return false
                                             }
 
+                                            // Keep all VK authentication flows inside WebView — do NOT launch external VK app
+                                            if (url.startsWith("vk:") || url.startsWith("vkconnect:") || url.contains("vk.com") || url.contains("vk.ru")) {
+                                                val fallbackUrl = uri.getQueryParameter("fallback_url")
+                                                    ?: uri.getQueryParameter("redirect_uri")
+                                                if (!fallbackUrl.isNullOrEmpty()) {
+                                                    view?.loadUrl(fallbackUrl)
+                                                }
+                                                return true
+                                            }
+
+                                            // External non-VK schemes
+                                            try {
+                                                val intent = when {
+                                                    url.startsWith("intent:") -> Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                                                    url.startsWith("android-app:") -> Intent.parseUri(url, Intent.URI_ANDROID_APP_SCHEME)
+                                                    else -> Intent(Intent.ACTION_VIEW, uri)
+                                                }
+                                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                val pm = context.packageManager
+                                                if (intent.resolveActivity(pm) != null) {
+                                                    context.startActivity(intent)
+                                                } else {
+                                                    val fallbackUrl = intent.getStringExtra("browser_fallback_url")
+                                                    if (!fallbackUrl.isNullOrEmpty()) {
+                                                        view?.loadUrl(fallbackUrl)
+                                                    }
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.w(TAG, "Failed to resolve external scheme: $url", e)
+                                            }
                                             return true
                                         }
 
@@ -700,6 +625,11 @@ fun VKCallCreatorDialog(
                                             }
                                             inspectUrl(url, view)
                                             inspectUrl(view?.url, view)
+                                            checkLoginCookies(cm) { header ->
+                                                VKCookieStore.save(header, System.currentTimeMillis() + 365L * 86400 * 1000)
+                                                VKCookieStore.isEnabled = true
+                                                hasLogin = true
+                                            }
                                         }
 
                                         override fun onPageFinished(view: WebView?, url: String?) {
@@ -716,8 +646,14 @@ fun VKCallCreatorDialog(
                                                 inspectUrl(jsUrl, view)
                                             }
 
+                                            checkLoginCookies(cm) { header ->
+                                                VKCookieStore.save(header, System.currentTimeMillis() + 365L * 86400 * 1000)
+                                                VKCookieStore.isEnabled = true
+                                                hasLogin = true
+                                            }
+
                                             if (url?.contains("id.vk.ru") == true || url?.contains("id.vk.com") == true) {
-                                                statusText = "Нажмите «Продолжить как…» для создания звонка"
+                                                statusText = "Войдите в аккаунт или нажмите «Продолжить»"
                                             } else if (url?.contains("oauth.vk.ru") == true || url?.contains("oauth.vk.com") == true) {
                                                 statusText = "Подтвердите доступ к звонкам"
                                             }
@@ -776,6 +712,19 @@ fun VKCallCreatorDialog(
                                     }
                                 }
                                 delay(200)
+                            }
+                        }
+
+                        // Background watcher for login cookies
+                        LaunchedEffect(Unit) {
+                            val cm = CookieManager.getInstance()
+                            while (isActive) {
+                                checkLoginCookies(cm) { header ->
+                                    VKCookieStore.save(header, System.currentTimeMillis() + 365L * 86400 * 1000)
+                                    VKCookieStore.isEnabled = true
+                                    hasLogin = true
+                                }
+                                delay(1000)
                             }
                         }
 
@@ -875,8 +824,8 @@ private fun checkLoginCookies(cookieManager: CookieManager, onFound: (String) ->
         }
     }
 
-    if (!remixsid.isNullOrBlank() && !p.isNullOrBlank()) {
-        val header = "remixsid=$remixsid; p=$p"
+    if (!remixsid.isNullOrBlank()) {
+        val header = if (!p.isNullOrBlank()) "remixsid=$remixsid; p=$p" else "remixsid=$remixsid"
         onFound(header)
     }
 }

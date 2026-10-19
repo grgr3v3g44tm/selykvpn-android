@@ -4,8 +4,12 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.net.http.SslError
+import android.os.Message
 import android.util.Log
+import android.view.View
 import android.webkit.CookieManager
+import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -216,6 +220,7 @@ fun VKAuthDialog(
                         factory = { ctx ->
                             WebView(ctx).apply {
                                 webViewInstance = this
+                                setLayerType(View.LAYER_TYPE_HARDWARE, null)
                                 setBackgroundColor(android.graphics.Color.WHITE)
                                 val cm = CookieManager.getInstance()
                                 cm.setAcceptCookie(true)
@@ -225,14 +230,17 @@ fun VKAuthDialog(
                                     javaScriptEnabled = true
                                     domStorageEnabled = true
                                     databaseEnabled = true
-                                    setSupportMultipleWindows(false)
+                                    setSupportMultipleWindows(true)
                                     javaScriptCanOpenWindowsAutomatically = true
                                     mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                                     allowFileAccess = false
                                     allowContentAccess = false
                                     cacheMode = WebSettings.LOAD_DEFAULT
-                                    useWideViewPort = true
-                                    loadWithOverviewMode = true
+                                    useWideViewPort = false
+                                    loadWithOverviewMode = false
+                                    textZoom = 100
+                                    val defaultUa = userAgentString ?: ""
+                                    userAgentString = defaultUa.replace("; wv", "").replace("Version/4.0 ", "")
                                 }
 
                                 webChromeClient = object : WebChromeClient() {
@@ -241,9 +249,40 @@ fun VKAuthDialog(
                                         webProgress = newProgress
                                         canGoBack = view?.canGoBack() == true
                                     }
+
+                                    override fun onCreateWindow(
+                                        view: WebView?,
+                                        isDialog: Boolean,
+                                        isUserGesture: Boolean,
+                                        resultMsg: Message?
+                                    ): Boolean {
+                                        if (resultMsg == null) return false
+                                        val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                                        transport.webView = view
+                                        resultMsg.sendToTarget()
+                                        return true
+                                    }
                                 }
 
                                 webViewClient = object : WebViewClient() {
+                                    override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+                                        val failingUrl = error?.url?.lowercase() ?: ""
+                                        val isVkDomain = failingUrl.contains("vk.ru") ||
+                                                failingUrl.contains("vk.com") ||
+                                                failingUrl.contains("mail.ru") ||
+                                                failingUrl.contains("ok.ru") ||
+                                                failingUrl.contains("okcdn.ru") ||
+                                                failingUrl.contains("vk-portal.net") ||
+                                                failingUrl.contains("userapi.com") ||
+                                                failingUrl.contains("vkuserphoto.ru")
+                                        if (isVkDomain) {
+                                            Log.i(TAG, "Proceeding Russian CA SSL certificate for VK domain: $failingUrl")
+                                            handler?.proceed()
+                                        } else {
+                                            super.onReceivedSslError(view, handler, error)
+                                        }
+                                    }
+
                                     override fun shouldOverrideUrlLoading(
                                         view: WebView?,
                                         request: WebResourceRequest?
@@ -257,7 +296,17 @@ fun VKAuthDialog(
                                             return false
                                         }
 
-                                        // Intercept ALL non-web schemes (intent:, android-app:, vk:, etc.)
+                                        // Keep all VK authentication flows inside WebView — do NOT launch external VK app
+                                        if (url.startsWith("vk:") || url.startsWith("vkconnect:") || url.contains("vk.com") || url.contains("vk.ru")) {
+                                            val fallbackUrl = uri.getQueryParameter("fallback_url")
+                                                ?: uri.getQueryParameter("redirect_uri")
+                                            if (!fallbackUrl.isNullOrEmpty()) {
+                                                view?.loadUrl(fallbackUrl)
+                                            }
+                                            return true
+                                        }
+
+                                        // Intercept other non-web schemes
                                         try {
                                             val intent = when {
                                                 url.startsWith("intent:") -> Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
@@ -304,9 +353,9 @@ fun VKAuthDialog(
                                             if (error?.errorCode == WebViewClient.ERROR_UNSUPPORTED_SCHEME) return
 
                                             val reqUrl = request.url?.toString() ?: ""
-                                            if (reqUrl.contains("vk.com")) {
-                                                val fallbackUrl = reqUrl.replace("vk.com", "vk.ru")
-                                                Log.w(TAG, "Failed loading $reqUrl (error ${error?.errorCode}), falling back to $fallbackUrl")
+                                            if (reqUrl.contains("oauth.vk.ru")) {
+                                                val fallbackUrl = reqUrl.replace("oauth.vk.ru", "oauth.vk.com")
+                                                Log.w(TAG, "Failed loading $reqUrl, falling back to $fallbackUrl")
                                                 view?.loadUrl(fallbackUrl)
                                                 return
                                             }
@@ -317,7 +366,7 @@ fun VKAuthDialog(
                                     }
                                 }
 
-                                loadUrl("https://vk.com/login")
+                                loadUrl("https://oauth.vk.ru/authorize?client_id=6287487&scope=calls&response_type=token")
                             }
                         }
                     )
@@ -369,8 +418,8 @@ private fun checkCookies(cookieManager: CookieManager, onFound: (String) -> Unit
         }
     }
 
-    if (!remixsid.isNullOrBlank() && !p.isNullOrBlank()) {
-        val header = "remixsid=$remixsid; p=$p"
+    if (!remixsid.isNullOrBlank()) {
+        val header = if (!p.isNullOrBlank()) "remixsid=$remixsid; p=$p" else "remixsid=$remixsid"
         onFound(header)
     }
 }
