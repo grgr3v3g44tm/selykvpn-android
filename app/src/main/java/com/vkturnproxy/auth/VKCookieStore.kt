@@ -15,6 +15,8 @@ object VKCookieStore {
     private const val KEY_EXPIRY = "cookie_expiry"
     private const val KEY_SAVED_AT = "cookie_saved_at"
     private const val KEY_ENABLED = "vkauth_enabled"
+    private const val KEY_ACCESS_TOKEN = "vk_access_token"
+    private const val KEY_ACCESS_TOKEN_EXPIRY = "vk_access_token_expiry"
 
     private lateinit var prefs: SharedPreferences
 
@@ -36,6 +38,33 @@ object VKCookieStore {
             .putString(KEY_COOKIE_HEADER, cookieHeader)
             .putLong(KEY_EXPIRY, expiryTimestamp)
             .putLong(KEY_SAVED_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun saveToken(token: String, expiryTimestamp: Long = System.currentTimeMillis() + 86400L * 1000) {
+        if (!::prefs.isInitialized) return
+        prefs.edit()
+            .putString(KEY_ACCESS_TOKEN, token)
+            .putLong(KEY_ACCESS_TOKEN_EXPIRY, expiryTimestamp)
+            .apply()
+    }
+
+    fun getToken(): String? {
+        if (!::prefs.isInitialized) return null
+        val token = prefs.getString(KEY_ACCESS_TOKEN, null) ?: return null
+        val expiry = prefs.getLong(KEY_ACCESS_TOKEN_EXPIRY, 0L)
+        if (expiry in 1..System.currentTimeMillis()) {
+            clearToken()
+            return null
+        }
+        return token
+    }
+
+    fun clearToken() {
+        if (!::prefs.isInitialized) return
+        prefs.edit()
+            .remove(KEY_ACCESS_TOKEN)
+            .remove(KEY_ACCESS_TOKEN_EXPIRY)
             .apply()
     }
 
@@ -80,6 +109,7 @@ object VKCookieStore {
 
     fun clearCookies() {
         delete()
+        clearToken()
         isEnabled = false
         try {
             android.webkit.CookieManager.getInstance().removeAllCookies(null)

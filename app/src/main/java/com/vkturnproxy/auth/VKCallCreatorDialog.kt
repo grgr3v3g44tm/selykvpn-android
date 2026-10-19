@@ -14,9 +14,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
@@ -32,6 +31,8 @@ import androidx.compose.ui.window.DialogProperties
 import com.google.gson.Gson
 import com.vkturnproxy.ui.theme.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
@@ -55,7 +56,28 @@ fun VKCallCreatorDialog(
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
     var webProgress by remember { mutableIntStateOf(0) }
     var canGoBack by remember { mutableStateOf(false) }
+    var isTokenHandled by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    // 1. Fast path: check if we already have a valid stored token
+    LaunchedEffect(Unit) {
+        val cachedToken = VKCookieStore.getToken()
+        if (!cachedToken.isNullOrBlank()) {
+            isLoading = true
+            statusText = "Создаем звонок через VK API…"
+            createCallWithToken(cachedToken) { link, err ->
+                if (link != null) {
+                    onCallCreated(link)
+                    onDismiss()
+                } else {
+                    Log.d(TAG, "Cached token failed ($err), proceeding with web auth")
+                    VKCookieStore.clearToken()
+                    isLoading = false
+                    statusText = "Войдите или нажмите «Продолжить как…»"
+                }
+            }
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -72,13 +94,71 @@ fun VKCallCreatorDialog(
         }
     }
 
+    fun handleTokenFound(token: String, webView: WebView?) {
+        if (isTokenHandled) return
+        isTokenHandled = true
+        isLoading = true
+        statusText = "Токен получен, вызываем calls.start…"
+
+        try {
+            webView?.stopLoading()
+        } catch (_: Exception) {}
+
+        VKCookieStore.saveToken(token)
+        harvestCookies(CookieManager.getInstance())
+
+        scope.launch {
+            createCallWithToken(token) { link, err ->
+                if (link != null) {
+                    onCallCreated(link)
+                    onDismiss()
+                } else {
+                    isLoading = false
+                    isTokenHandled = false
+                    errorMessage = err ?: "Ошибка создания звонка"
+                }
+            }
+        }
+    }
+
+    fun inspectUrl(url: String?, webView: WebView?) {
+        if (isTokenHandled || url.isNullOrBlank()) return
+
+        val token = extractAccessToken(url)
+        if (token != null) {
+            handleTokenFound(token, webView)
+            return
+        }
+
+        // Only intercept if this is truly the final OAuth redirect page (/blank.html)
+        if (isOAuthBlankPage(url)) {
+            isLoading = true
+            statusText = "Авторизация подтверждена, создание звонка…"
+            webView?.evaluateJavascript("window.location.href") { jsUrl ->
+                val jsToken = extractAccessToken(jsUrl)
+                if (jsToken != null) {
+                    handleTokenFound(jsToken, webView)
+                } else {
+                    webView.evaluateJavascript("window.location.hash") { jsHash ->
+                        val hashToken = extractAccessToken(jsHash)
+                        if (hashToken != null) {
+                            handleTokenFound(hashToken, webView)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
         VkTurnTheme {
             Surface(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding(),
                 color = BgDark
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
@@ -108,7 +188,7 @@ fun VKCallCreatorDialog(
                                 }
                             }) {
                                 Icon(
-                                    imageVector = if (canGoBack) Icons.Default.ArrowBack else Icons.Default.Close,
+                                    imageVector = if (canGoBack) Icons.AutoMirrored.Filled.ArrowBack else Icons.Default.Close,
                                     contentDescription = if (canGoBack) "Назад" else "Закрыть",
                                     tint = TextPrimary
                                 )
@@ -117,6 +197,8 @@ fun VKCallCreatorDialog(
                         actions = {
                             IconButton(onClick = {
                                 errorMessage = null
+                                isTokenHandled = false
+                                isLoading = false
                                 webViewInstance?.reload()
                             }) {
                                 Icon(
@@ -162,7 +244,7 @@ fun VKCallCreatorDialog(
                                 modifier = Modifier.padding(24.dp)
                             ) {
                                 Text(
-                                    "Не удалось загрузить страницу",
+                                    "Не удалось создать звонок",
                                     color = TextPrimary,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 16.sp
@@ -181,6 +263,8 @@ fun VKCallCreatorDialog(
                                     Button(
                                         onClick = {
                                             errorMessage = null
+                                            isTokenHandled = false
+                                            isLoading = false
                                             webViewInstance?.reload()
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
@@ -205,14 +289,13 @@ fun VKCallCreatorDialog(
                                         // Plant stored cookies if available
                                         val stored = VKCookieStore.load()
                                         if (stored != null) {
+                                            val domains = listOf(".vk.ru", ".vk.com", ".login.vk.ru", ".login.vk.com", ".oauth.vk.ru", ".oauth.vk.com", ".id.vk.ru", ".id.vk.com")
                                             for (item in stored.cookieHeader.split(";")) {
                                                 val part = item.trim()
-                                                if (part.startsWith("remixsid=")) {
-                                                    cm.setCookie(".vk.ru", "$part; path=/; domain=.vk.ru; Secure")
-                                                    cm.setCookie(".vk.com", "$part; path=/; domain=.vk.com; Secure")
-                                                } else if (part.startsWith("p=")) {
-                                                    cm.setCookie(".login.vk.ru", "$part; path=/; domain=.login.vk.ru; Secure")
-                                                    cm.setCookie(".login.vk.com", "$part; path=/; domain=.login.vk.com; Secure")
+                                                if (part.startsWith("remixsid=") || part.startsWith("p=")) {
+                                                    for (d in domains) {
+                                                        cm.setCookie(d, "$part; path=/; domain=$d; Secure")
+                                                    }
                                                 }
                                             }
                                             cm.flush()
@@ -221,7 +304,6 @@ fun VKCallCreatorDialog(
                                         settings.apply {
                                             javaScriptEnabled = true
                                             domStorageEnabled = true
-                                            databaseEnabled = true
                                             setSupportMultipleWindows(false)
                                             javaScriptCanOpenWindowsAutomatically = true
                                             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -236,6 +318,7 @@ fun VKCallCreatorDialog(
                                                 super.onProgressChanged(view, newProgress)
                                                 webProgress = newProgress
                                                 canGoBack = view?.canGoBack() == true
+                                                inspectUrl(view?.url, view)
                                             }
                                         }
 
@@ -248,78 +331,68 @@ fun VKCallCreatorDialog(
                                                 val url = uri.toString()
                                                 val scheme = uri.scheme?.lowercase() ?: return false
 
-                                                // Intercept OAuth completion
-                                                if (url.contains("oauth.vk.ru/blank.html") || url.contains("oauth.vk.com/blank.html")) {
-                                                    val fragment = Uri.parse(url).fragment
-                                                    if (fragment != null && fragment.contains("access_token=")) {
-                                                        val token = fragment.split("&")
-                                                            .firstOrNull { it.startsWith("access_token=") }
-                                                            ?.removePrefix("access_token=")
-                                                        if (!token.isNullOrBlank()) {
-                                                            isLoading = true
-                                                            statusText = "Токен получен, вызываем calls.start…"
+                                                inspectUrl(url, view)
+                                                inspectUrl(view?.url, view)
 
-                                                            // Harvest cookie in background
-                                                            harvestCookies(cm)
-
-                                                            scope.launch {
-                                                                createCallWithToken(token) { link, err ->
-                                                                    if (link != null) {
-                                                                        onCallCreated(link)
-                                                                        onDismiss()
-                                                                    } else {
-                                                                        isLoading = false
-                                                                        errorMessage = err ?: "Ошибка создания звонка"
-                                                                    }
-                                                                }
-                                                            }
-                                                            return true
-                                                        }
-                                                    }
+                                                if (url.contains("access_token=") || isOAuthBlankPage(url)) {
+                                                    return true
                                                 }
 
-                                                // Allow standard web schemes to load inside WebView
+                                                // Allow standard web schemes inside WebView
                                                 if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "javascript" || scheme == "data") {
                                                     return false
                                                 }
 
-                                                // Intercept ALL non-web schemes (intent:, android-app:, vk:, vkpay:, tel:, mailto:, etc.)
-                                                try {
-                                                    val intent = when {
-                                                        url.startsWith("intent:") -> Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-                                                        url.startsWith("android-app:") -> Intent.parseUri(url, Intent.URI_ANDROID_APP_SCHEME)
-                                                        else -> Intent(Intent.ACTION_VIEW, uri)
-                                                    }
-                                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                    val pm = context.packageManager
-                                                    if (intent.resolveActivity(pm) != null) {
-                                                        context.startActivity(intent)
-                                                    } else {
-                                                        val fallbackUrl = intent.getStringExtra("browser_fallback_url")
-                                                        if (!fallbackUrl.isNullOrEmpty()) {
-                                                            view?.loadUrl(fallbackUrl)
-                                                        }
-                                                    }
-                                                } catch (e: Exception) {
-                                                    Log.w(TAG, "Intent scheme handling failed for: $url", e)
-                                                }
-                                                // Always return true so WebView never attempts to load non-http(s) schemes and never errors
+                                                // For market://, android-app://, vk:, vkid:, etc.:
+                                                // Never let Chromium attempt to navigate to unknown schemes or redirect out to Play Store.
+                                                // Silently return true so web scripts continue in-page and show standard input fields.
                                                 return true
                                             }
 
                                             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                                 super.onPageStarted(view, url, favicon)
                                                 canGoBack = view?.canGoBack() == true
+                                                inspectUrl(url, view)
+                                                inspectUrl(view?.url, view)
                                                 harvestCookies(cm)
                                             }
 
                                             override fun onPageFinished(view: WebView?, url: String?) {
                                                 super.onPageFinished(view, url)
                                                 canGoBack = view?.canGoBack() == true
+                                                inspectUrl(url, view)
+                                                inspectUrl(view?.url, view)
                                                 harvestCookies(cm)
+
+                                                view?.evaluateJavascript("window.location.href") { jsUrl ->
+                                                    inspectUrl(jsUrl, view)
+                                                }
+
+                                                // Dismiss "Войти через приложение" bottom sheet if present, favoring manual entry
+                                                view?.evaluateJavascript("""
+                                                    (function() {
+                                                        var btns = document.querySelectorAll('button, span, div, a');
+                                                        for (var i = 0; i < btns.length; i++) {
+                                                            var t = btns[i].innerText;
+                                                            if (t && (t.indexOf('Ввести данные вручную') !== -1 || t.indexOf('вручную') !== -1)) {
+                                                                btns[i].click();
+                                                                break;
+                                                            }
+                                                        }
+                                                    })();
+                                                """.trimIndent(), null)
+
                                                 if (url?.contains("id.vk.ru") == true || url?.contains("id.vk.com") == true) {
                                                     statusText = "Войдите или нажмите «Продолжить как…»"
+                                                } else if (url?.contains("oauth.vk.ru") == true || url?.contains("oauth.vk.com") == true) {
+                                                    statusText = "Подтвердите доступ к звонкам («Разрешить»)"
                                                 }
+                                            }
+
+                                            override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                                                super.doUpdateVisitedHistory(view, url, isReload)
+                                                inspectUrl(url, view)
+                                                inspectUrl(view?.url, view)
                                             }
 
                                             override fun onReceivedError(
@@ -327,28 +400,43 @@ fun VKCallCreatorDialog(
                                                 request: WebResourceRequest?,
                                                 error: WebResourceError?
                                             ) {
-                                                super.onReceivedError(view, request, error)
-                                                if (request?.isForMainFrame == true) {
-                                                    val scheme = request.url?.scheme?.lowercase()
-                                                    if (scheme != "http" && scheme != "https") return
-                                                    if (error?.errorCode == WebViewClient.ERROR_UNSUPPORTED_SCHEME) return
+                                                // NEVER call super.onReceivedError() — it overrides the page with Chromium's default error page!
+                                                val reqUrl = request?.url?.toString() ?: ""
+                                                val scheme = request?.url?.scheme?.lowercase()
 
-                                                    val desc = error?.description?.toString() ?: "Сетевая ошибка"
-                                                    errorMessage = "$desc (код: ${error?.errorCode ?: -1})"
-                                                }
+                                                if (scheme != "http" && scheme != "https") return
+                                                if (error?.errorCode == WebViewClient.ERROR_UNSUPPORTED_SCHEME) return
+                                                if (request?.isForMainFrame != true) return
+                                                if (reqUrl.contains("access_token=") || isOAuthBlankPage(reqUrl)) return
+
+                                                val desc = error?.description?.toString() ?: "Сетевая ошибка"
+                                                errorMessage = "$desc (код: ${error?.errorCode ?: -1})"
                                             }
                                         }
 
-                                        loadUrl("https://oauth.vk.ru/authorize?client_id=$VK_OAUTH_CLIENT_ID&scope=calls&response_type=token&display=mobile")
+                                        loadUrl("https://oauth.vk.ru/authorize?client_id=$VK_OAUTH_CLIENT_ID&scope=calls&response_type=token&display=mobile&forced_color_scheme_mode=dark")
                                     }
                                 }
                             )
+
+                            // Continuous background watcher: catches client-side redirects and hash tokens within 250ms
+                            LaunchedEffect(Unit) {
+                                while (isActive && !isTokenHandled) {
+                                    webViewInstance?.let { wv ->
+                                        inspectUrl(wv.url, wv)
+                                        wv.evaluateJavascript("window.location.href") { jsUrl ->
+                                            inspectUrl(jsUrl, wv)
+                                        }
+                                    }
+                                    delay(250)
+                                }
+                            }
 
                             if (isLoading) {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .background(BgDark.copy(alpha = 0.85f)),
+                                        .background(BgDark.copy(alpha = 0.95f)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -371,8 +459,54 @@ fun VKCallCreatorDialog(
     }
 }
 
+private fun isOAuthBlankPage(rawUrl: String?): Boolean {
+    if (rawUrl.isNullOrBlank()) return false
+    val clean = rawUrl.trim('"', '\'', ' ')
+    // Ensure we NEVER treat the login / 2FA screen as a blank page
+    if (clean.contains("id.vk.com") || clean.contains("id.vk.ru")) return false
+
+    return try {
+        val uri = Uri.parse(clean)
+        val host = uri.host?.lowercase() ?: ""
+        val path = uri.path ?: ""
+        (host.contains("oauth.vk.") || host.contains("vk.com") || host.contains("vk.ru")) &&
+                (path == "/blank.html" || path.endsWith("/blank.html"))
+    } catch (_: Exception) {
+        false
+    }
+}
+
+private fun extractAccessToken(rawUrl: String?): String? {
+    if (rawUrl.isNullOrBlank()) return null
+    val clean = rawUrl.trim('"', '\'', ' ')
+    if (!clean.contains("access_token=")) return null
+
+    try {
+        val uri = Uri.parse(clean)
+        val fragment = uri.fragment
+        if (!fragment.isNullOrBlank() && fragment.contains("access_token=")) {
+            for (param in fragment.split("&")) {
+                if (param.startsWith("access_token=")) {
+                    val token = param.removePrefix("access_token=").trim()
+                    if (token.isNotEmpty()) return token
+                }
+            }
+        }
+    } catch (_: Exception) {}
+
+    // Substring fallback
+    val tokenPart = clean.substringAfter("access_token=")
+    val token = tokenPart.substringBefore('&')
+        .substringBefore('#')
+        .substringBefore(';')
+        .substringBefore('"')
+        .substringBefore('\'')
+        .trim()
+    return if (token.isNotEmpty()) token else null
+}
+
 private fun harvestCookies(cookieManager: CookieManager) {
-    val urls = listOf("https://vk.ru", "https://vk.com", "https://login.vk.ru", "https://login.vk.com", "https://id.vk.ru", "https://id.vk.com")
+    val urls = listOf("https://vk.ru", "https://vk.com", "https://login.vk.ru", "https://login.vk.com", "https://id.vk.ru", "https://id.vk.com", "https://oauth.vk.ru", "https://oauth.vk.com")
     var remixsid: String? = null
     var p: String? = null
 
@@ -408,22 +542,37 @@ private suspend fun createCallWithToken(token: String, callback: (link: String?,
 
     for (host in hosts) {
         try {
-            val endpoint = "https://$host/method/calls.start?v=5.276&access_token=$token"
+            val endpoint = "https://$host/method/calls.start"
             val conn = URL(endpoint).openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
+            conn.requestMethod = "POST"
+            conn.doOutput = true
             conn.connectTimeout = 15000
             conn.readTimeout = 15000
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+            conn.setRequestProperty("User-Agent", "VKAndroidApp/8.0-12345 (Android 14; SDK 34; arm64-v8a)")
+
+            val postData = "v=5.276&access_token=$token"
+            conn.outputStream.use { os ->
+                os.write(postData.toByteArray(Charsets.UTF_8))
+                os.flush()
+            }
 
             val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
             val reader = BufferedReader(InputStreamReader(stream))
             val response = reader.readText()
             reader.close()
 
+            Log.d(TAG, "calls.start response: $response")
+
             val map = Gson().fromJson(response, Map::class.java)
             if (map.containsKey("error")) {
                 val errMap = map["error"] as? Map<*, *>
                 val msg = errMap?.get("error_msg") as? String ?: "VK error"
-                lastError = msg
+                val code = (errMap?.get("error_code") as? Number)?.toInt() ?: 0
+                lastError = "$msg (код: $code)"
+                if (code == 5) {
+                    VKCookieStore.clearToken()
+                }
                 continue
             }
 
