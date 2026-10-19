@@ -12,28 +12,36 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Login
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.platform.LocalContext
 import com.google.gson.Gson
+import com.vkturnproxy.model.hasValidVKCallLink
 import com.vkturnproxy.service.VkTurnVpnService
 import com.vkturnproxy.service.VpnStatus
 import com.vkturnproxy.ui.theme.*
@@ -59,6 +67,7 @@ fun VKCallCreatorDialog(
     onCallCreated: (joinLink: String) -> Unit
 ) {
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     var hasLogin by remember { mutableStateOf(VKCookieStore.hasValidLogin()) }
     var isLoggingIn by remember { mutableStateOf(false) }
 
@@ -69,13 +78,69 @@ fun VKCallCreatorDialog(
     var webProgress by remember { mutableIntStateOf(0) }
     var canGoBack by remember { mutableStateOf(false) }
     var isTokenHandled by remember { mutableStateOf(false) }
+    var manualLinkInput by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+
+    // Handle physical back button: navigate webview history, or cancel login, or dismiss
+    BackHandler {
+        if (canGoBack && webViewInstance?.canGoBack() == true) {
+            webViewInstance?.goBack()
+        } else if (isLoggingIn) {
+            isLoggingIn = false
+        } else {
+            onDismiss()
+        }
+    }
 
     // Ensure direct physical network routing (Wi-Fi/Cellular) while creating calls
     LaunchedEffect(Unit) {
         if (VkTurnVpnService.statusFlow.value != VpnStatus.DISCONNECTED) {
             Log.i(TAG, "Stopping active VPN tunnel to ensure direct network connection for VK Call creation")
             VkTurnVpnService.stop(context)
+        }
+    }
+
+    fun handleTokenFound(token: String, webView: WebView?) {
+        if (isTokenHandled) return
+        isTokenHandled = true
+        isLoading = true
+        statusText = "Токен получен, создаем звонок…"
+
+        try {
+            webView?.stopLoading()
+        } catch (_: Exception) {}
+
+        VKCookieStore.saveToken(token)
+
+        scope.launch {
+            createCallWithToken(token) { link, err ->
+                if (link != null) {
+                    onCallCreated(link)
+                    onDismiss()
+                } else {
+                    isLoading = false
+                    isTokenHandled = false
+                    errorMessage = err ?: "Ошибка создания звонка"
+                }
+            }
+        }
+    }
+
+    // Fast-path: if valid token already stored, try creating call without opening browser
+    LaunchedEffect(Unit) {
+        val existingToken = VKCookieStore.getToken()
+        if (!existingToken.isNullOrBlank()) {
+            isLoading = true
+            statusText = "Создаем звонок через сохраненную авторизацию…"
+            createCallWithToken(existingToken) { link, err ->
+                if (link != null) {
+                    onCallCreated(link)
+                    onDismiss()
+                } else {
+                    VKCookieStore.clearToken()
+                    isLoading = false
+                }
+            }
         }
     }
 
@@ -91,30 +156,6 @@ fun VKCallCreatorDialog(
                 }
             } catch (_: Exception) {}
             System.gc()
-        }
-    }
-
-    fun handleTokenFound(token: String, webView: WebView?) {
-        if (isTokenHandled) return
-        isTokenHandled = true
-        isLoading = true
-        statusText = "Токен получен, вызываем calls.start…"
-
-        try {
-            webView?.stopLoading()
-        } catch (_: Exception) {}
-
-        scope.launch {
-            createCallWithToken(token) { link, err ->
-                if (link != null) {
-                    onCallCreated(link)
-                    onDismiss()
-                } else {
-                    isLoading = false
-                    isTokenHandled = false
-                    errorMessage = err ?: "Ошибка создания звонка"
-                }
-            }
         }
     }
 
@@ -146,542 +187,614 @@ fun VKCallCreatorDialog(
         }
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    // Fullscreen surface overlay inside primary Window — completely eliminates
+    // Dialog window compositor desync and black screens on Mali/Realme/ColorOS devices
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = BgDark
     ) {
-        VkTurnTheme {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = BgDark
+        // 1. GATE STATE: User is not logged into VK yet
+        if (!hasLogin && !isLoggingIn) {
+            val scrollState = rememberScrollState()
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState)
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // 1. GATE STATE: User is not logged into VK yet
-                if (!hasLogin && !isLoggingIn) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+                ) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(24.dp),
-                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(20.dp),
-                            colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+                        Box(
+                            modifier = Modifier
+                                .size(60.dp)
+                                .background(PrimaryBlue.copy(alpha = 0.15f), shape = RoundedCornerShape(30.dp)),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Column(
-                                modifier = Modifier.padding(24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(64.dp)
-                                        .background(PrimaryBlue.copy(alpha = 0.15f), shape = RoundedCornerShape(32.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.AccountCircle,
-                                        contentDescription = null,
-                                        tint = PrimaryBlue,
-                                        modifier = Modifier.size(36.dp)
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.height(16.dp))
-
-                                Text(
-                                    "Требуется вход в аккаунт VK",
-                                    color = TextPrimary,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 18.sp,
-                                    textAlign = TextAlign.Center
-                                )
-
-                                Spacer(modifier = Modifier.height(10.dp))
-
-                                Text(
-                                    "Для создания постоянной ссылки на звонок необходима авторизация в VK. Ссылка создается через официальный API VK от вашего имени и не отключается после выхода участников, в отличие от ссылок из браузера.",
-                                    color = TextSecondary,
-                                    fontSize = 13.sp,
-                                    lineHeight = 18.sp,
-                                    textAlign = TextAlign.Center
-                                )
-
-                                Spacer(modifier = Modifier.height(24.dp))
-
-                                Button(
-                                    onClick = { isLoggingIn = true },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(48.dp),
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
-                                ) {
-                                    Icon(Icons.Default.Login, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Войти в аккаунт VK", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                                }
-
-                                Spacer(modifier = Modifier.height(12.dp))
-
-                                OutlinedButton(
-                                    onClick = onDismiss,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(44.dp),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Text("Отмена", color = TextSecondary)
-                                }
-                            }
+                            Icon(
+                                imageVector = Icons.Default.Call,
+                                contentDescription = null,
+                                tint = PrimaryBlue,
+                                modifier = Modifier.size(32.dp)
+                            )
                         }
-                    }
-                } else if (isLoggingIn) {
-                    // 2. LOGIN WEBVIEW: User performs regular VK login
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        TopAppBar(
-                            title = {
-                                Column {
-                                    Text(
-                                        "Вход в аккаунт VK",
-                                        color = TextPrimary,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 17.sp
-                                    )
-                                    Text(
-                                        "Войдите в аккаунт (поддерживается 2FA)",
-                                        color = TextSecondary,
-                                        fontSize = 12.sp,
-                                        maxLines = 1
-                                    )
-                                }
-                            },
-                            navigationIcon = {
-                                IconButton(onClick = { isLoggingIn = false }) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                        contentDescription = "Назад",
-                                        tint = TextPrimary
-                                    )
-                                }
-                            },
-                            actions = {
-                                IconButton(onClick = onDismiss) {
-                                    Icon(
-                                        Icons.Default.Close,
-                                        contentDescription = "Закрыть",
-                                        tint = TextPrimary
-                                    )
-                                }
-                            },
-                            colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceDark)
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Text(
+                            "Привязка звонка VK",
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            textAlign = TextAlign.Center
                         )
 
-                        if (webProgress in 1..99) {
-                            LinearProgressIndicator(
-                                progress = { webProgress / 100f },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(3.dp),
-                                color = PrimaryBlue,
-                                trackColor = SurfaceVariantDark
-                            )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text(
+                            "Для работы VPN необходим звонок VK. Выберите удобный способ привязки:",
+                            color = TextSecondary,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(20.dp))
+
+                        // Fast Option 1: Paste from clipboard
+                        Button(
+                            onClick = {
+                                val clipText = clipboardManager.getText()?.text?.trim() ?: ""
+                                val foundLink = clipText.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") }
+                                if (!foundLink.isNullOrBlank()) {
+                                    onCallCreated(foundLink)
+                                    Toast.makeText(context, "Ссылка успешно привязана из буфера!", Toast.LENGTH_SHORT).show()
+                                    onDismiss()
+                                } else {
+                                    Toast.makeText(context, "В буфере нет ссылки на звонок (нужна ссылка вида https://vk.ru/call/join/...)", Toast.LENGTH_LONG).show()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                        ) {
+                            Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Вставить ссылку из буфера", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         }
 
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            AndroidView(
-                                modifier = Modifier.fillMaxSize(),
-                                factory = { ctx ->
-                                    WebView(ctx).apply {
-                                        setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
-                                        setBackgroundColor(android.graphics.Color.WHITE)
-                                        val cm = CookieManager.getInstance()
-                                        cm.setAcceptCookie(true)
-                                        cm.setAcceptThirdPartyCookies(this, true)
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                                        settings.apply {
-                                            javaScriptEnabled = true
-                                            domStorageEnabled = true
-                                            databaseEnabled = true
-                                            setSupportMultipleWindows(false)
-                                            javaScriptCanOpenWindowsAutomatically = true
-                                            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                                            allowFileAccess = false
-                                            allowContentAccess = false
-                                            cacheMode = WebSettings.LOAD_DEFAULT
-                                        }
+                        // Fast Option 2: Automatic OAuth API flow
+                        OutlinedButton(
+                            onClick = { isLoggingIn = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                        ) {
+                            Icon(Icons.Default.Login, contentDescription = null, modifier = Modifier.size(18.dp), tint = PrimaryBlue)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Войти в VK и создать автоматически", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        }
 
-                                        webChromeClient = object : WebChromeClient() {
-                                            override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                                super.onProgressChanged(view, newProgress)
-                                                webProgress = newProgress
-                                            }
-                                        }
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                                        webViewClient = object : WebViewClient() {
-                                            override fun shouldOverrideUrlLoading(
-                                                view: WebView?,
-                                                request: WebResourceRequest?
-                                            ): Boolean {
-                                                val uri = request?.url ?: return false
-                                                val url = uri.toString()
-                                                val scheme = uri.scheme?.lowercase() ?: return false
+                        // Fast Option 3: Open official VK app / web to create call
+                        OutlinedButton(
+                            onClick = {
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://vk.ru/calls"))
+                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Не удалось открыть браузер/VK", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
+                        ) {
+                            Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp), tint = TextSecondary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Создать в приложении VK", fontWeight = FontWeight.Normal, fontSize = 13.sp)
+                        }
 
-                                                if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "javascript" || scheme == "data") {
-                                                    return false
-                                                }
+                        Spacer(modifier = Modifier.height(16.dp))
 
-                                                try {
-                                                    val intent = when {
-                                                        url.startsWith("intent:") -> Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-                                                        url.startsWith("android-app:") -> Intent.parseUri(url, Intent.URI_ANDROID_APP_SCHEME)
-                                                        else -> Intent(Intent.ACTION_VIEW, uri)
-                                                    }
-                                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                    val pm = context.packageManager
-                                                    if (intent.resolveActivity(pm) != null) {
-                                                        context.startActivity(intent)
-                                                    }
-                                                } catch (_: Exception) {}
-                                                return true
-                                            }
+                        // Fast Option 4: Manual link entry field
+                        OutlinedTextField(
+                            value = manualLinkInput,
+                            onValueChange = { manualLinkInput = it },
+                            placeholder = { Text("https://vk.ru/call/join/...", color = TextSecondary, fontSize = 12.sp) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp)
+                        )
 
-                                            override fun onPageFinished(view: WebView?, url: String?) {
-                                                super.onPageFinished(view, url)
-                                                // Dismiss "Вход без пароля" / "Войти через приложение" popup in favor of manual entry fields
-                                                view?.evaluateJavascript("""
-                                                    (function() {
-                                                        var btns = document.querySelectorAll('button, span, div, a');
-                                                        for (var i = 0; i < btns.length; i++) {
-                                                            var t = btns[i].innerText || btns[i].textContent;
-                                                            if (t && (t.indexOf('Ввести данные вручную') !== -1 || t.indexOf('вручную') !== -1)) {
-                                                                btns[i].click();
-                                                                return;
-                                                            }
-                                                        }
-                                                        var closeBtn = document.querySelector('[aria-label="Закрыть"], .vkuiModalDismissButton, [data-testid="box-layout__close-button"], [data-test-id="modal-close-button"]');
-                                                        if (closeBtn) {
-                                                            closeBtn.click();
-                                                        }
-                                                    })();
-                                                """.trimIndent(), null)
+                        if (manualLinkInput.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = {
+                                    val clean = manualLinkInput.trim()
+                                    if (clean.contains("call/join/")) {
+                                        onCallCreated(clean)
+                                        Toast.makeText(context, "Ссылка успешно сохранена!", Toast.LENGTH_SHORT).show()
+                                        onDismiss()
+                                    } else {
+                                        Toast.makeText(context, "Ссылка должна содержать call/join/", Toast.LENGTH_LONG).show()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(40.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+                            ) {
+                                Text("Привязать введенную ссылку", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
+                        }
 
-                                                checkLoginCookies(cm) { header ->
-                                                    VKCookieStore.save(header, System.currentTimeMillis() + 365L * 86400 * 1000)
-                                                    VKCookieStore.isEnabled = true
-                                                    hasLogin = true
-                                                    isLoggingIn = false
-                                                }
-                                            }
-                                        }
+                        Spacer(modifier = Modifier.height(16.dp))
 
-                                        loadUrl("https://vk.com/login")
+                        TextButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Отмена", color = TextSecondary)
+                        }
+                    }
+                }
+            }
+        } else if (isLoggingIn) {
+            // 2. LOGIN WEBVIEW: User performs regular VK login
+            Column(modifier = Modifier.fillMaxSize()) {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(
+                                "Вход в аккаунт VK",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 17.sp
+                            )
+                            Text(
+                                "Войдите в аккаунт (поддерживается 2FA)",
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                maxLines = 1
+                            )
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { isLoggingIn = false }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Назад",
+                                tint = TextPrimary
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Закрыть",
+                                tint = TextPrimary
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceDark)
+                )
+
+                if (webProgress in 1..99) {
+                    LinearProgressIndicator(
+                        progress = { webProgress / 100f },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp),
+                        color = PrimaryBlue,
+                        trackColor = SurfaceVariantDark
+                    )
+                }
+
+                Box(modifier = Modifier.fillMaxSize().background(BgDark)) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                setBackgroundColor(android.graphics.Color.WHITE)
+                                val cm = CookieManager.getInstance()
+                                cm.setAcceptCookie(true)
+                                cm.setAcceptThirdPartyCookies(this, true)
+
+                                settings.apply {
+                                    javaScriptEnabled = true
+                                    domStorageEnabled = true
+                                    databaseEnabled = true
+                                    setSupportMultipleWindows(false)
+                                    javaScriptCanOpenWindowsAutomatically = true
+                                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                    allowFileAccess = false
+                                    allowContentAccess = false
+                                    cacheMode = WebSettings.LOAD_DEFAULT
+                                }
+
+                                webChromeClient = object : WebChromeClient() {
+                                    override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                        super.onProgressChanged(view, newProgress)
+                                        webProgress = newProgress
                                     }
                                 }
-                            )
 
-                            // Polling watcher for login cookies
-                            LaunchedEffect(Unit) {
-                                val cm = CookieManager.getInstance()
-                                while (isActive && !hasLogin) {
-                                    checkLoginCookies(cm) { header ->
-                                        VKCookieStore.save(header, System.currentTimeMillis() + 365L * 86400 * 1000)
-                                        VKCookieStore.isEnabled = true
-                                        hasLogin = true
-                                        isLoggingIn = false
+                                webViewClient = object : WebViewClient() {
+                                    override fun shouldOverrideUrlLoading(
+                                        view: WebView?,
+                                        request: WebResourceRequest?
+                                    ): Boolean {
+                                        val uri = request?.url ?: return false
+                                        val url = uri.toString()
+                                        val scheme = uri.scheme?.lowercase() ?: return false
+
+                                        if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "javascript" || scheme == "data") {
+                                            return false
+                                        }
+
+                                        try {
+                                            val intent = when {
+                                                url.startsWith("intent:") -> Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                                                url.startsWith("android-app:") -> Intent.parseUri(url, Intent.URI_ANDROID_APP_SCHEME)
+                                                else -> Intent(Intent.ACTION_VIEW, uri)
+                                            }
+                                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            val pm = context.packageManager
+                                            if (intent.resolveActivity(pm) != null) {
+                                                context.startActivity(intent)
+                                            }
+                                        } catch (_: Exception) {}
+                                        return true
                                     }
-                                    delay(1000)
+
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        super.onPageFinished(view, url)
+                                        checkLoginCookies(cm) { header ->
+                                            VKCookieStore.save(header, System.currentTimeMillis() + 365L * 86400 * 1000)
+                                            VKCookieStore.isEnabled = true
+                                            hasLogin = true
+                                            isLoggingIn = false
+                                        }
+                                    }
+
+                                    override fun onReceivedError(
+                                        view: WebView?,
+                                        request: WebResourceRequest?,
+                                        error: WebResourceError?
+                                    ) {
+                                        val reqUrl = request?.url?.toString() ?: ""
+                                        if (request?.isForMainFrame == true && reqUrl.contains("vk.com")) {
+                                            val fallbackUrl = reqUrl.replace("vk.com", "vk.ru")
+                                            view?.loadUrl(fallbackUrl)
+                                        }
+                                    }
+                                }
+
+                                loadUrl("https://vk.com/login")
+                            }
+                        }
+                    )
+
+                    // Polling watcher for login cookies
+                    LaunchedEffect(Unit) {
+                        val cm = CookieManager.getInstance()
+                        while (isActive && !hasLogin) {
+                            checkLoginCookies(cm) { header ->
+                                VKCookieStore.save(header, System.currentTimeMillis() + 365L * 86400 * 1000)
+                                VKCookieStore.isEnabled = true
+                                hasLogin = true
+                                isLoggingIn = false
+                            }
+                            delay(1000)
+                        }
+                    }
+                }
+            }
+        } else {
+            // 3. OAUTH CALL CREATOR WEBVIEW: Plants cookies and loads oauth.vk.ru/authorize
+            Column(modifier = Modifier.fillMaxSize()) {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(
+                                "Создание звонка VK",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 17.sp
+                            )
+                            Text(
+                                statusText,
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                maxLines = 1
+                            )
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = {
+                            if (canGoBack && webViewInstance?.canGoBack() == true) {
+                                webViewInstance?.goBack()
+                            } else {
+                                onDismiss()
+                            }
+                        }) {
+                            Icon(
+                                imageVector = if (canGoBack) Icons.AutoMirrored.Filled.ArrowBack else Icons.Default.Close,
+                                contentDescription = if (canGoBack) "Назад" else "Закрыть",
+                                tint = TextPrimary
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = {
+                            errorMessage = null
+                            isTokenHandled = false
+                            isLoading = false
+                            webViewInstance?.reload()
+                        }) {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = "Обновить",
+                                tint = TextPrimary
+                            )
+                        }
+                        IconButton(onClick = {
+                            VKCookieStore.clearCookies()
+                            hasLogin = false
+                            isLoggingIn = true
+                        }) {
+                            Icon(
+                                Icons.Default.AccountCircle,
+                                contentDescription = "Сменить аккаунт",
+                                tint = PrimaryBlue
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceDark)
+                )
+
+                if (webProgress in 1..99 && !isLoading) {
+                    LinearProgressIndicator(
+                        progress = { webProgress / 100f },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp),
+                        color = PrimaryBlue,
+                        trackColor = SurfaceVariantDark
+                    )
+                }
+
+                if (errorMessage != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(BgDark),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(24.dp)
+                        ) {
+                            Text(
+                                "Не удалось создать звонок",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                errorMessage!!,
+                                color = AccentRed,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                OutlinedButton(onClick = onDismiss) {
+                                    Text("Закрыть")
+                                }
+                                Button(
+                                    onClick = {
+                                        errorMessage = null
+                                        isTokenHandled = false
+                                        isLoading = false
+                                        webViewInstance?.reload()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                                ) {
+                                    Text("Повторить")
                                 }
                             }
                         }
                     }
                 } else {
-                    // 3. OAUTH CALL CREATOR WEBVIEW: Plants cookies and loads oauth.vk.ru/authorize
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        TopAppBar(
-                            title = {
-                                Column {
-                                    Text(
-                                        "Создание звонка VK",
-                                        color = TextPrimary,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 17.sp
-                                    )
-                                    Text(
-                                        statusText,
-                                        color = TextSecondary,
-                                        fontSize = 12.sp,
-                                        maxLines = 1
-                                    )
-                                }
-                            },
-                            navigationIcon = {
-                                IconButton(onClick = {
-                                    if (canGoBack && webViewInstance?.canGoBack() == true) {
-                                        webViewInstance?.goBack()
-                                    } else {
-                                        onDismiss()
+                    Box(modifier = Modifier.fillMaxSize().background(BgDark)) {
+                        AndroidView(
+                            modifier = Modifier.fillMaxSize(),
+                            factory = { ctx ->
+                                WebView(ctx).apply {
+                                    webViewInstance = this
+                                    setBackgroundColor(android.graphics.Color.WHITE)
+                                    val cm = CookieManager.getInstance()
+                                    cm.setAcceptCookie(true)
+                                    cm.setAcceptThirdPartyCookies(this, true)
+
+                                    settings.apply {
+                                        javaScriptEnabled = true
+                                        domStorageEnabled = true
+                                        databaseEnabled = true
+                                        setSupportMultipleWindows(false)
+                                        javaScriptCanOpenWindowsAutomatically = true
+                                        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                        allowFileAccess = false
+                                        allowContentAccess = false
+                                        cacheMode = WebSettings.LOAD_DEFAULT
                                     }
-                                }) {
-                                    Icon(
-                                        imageVector = if (canGoBack) Icons.AutoMirrored.Filled.ArrowBack else Icons.Default.Close,
-                                        contentDescription = if (canGoBack) "Назад" else "Закрыть",
-                                        tint = TextPrimary
-                                    )
-                                }
-                            },
-                            actions = {
-                                IconButton(onClick = {
-                                    errorMessage = null
-                                    isTokenHandled = false
-                                    isLoading = false
-                                    webViewInstance?.reload()
-                                }) {
-                                    Icon(
-                                        Icons.Default.Refresh,
-                                        contentDescription = "Обновить",
-                                        tint = TextPrimary
-                                    )
-                                }
-                                IconButton(onClick = {
-                                    VKCookieStore.clearCookies()
-                                    hasLogin = false
-                                    isLoggingIn = true
-                                }) {
-                                    Icon(
-                                        Icons.Default.AccountCircle,
-                                        contentDescription = "Сменить аккаунт",
-                                        tint = PrimaryBlue
-                                    )
-                                }
-                            },
-                            colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceDark)
-                        )
 
-                        if (webProgress in 1..99 && !isLoading) {
-                            LinearProgressIndicator(
-                                progress = { webProgress / 100f },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(3.dp),
-                                color = PrimaryBlue,
-                                trackColor = SurfaceVariantDark
-                            )
-                        }
-
-                        if (errorMessage != null) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(BgDark),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier.padding(24.dp)
-                                ) {
-                                    Text(
-                                        "Не удалось создать звонок",
-                                        color = TextPrimary,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 16.sp
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        errorMessage!!,
-                                        color = AccentRed,
-                                        fontSize = 13.sp,
-                                        textAlign = TextAlign.Center
-                                    )
-                                    Spacer(modifier = Modifier.height(16.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                        OutlinedButton(onClick = onDismiss) {
-                                            Text("Закрыть")
+                                    webChromeClient = object : WebChromeClient() {
+                                        override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                            super.onProgressChanged(view, newProgress)
+                                            webProgress = newProgress
+                                            canGoBack = view?.canGoBack() == true
+                                            inspectUrl(view?.url, view)
                                         }
-                                        Button(
-                                            onClick = {
-                                                errorMessage = null
-                                                isTokenHandled = false
-                                                isLoading = false
-                                                webViewInstance?.reload()
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                                    }
+
+                                    webViewClient = object : WebViewClient() {
+                                        override fun shouldOverrideUrlLoading(
+                                            view: WebView?,
+                                            request: WebResourceRequest?
+                                        ): Boolean {
+                                            val uri = request?.url ?: return false
+                                            val url = uri.toString()
+                                            val scheme = uri.scheme?.lowercase() ?: return false
+
+                                            inspectUrl(url, view)
+                                            inspectUrl(view?.url, view)
+
+                                            if (isOAuthBlankPage(url) || url.contains("access_token=")) {
+                                                isLoading = true
+                                                statusText = "Авторизация подтверждена, создание звонка…"
+                                                val token = extractAccessToken(url)
+                                                if (token != null) {
+                                                    handleTokenFound(token, view)
+                                                    return true
+                                                }
+                                                return false
+                                            }
+
+                                            if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "javascript" || scheme == "data") {
+                                                return false
+                                            }
+
+                                            return true
+                                        }
+
+                                        override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                                            super.onPageStarted(view, url, favicon)
+                                            canGoBack = view?.canGoBack() == true
+                                            if (isOAuthBlankPage(url) || url?.contains("access_token=") == true) {
+                                                isLoading = true
+                                                statusText = "Создаем звонок через VK API…"
+                                            }
+                                            inspectUrl(url, view)
+                                            inspectUrl(view?.url, view)
+                                        }
+
+                                        override fun onPageFinished(view: WebView?, url: String?) {
+                                            super.onPageFinished(view, url)
+                                            canGoBack = view?.canGoBack() == true
+                                            if (isOAuthBlankPage(url) || url?.contains("access_token=") == true) {
+                                                isLoading = true
+                                                statusText = "Создаем звонок через VK API…"
+                                            }
+                                            inspectUrl(url, view)
+                                            inspectUrl(view?.url, view)
+
+                                            view?.evaluateJavascript("window.location.href") { jsUrl ->
+                                                inspectUrl(jsUrl, view)
+                                            }
+
+                                            if (url?.contains("id.vk.ru") == true || url?.contains("id.vk.com") == true) {
+                                                statusText = "Нажмите «Продолжить как…» для создания звонка"
+                                            } else if (url?.contains("oauth.vk.ru") == true || url?.contains("oauth.vk.com") == true) {
+                                                statusText = "Подтвердите доступ к звонкам"
+                                            }
+                                        }
+
+                                        override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                                            super.doUpdateVisitedHistory(view, url, isReload)
+                                            inspectUrl(url, view)
+                                            inspectUrl(view?.url, view)
+                                        }
+
+                                        override fun onReceivedError(
+                                            view: WebView?,
+                                            request: WebResourceRequest?,
+                                            error: WebResourceError?
                                         ) {
-                                            Text("Повторить")
+                                            val reqUrl = request?.url?.toString() ?: ""
+                                            val scheme = request?.url?.scheme?.lowercase()
+
+                                            if (scheme != "http" && scheme != "https") return
+                                            if (error?.errorCode == WebViewClient.ERROR_UNSUPPORTED_SCHEME) return
+                                            if (request?.isForMainFrame != true) return
+                                            if (reqUrl.contains("access_token=") || isOAuthBlankPage(reqUrl)) return
+
+                                            // Auto fallback from oauth.vk.ru to oauth.vk.com if carrier routing fails
+                                            if (reqUrl.contains("oauth.vk.ru")) {
+                                                val fallbackUrl = reqUrl.replace("oauth.vk.ru", "oauth.vk.com")
+                                                Log.w(TAG, "Failed loading $reqUrl (error ${error?.errorCode}), falling back to $fallbackUrl")
+                                                view?.loadUrl(fallbackUrl)
+                                                return
+                                            }
+
+                                            val desc = error?.description?.toString() ?: "Сетевая ошибка"
+                                            errorMessage = "$desc (код: ${error?.errorCode ?: -1})"
                                         }
+                                    }
+
+                                    // Plant stored cookies with exact domain mapping from iOS VKTurnProxy
+                                    val stored = VKCookieStore.load()
+                                    if (stored != null) {
+                                        plantCookiesAndLoad(this, cm, stored.cookieHeader)
+                                    } else {
+                                        loadUrl(VK_OAUTH_AUTHORIZE_URL)
                                     }
                                 }
                             }
-                        } else {
-                            Box(modifier = Modifier.fillMaxSize()) {
-                                AndroidView(
-                                    modifier = Modifier.fillMaxSize(),
-                                    factory = { ctx ->
-                                        WebView(ctx).apply {
-                                            webViewInstance = this
-                                            setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
-                                        setBackgroundColor(android.graphics.Color.WHITE)
-                                            val cm = CookieManager.getInstance()
-                                            cm.setAcceptCookie(true)
-                                            cm.setAcceptThirdPartyCookies(this, true)
+                        )
 
-                                            settings.apply {
-                                                javaScriptEnabled = true
-                                                domStorageEnabled = true
-                                                databaseEnabled = true
-                                                setSupportMultipleWindows(false)
-                                                javaScriptCanOpenWindowsAutomatically = true
-                                                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                                                allowFileAccess = false
-                                                allowContentAccess = false
-                                                cacheMode = WebSettings.LOAD_DEFAULT
-                                            }
-
-                                            webChromeClient = object : WebChromeClient() {
-                                                override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                                    super.onProgressChanged(view, newProgress)
-                                                    webProgress = newProgress
-                                                    canGoBack = view?.canGoBack() == true
-                                                    inspectUrl(view?.url, view)
-                                                }
-                                            }
-
-                                            webViewClient = object : WebViewClient() {
-                                                override fun shouldOverrideUrlLoading(
-                                                    view: WebView?,
-                                                    request: WebResourceRequest?
-                                                ): Boolean {
-                                                    val uri = request?.url ?: return false
-                                                    val url = uri.toString()
-                                                    val scheme = uri.scheme?.lowercase() ?: return false
-
-                                                    inspectUrl(url, view)
-                                                    inspectUrl(view?.url, view)
-
-                                                    if (isOAuthBlankPage(url) || url.contains("access_token=")) {
-                                                        isLoading = true
-                                                        statusText = "Авторизация подтверждена, создание звонка…"
-                                                        val token = extractAccessToken(url)
-                                                        if (token != null) {
-                                                            handleTokenFound(token, view)
-                                                            return true
-                                                        }
-                                                        return false
-                                                    }
-
-                                                    if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "javascript" || scheme == "data") {
-                                                        return false
-                                                    }
-
-                                                    return true
-                                                }
-
-                                                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                                                    super.onPageStarted(view, url, favicon)
-                                                    canGoBack = view?.canGoBack() == true
-                                                    if (isOAuthBlankPage(url) || url?.contains("access_token=") == true) {
-                                                        isLoading = true
-                                                        statusText = "Создаем звонок через VK API…"
-                                                    }
-                                                    inspectUrl(url, view)
-                                                    inspectUrl(view?.url, view)
-                                                }
-
-                                                override fun onPageFinished(view: WebView?, url: String?) {
-                                                    super.onPageFinished(view, url)
-                                                    canGoBack = view?.canGoBack() == true
-                                                    if (isOAuthBlankPage(url) || url?.contains("access_token=") == true) {
-                                                        isLoading = true
-                                                        statusText = "Создаем звонок через VK API…"
-                                                    }
-                                                    inspectUrl(url, view)
-                                                    inspectUrl(view?.url, view)
-
-                                                    view?.evaluateJavascript("window.location.href") { jsUrl ->
-                                                        inspectUrl(jsUrl, view)
-                                                    }
-
-                                                    if (url?.contains("id.vk.ru") == true || url?.contains("id.vk.com") == true) {
-                                                        statusText = "Нажмите «Продолжить как…» для создания звонка"
-                                                    } else if (url?.contains("oauth.vk.ru") == true || url?.contains("oauth.vk.com") == true) {
-                                                        statusText = "Подтвердите доступ к звонкам"
-                                                    }
-                                                }
-
-                                                override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
-                                                    super.doUpdateVisitedHistory(view, url, isReload)
-                                                    inspectUrl(url, view)
-                                                    inspectUrl(view?.url, view)
-                                                }
-
-                                                override fun onReceivedError(
-                                                    view: WebView?,
-                                                    request: WebResourceRequest?,
-                                                    error: WebResourceError?
-                                                ) {
-                                                    val reqUrl = request?.url?.toString() ?: ""
-                                                    val scheme = request?.url?.scheme?.lowercase()
-
-                                                    if (scheme != "http" && scheme != "https") return
-                                                    if (error?.errorCode == WebViewClient.ERROR_UNSUPPORTED_SCHEME) return
-                                                    if (request?.isForMainFrame != true) return
-                                                    if (reqUrl.contains("access_token=") || isOAuthBlankPage(reqUrl)) return
-
-                                                    // Auto fallback from oauth.vk.ru to oauth.vk.com if carrier routing fails
-                                                    if (reqUrl.contains("oauth.vk.ru")) {
-                                                        val fallbackUrl = reqUrl.replace("oauth.vk.ru", "oauth.vk.com")
-                                                        Log.w(TAG, "Failed loading $reqUrl (error ${error?.errorCode}), falling back to $fallbackUrl")
-                                                        view?.loadUrl(fallbackUrl)
-                                                        return
-                                                    }
-
-                                                    val desc = error?.description?.toString() ?: "Сетевая ошибка"
-                                                    errorMessage = "$desc (код: ${error?.errorCode ?: -1})"
-                                                }
-                                            }
-
-                                            // Plant stored cookies with exact domain mapping from iOS VKTurnProxy
-                                            val stored = VKCookieStore.load()
-                                            if (stored != null) {
-                                                plantCookiesAndLoad(this, cm, stored.cookieHeader)
-                                            } else {
-                                                loadUrl(VK_OAUTH_AUTHORIZE_URL)
-                                            }
-                                        }
-                                    }
-                                )
-
-                                // Background watcher for OAuth redirect hash and token
-                                LaunchedEffect(Unit) {
-                                    while (isActive && !isTokenHandled) {
-                                        webViewInstance?.let { wv ->
-                                            inspectUrl(wv.url, wv)
-                                            wv.evaluateJavascript("window.location.href") { jsUrl ->
-                                                inspectUrl(jsUrl, wv)
-                                            }
-                                        }
-                                        delay(200)
+                        // Background watcher for OAuth redirect hash and token
+                        LaunchedEffect(Unit) {
+                            while (isActive && !isTokenHandled) {
+                                webViewInstance?.let { wv ->
+                                    inspectUrl(wv.url, wv)
+                                    wv.evaluateJavascript("window.location.href") { jsUrl ->
+                                        inspectUrl(jsUrl, wv)
                                     }
                                 }
+                                delay(200)
+                            }
+                        }
 
-                                if (isLoading && isTokenHandled) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .background(BgDark.copy(alpha = 0.95f)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                            CircularProgressIndicator(color = PrimaryBlue)
-                                            Spacer(modifier = Modifier.height(16.dp))
-                                            Text(
-                                                statusText,
-                                                color = TextPrimary,
-                                                fontSize = 14.sp,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                        }
-                                    }
+                        if (isLoading && isTokenHandled) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(BgDark.copy(alpha = 0.95f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    CircularProgressIndicator(color = PrimaryBlue)
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text(
+                                        statusText,
+                                        color = TextPrimary,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
                                 }
                             }
                         }
@@ -696,7 +809,6 @@ fun VKCallCreatorDialog(
  * Plants cookies into CookieManager using the exact per-domain rules discovered in iOS VKTurnProxy:
  * - remixsid is issued on .vk.ru
  * - p is issued on .login.vk.ru
- * Putting both on one domain causes VK's act=connect_internal gate to see neither!
  */
 private fun plantCookiesAndLoad(webView: WebView, cookieManager: CookieManager, cookieHeader: String) {
     var remixsid: String? = null
@@ -712,26 +824,23 @@ private fun plantCookiesAndLoad(webView: WebView, cookieManager: CookieManager, 
         }
     }
 
-    // Ephemeral clean start: clear old cookies, then plant the harvested session
-    cookieManager.removeAllCookies {
-        if (!remixsid.isNullOrBlank()) {
-            cookieManager.setCookie("https://vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://oauth.vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://oauth.vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://id.vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://id.vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure; SameSite=None")
-        }
+    if (!remixsid.isNullOrBlank()) {
+        cookieManager.setCookie("https://vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None")
+        cookieManager.setCookie("https://vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure; SameSite=None")
+        cookieManager.setCookie("https://oauth.vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None")
+        cookieManager.setCookie("https://oauth.vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure; SameSite=None")
+        cookieManager.setCookie("https://id.vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None")
+        cookieManager.setCookie("https://id.vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure; SameSite=None")
+    }
 
-        if (!p.isNullOrBlank()) {
-            cookieManager.setCookie("https://login.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure; SameSite=None")
-            cookieManager.setCookie("https://login.vk.com/", "p=$p; Domain=.login.vk.com; Path=/; Secure; SameSite=None")
-        }
+    if (!p.isNullOrBlank()) {
+        cookieManager.setCookie("https://login.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure; SameSite=None")
+        cookieManager.setCookie("https://login.vk.com/", "p=$p; Domain=.login.vk.com; Path=/; Secure; SameSite=None")
+    }
 
-        cookieManager.flush()
-        webView.post {
-            webView.loadUrl(VK_OAUTH_AUTHORIZE_URL)
-        }
+    cookieManager.flush()
+    webView.post {
+        webView.loadUrl(VK_OAUTH_AUTHORIZE_URL)
     }
 }
 
@@ -817,7 +926,7 @@ private fun extractAccessToken(rawUrl: String?): String? {
 }
 
 /**
- * Creates a call using the freshly-obtained user OAuth token via calls.start,
+ * Creates a call using the user OAuth token via calls.start,
  * matching iOS VKCallsAPI.swift GET method.
  */
 private suspend fun createCallWithToken(

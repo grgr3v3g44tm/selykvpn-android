@@ -2,6 +2,8 @@ package com.vkturnproxy.ui.screens
 
 import android.app.StatusBarManager
 import android.content.ComponentName
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
@@ -36,6 +38,7 @@ import com.vkturnproxy.auth.VKCallCreatorDialog
 import com.vkturnproxy.model.ProxyMode
 import com.vkturnproxy.model.ServerConfig
 import com.vkturnproxy.model.TunnelStats
+import com.vkturnproxy.model.hasValidVKCallLink
 import com.vkturnproxy.service.VkTurnTileService
 import com.vkturnproxy.service.VpnStatus
 import com.vkturnproxy.ui.theme.*
@@ -93,17 +96,8 @@ fun DashboardScreen(
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     var showVKCallCreatorDialog by remember { mutableStateOf(false) }
-
-    if (showVKCallCreatorDialog) {
-        VKCallCreatorDialog(
-            onDismiss = { showVKCallCreatorDialog = false },
-            onCallCreated = { newLink ->
-                clipboardManager.setText(AnnotatedString(newLink))
-                onCallCreated(newLink)
-                showVKCallCreatorDialog = false
-            }
-        )
-    }
+    var showManualLinkDialog by remember { mutableStateOf(false) }
+    var manualLinkInput by remember { mutableStateOf("") }
 
     val onAddTileClicked = {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -130,15 +124,16 @@ fun DashboardScreen(
 
     val scrollState = rememberScrollState()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(BgDark)
-            .verticalScroll(scrollState)
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(BgDark)
+                .verticalScroll(scrollState)
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             // Header: Title + Version + Update Check Icon
             Row(
@@ -278,35 +273,107 @@ fun DashboardScreen(
                 }
             }
 
-            // Warning if call link is not specified
-            if (activeServer != null && activeServer?.mode != ProxyMode.SRTP_WRAP_A && activeServer?.vkLink.isNullOrBlank()) {
+            // Warning and quick actions if call link is not specified
+            val hasValidLink = activeServer != null && activeServer.hasValidVKCallLink()
+            if (activeServer != null && !hasValidLink) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showVKCallCreatorDialog = true },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = AccentRed.copy(alpha = 0.15f)),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, AccentRed.copy(alpha = 0.5f))
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, AccentRed.copy(alpha = 0.6f))
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            Icon(Icons.Default.Warning, contentDescription = null, tint = AccentRed, modifier = Modifier.size(18.dp))
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = AccentRed, modifier = Modifier.size(20.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                "Ссылка на звонок не указана! Нажмите, чтобы создать звонок.",
+                                "Ссылка на звонок VK не указана!",
                                 color = TextPrimary,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
                             )
                         }
-                        Text("Создать", color = PrimaryBlue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Text(
+                            "Для подключения к VPN необходим активный звонок VK.",
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Action 1: Paste from clipboard in 1 tap
+                        Button(
+                            onClick = {
+                                val clipText = clipboardManager.getText()?.text?.trim() ?: ""
+                                val foundLink = clipText.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") }
+                                if (!foundLink.isNullOrBlank()) {
+                                    clipboardManager.setText(AnnotatedString(foundLink))
+                                    onCallCreated(foundLink)
+                                    Toast.makeText(context, "Ссылка успешно привязана из буфера!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "В буфере нет ссылки на звонок (нужна ссылка вида https://vk.ru/call/join/...)", Toast.LENGTH_LONG).show()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(40.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                        ) {
+                            Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Вставить из буфера", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { showVKCallCreatorDialog = true },
+                                modifier = Modifier.weight(1f).height(36.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(14.dp), tint = PrimaryBlue)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Создать", fontSize = 12.sp, color = TextPrimary)
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://vk.ru/calls"))
+                                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {
+                                        Toast.makeText(context, "Не удалось открыть браузер/VK", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier.weight(1f).height(36.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp), tint = TextSecondary)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Открыть VK", fontSize = 12.sp, color = TextPrimary)
+                            }
+
+                            OutlinedButton(
+                                onClick = { showManualLinkDialog = true },
+                                modifier = Modifier.weight(1f).height(36.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp), tint = TextSecondary)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Ввести", fontSize = 12.sp, color = TextPrimary)
+                            }
+                        }
                     }
                 }
             }
@@ -329,7 +396,10 @@ fun DashboardScreen(
                     )
                     .border(3.dp, buttonColor.copy(alpha = 0.8f), CircleShape)
                     .clickable {
-                        if (activeServer != null && activeServer?.mode != ProxyMode.SRTP_WRAP_A && activeServer?.vkLink.isNullOrBlank()) {
+                        if (activeServer == null) {
+                            onSelectServerClicked()
+                        } else if (!activeServer.hasValidVKCallLink()) {
+                            Toast.makeText(context, "Сначала укажите ссылку на звонок VK!", Toast.LENGTH_SHORT).show()
                             showVKCallCreatorDialog = true
                         } else {
                             onToggleVpn()
@@ -599,6 +669,64 @@ fun DashboardScreen(
         Spacer(modifier = Modifier.height(56.dp))
     }
 
+    if (showVKCallCreatorDialog) {
+        VKCallCreatorDialog(
+            onDismiss = { showVKCallCreatorDialog = false },
+            onCallCreated = { newLink ->
+                clipboardManager.setText(AnnotatedString(newLink))
+                onCallCreated(newLink)
+                showVKCallCreatorDialog = false
+            }
+        )
+    }
+
+    if (showManualLinkDialog) {
+        AlertDialog(
+            onDismissRequest = { showManualLinkDialog = false },
+            title = { Text("Ввод ссылки на звонок VK", color = TextPrimary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        "Вставьте ссылку на звонок ВКонтакте (например, https://vk.ru/call/join/...):",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = manualLinkInput,
+                        onValueChange = { manualLinkInput = it },
+                        placeholder = { Text("https://vk.ru/call/join/...") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val clean = manualLinkInput.trim()
+                        if (clean.contains("call/join/")) {
+                            onCallCreated(clean)
+                            showManualLinkDialog = false
+                            Toast.makeText(context, "Ссылка успешно привязана!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Ссылка должна содержать call/join/", Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                ) {
+                    Text("Сохранить")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showManualLinkDialog = false }) {
+                    Text("Отмена", color = TextSecondary)
+                }
+            },
+            containerColor = SurfaceDark
+        )
+    }
+
     // Modal Update Dialog
     UpdateDialog(
         state = updateState,
@@ -606,6 +734,7 @@ fun DashboardScreen(
         onInstall = onInstallApkClicked,
         onDismiss = onDismissUpdateClicked
     )
+}
 }
 
 @Composable

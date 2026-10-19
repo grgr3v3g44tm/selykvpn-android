@@ -20,6 +20,7 @@ import com.vkturnproxy.BuildConfig
 import com.vkturnproxy.VkTurnApp
 import com.vkturnproxy.model.ProxyMode
 import com.vkturnproxy.model.ServerConfig
+import com.vkturnproxy.model.hasValidVKCallLink
 import com.vkturnproxy.parser.ConfigParser
 import com.vkturnproxy.service.VkTurnVpnService
 import com.vkturnproxy.service.VpnStatus
@@ -95,8 +96,8 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Сначала выберите или добавьте сервер", Toast.LENGTH_SHORT).show()
             return
         }
-        if (active.mode != ProxyMode.SRTP_WRAP_A && active.vkLink.trim().isBlank()) {
-            Toast.makeText(this, "Не указана ссылка на звонок VK. Создайте звонок или вставьте ссылку в настройках.", Toast.LENGTH_LONG).show()
+        if (!active.hasValidVKCallLink()) {
+            Toast.makeText(this, "Не указана ссылка на звонок VK. Создайте звонок или вставьте ссылку из буфера.", Toast.LENGTH_LONG).show()
             return
         }
         VkTurnVpnService.start(this, active)

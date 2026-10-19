@@ -17,6 +17,7 @@ import com.vkturnproxy.core.WgTurnCore
 import com.vkturnproxy.model.ProxyMode
 import com.vkturnproxy.model.ServerConfig
 import com.vkturnproxy.model.TunnelStats
+import com.vkturnproxy.model.hasValidVKCallLink
 import com.vkturnproxy.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,8 +70,8 @@ class VkTurnVpnService : VpnService() {
     }
 
     private fun startTunnel(config: ServerConfig) {
-        if (config.mode != ProxyMode.SRTP_WRAP_A && config.vkLink.trim().isBlank()) {
-            Log.e(TAG, "Cannot start tunnel: VK call link is missing")
+        if (!config.hasValidVKCallLink()) {
+            Log.e(TAG, "Cannot start tunnel: VK call link is missing or invalid")
             _statusFlow.value = VpnStatus.DISCONNECTED
             updateNotification("Ошибка: ссылка на звонок не указана")
             stopSelf()

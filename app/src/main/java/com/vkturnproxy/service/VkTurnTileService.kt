@@ -9,6 +9,7 @@ import android.service.quicksettings.TileService
 import android.util.Log
 import com.vkturnproxy.R
 import com.vkturnproxy.VkTurnApp
+import com.vkturnproxy.model.hasValidVKCallLink
 import com.vkturnproxy.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -71,7 +72,7 @@ class VkTurnTileService : TileService() {
                         null
                     }
 
-                    if (activeServer != null) {
+                    if (activeServer != null && activeServer.hasValidVKCallLink()) {
                         VkTurnVpnService.start(this, activeServer)
                     } else {
                         launchMainActivity()

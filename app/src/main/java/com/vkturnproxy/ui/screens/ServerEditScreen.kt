@@ -25,6 +25,7 @@ import com.vkturnproxy.auth.VKCallCreatorDialog
 import com.vkturnproxy.auth.VKCookieStore
 import com.vkturnproxy.model.ProxyMode
 import com.vkturnproxy.model.ServerConfig
+import com.vkturnproxy.model.hasValidVKCallLink
 import com.vkturnproxy.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -69,30 +70,9 @@ fun ServerEditScreen(
     var dnsServers by remember { mutableStateOf(server.dnsServers) }
     var mtu by remember { mutableStateOf(server.mtu.toString()) }
 
-    if (showVKAuthDialog) {
-        VKAuthDialog(
-            onDismiss = { showVKAuthDialog = false },
-            onSuccess = {
-                hasStoredCookie = true
-                cookieExpiryText = VKCookieStore.getFormattedExpiry()
-                useCookieAuth = true
-                showVKAuthDialog = false
-            }
-        )
-    }
-
-    if (showVKCallCreatorDialog) {
-        VKCallCreatorDialog(
-            onDismiss = { showVKCallCreatorDialog = false },
-            onCallCreated = { newLink ->
-                vkLink = if (vkLink.isBlank()) newLink else "$newLink\n$vkLink"
-                showVKCallCreatorDialog = false
-            }
-        )
-    }
-
-    Scaffold(
-        topBar = {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            topBar = {
             TopAppBar(
                 title = { Text("Настройки сервера", color = TextPrimary, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
@@ -256,7 +236,7 @@ fun ServerEditScreen(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Ссылки на звонки VK", color = PrimaryBlue, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                            val validLinksCount = vkLink.lines().map { it.trim() }.filter { it.startsWith("http") }.size
+                            val validLinksCount = vkLink.lines().map { it.trim() }.filter { it.contains("call/join/") }.size
                             if (validLinksCount > 0) {
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Badge(containerColor = if (validLinksCount > 1) AccentGreen else SurfaceVariantDark) {
@@ -292,7 +272,7 @@ fun ServerEditScreen(
                         placeholder = { Text("https://vk.ru/call/join/...\nhttps://vk.ru/call/join/...") }
                     )
 
-                    if (vkLink.isBlank() && mode != ProxyMode.SRTP_WRAP_A) {
+                    if (!hasValidVKCallLink(vkLink)) {
                         Text(
                             "⚠️ Ссылка на звонок обязательна для подключения к VPN. Нажмите кнопку «+ Создать звонок» выше для автоматического создания.",
                             color = AccentRed,
@@ -565,4 +545,28 @@ fun ServerEditScreen(
             Spacer(modifier = Modifier.height(24.dp))
         }
     }
+
+    if (showVKAuthDialog) {
+        VKAuthDialog(
+            onDismiss = { showVKAuthDialog = false },
+            onSuccess = {
+                hasStoredCookie = true
+                cookieExpiryText = VKCookieStore.getFormattedExpiry()
+                useCookieAuth = true
+                showVKAuthDialog = false
+            }
+        )
+    }
+
+    if (showVKCallCreatorDialog) {
+        VKCallCreatorDialog(
+            onDismiss = { showVKCallCreatorDialog = false },
+            onCallCreated = { newLink ->
+                vkLink = if (vkLink.isBlank()) newLink else "$newLink\n$vkLink"
+                showVKCallCreatorDialog = false
+            }
+        )
+    }
 }
+}
+

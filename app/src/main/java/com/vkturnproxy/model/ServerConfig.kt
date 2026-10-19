@@ -130,3 +130,18 @@ data class ServerConfig(
         }
     }
 }
+
+fun ServerConfig.hasValidVKCallLink(): Boolean {
+    if (vkLink.isBlank()) return false
+    return vkLink.lines().any { line ->
+        line.trim().contains("call/join/")
+    }
+}
+
+fun hasValidVKCallLink(link: String?): Boolean {
+    if (link.isNullOrBlank()) return false
+    return link.lines().any { line ->
+        line.trim().contains("call/join/")
+    }
+}
+
