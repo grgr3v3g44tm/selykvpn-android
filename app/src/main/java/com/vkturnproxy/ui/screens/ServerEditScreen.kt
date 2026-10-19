@@ -85,7 +85,7 @@ fun ServerEditScreen(
         VKCallCreatorDialog(
             onDismiss = { showVKCallCreatorDialog = false },
             onCallCreated = { newLink ->
-                vkLink = if (vkLink.isBlank()) newLink else "$vkLink\n$newLink"
+                vkLink = if (vkLink.isBlank()) newLink else "$newLink\n$vkLink"
                 showVKCallCreatorDialog = false
             }
         )

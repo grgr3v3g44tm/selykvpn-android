@@ -180,7 +180,7 @@ class MainActivity : ComponentActivity() {
                                 val active = activeServer
                                 if (active != null) {
                                     val currentLinks = active.vkLink
-                                    val updatedVkLink = if (currentLinks.isBlank()) newLink else "$currentLinks\n$newLink"
+                                    val updatedVkLink = if (currentLinks.isBlank()) newLink else "$newLink\n$currentLinks"
                                     val updated = active.copy(vkLink = updatedVkLink)
                                     serverRepo.saveServer(updated)
                                     Toast.makeText(this@MainActivity, "Звонок VK создан и привязан к «${updated.name}»!", Toast.LENGTH_LONG).show()

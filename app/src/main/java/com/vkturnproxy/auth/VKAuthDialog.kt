@@ -58,11 +58,6 @@ fun VKAuthDialog(
             val expiry = System.currentTimeMillis() + 365L * 24 * 3600 * 1000
             VKCookieStore.save(header, expiry)
             VKCookieStore.isEnabled = true
-            scope.launch {
-                try {
-                    VKCookieStore.fetchWebToken(header)
-                } catch (_: Exception) {}
-            }
             onSuccess(header)
             onDismiss()
         }
@@ -352,8 +347,8 @@ private fun checkCookies(cookieManager: CookieManager, onFound: (String) -> Unit
         }
     }
 
-    if (remixsid != null) {
-        val header = if (!p.isNullOrEmpty()) "remixsid=$remixsid; p=$p" else "remixsid=$remixsid"
+    if (!remixsid.isNullOrBlank() && !p.isNullOrBlank()) {
+        val header = "remixsid=$remixsid; p=$p"
         onFound(header)
     }
 }

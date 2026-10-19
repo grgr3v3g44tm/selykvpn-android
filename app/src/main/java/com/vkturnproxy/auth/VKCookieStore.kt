@@ -75,48 +75,6 @@ object VKCookieStore {
             .apply()
     }
 
-    suspend fun fetchWebToken(cookieHeader: String): String? = withContext(Dispatchers.IO) {
-        val hosts = listOf("login.vk.ru", "login.vk.com")
-        val ua = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
-
-        for (host in hosts) {
-            try {
-                val endpoint = "https://$host/?act=web_token"
-                val conn = URL(endpoint).openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.connectTimeout = 8000
-                conn.readTimeout = 8000
-                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                conn.setRequestProperty("User-Agent", ua)
-                conn.setRequestProperty("Origin", "https://${if (host.contains("vk.ru")) "vk.ru" else "vk.com"}")
-                conn.setRequestProperty("Referer", "https://${if (host.contains("vk.ru")) "vk.ru" else "vk.com"}/")
-                conn.setRequestProperty("Cookie", cookieHeader)
-
-                val postData = "version=1&app_id=6287487"
-                conn.outputStream.use { os ->
-                    os.write(postData.toByteArray(Charsets.UTF_8))
-                    os.flush()
-                }
-
-                val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
-                val resp = BufferedReader(InputStreamReader(stream)).use { it.readText() }
-                conn.disconnect()
-
-                val map = Gson().fromJson(resp, Map::class.java)
-                val data = map["data"] as? Map<*, *>
-                val token = data?.get("access_token") as? String
-                if (!token.isNullOrBlank()) {
-                    val expiresInSec = (data["expires"] as? Number)?.toLong() ?: 86400L
-                    val expiry = if (expiresInSec > 0) System.currentTimeMillis() + expiresInSec * 1000L else System.currentTimeMillis() + 86400L * 1000L
-                    saveToken(token, expiry)
-                    return@withContext token
-                }
-            } catch (_: Exception) {}
-        }
-        null
-    }
-
     fun load(): StoredCookie? {
         if (!::prefs.isInitialized) return null
         val header = prefs.getString(KEY_COOKIE_HEADER, null) ?: return null
@@ -138,10 +96,14 @@ object VKCookieStore {
             .apply()
     }
 
-    fun isValid(now: Long = System.currentTimeMillis()): Boolean {
+    fun hasValidLogin(now: Long = System.currentTimeMillis()): Boolean {
         val stored = load() ?: return false
-        return stored.expiryTimestamp > now
+        if (stored.expiryTimestamp <= now) return false
+        val header = stored.cookieHeader
+        return header.contains("remixsid=") && header.contains("p=")
     }
+
+    fun isValid(now: Long = System.currentTimeMillis()): Boolean = hasValidLogin(now)
 
     fun hasValidCookie(): Boolean = isValid()
 
