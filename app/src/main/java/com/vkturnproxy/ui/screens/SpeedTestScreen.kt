@@ -269,9 +269,9 @@ fun SpeedTestScreen() {
             }
 
             val dlEndpoints = listOf(
-                "https://speed.cloudflare.com/__down?bytes=25000000",
-                "https://mirror.yandex.ru/debian/ls-lR.gz",
-                "https://proof.ovh.net/files/10Mb.dat"
+                "https://speed.cloudflare.com/__down?bytes=50000000",
+                "https://proof.ovh.net/files/10Mb.dat",
+                "https://mirror.yandex.ru/debian/ls-lR.gz"
             )
 
             var totalBytesRead = 0L
@@ -282,8 +282,8 @@ fun SpeedTestScreen() {
                 if (!kotlinx.coroutines.currentCoroutineContext().isActive) break
                 try {
                     val conn = URL(endpoint).openConnection() as HttpURLConnection
-                    conn.connectTimeout = 4000
-                    conn.readTimeout = 6000
+                    conn.connectTimeout = 3000
+                    conn.readTimeout = 4000
                     conn.setRequestProperty("User-Agent", "VKTurnProxy-SpeedTest")
 
                     conn.inputStream.use { stream ->
@@ -310,14 +310,14 @@ fun SpeedTestScreen() {
                         }
                     }
                     conn.disconnect()
-                    if (totalBytesRead > 1_000_000) break
+                    // Завершаем фазу загрузки, если вышло время замера или получено достаточно данных (>50 МБ)
+                    if (System.currentTimeMillis() - testStart >= testDurationMs || totalBytesRead >= 50_000_000L) break
                 } catch (e: Exception) {
                     Log.w(TAG, "Download endpoint $endpoint failed: ${e.message}")
                 }
             }
 
-            // Замер не удался ни с одного CDN-эндпоинта. Показываем честную
-            // пустую фазу с предупреждением, а не молчаливый ноль.
+            // Замер не удался ни с одного CDN-эндпоинта.
             if (totalBytesRead <= 0L) {
                 withContext(Dispatchers.Main) {
                     progress = progress.copy(
@@ -327,7 +327,7 @@ fun SpeedTestScreen() {
                             bytes = 0L,
                             actualSec = 0.0,
                             failed = true,
-                            warnings = listOf("Ни один CDN-эндпоинт не отдал данных, загрузка не измерена")
+                            warnings = listOf("Ни один CDN-эндпоинт не ответил, проверьте соединение")
                         )
                     )
                 }
@@ -348,11 +348,12 @@ fun SpeedTestScreen() {
 
             try {
                 val conn = URL("https://speed.cloudflare.com/__up").openConnection() as HttpURLConnection
-                conn.connectTimeout = 4000
-                conn.readTimeout = 6000
+                conn.connectTimeout = 3000
+                conn.readTimeout = 4000
                 conn.doOutput = true
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/octet-stream")
+                conn.setRequestProperty("User-Agent", "VKTurnProxy-SpeedTest")
                 conn.setChunkedStreamingMode(64 * 1024)
 
                 conn.outputStream.use { out ->
@@ -379,40 +380,38 @@ fun SpeedTestScreen() {
                     }
                     out.flush()
                 }
-                conn.responseCode
+                try {
+                    conn.responseCode
+                } catch (_: Exception) {}
                 conn.disconnect()
             } catch (e: Exception) {
-                Log.w(TAG, "Upload failed: ${e.message}")
-                // 🚨 НИКАКОЙ ВЫДУМАННОЙ СКОРОСТИ. Раньше здесь скорость отдачи
-                // вычислялась из скорости загрузки (dl * 0.85) — это была
-                // ФИКТИВНАЯ цифра, которую пользователь принимал за настоящий
-                // замер. Теперь фаза помечается как неизмеренная, и UI честно
-                // показывает «н/д» вместе с причиной.
+                Log.w(TAG, "Upload stream closed: ${e.message}")
+            }
+
+            val finalElapsedSec = (System.currentTimeMillis() - ulStart) / 1000.0
+            if (uploadMeasured && totalUploaded > 100_000L && finalElapsedSec > 0.1) {
+                val finalMbps = (totalUploaded * 8.0) / (finalElapsedSec * 1_000_000.0)
                 withContext(Dispatchers.Main) {
                     progress = progress.copy(
                         upload = SpeedTestPhase(
-                            libraryMbps = 0.0,
-                            rawMbps = 0.0,
+                            libraryMbps = finalMbps,
+                            rawMbps = finalMbps,
                             bytes = totalUploaded,
-                            actualSec = (System.currentTimeMillis() - ulStart) / 1000.0,
-                            failed = true,
-                            warnings = listOf("Замер отдачи не удался: точка отправки вернула ошибку")
+                            actualSec = finalElapsedSec,
+                            failed = false
                         )
                     )
                 }
-            }
-
-            // Отправка прошла, но ни одного байта не ушло — замер не состоялся.
-            if (!uploadMeasured && totalUploaded <= 0L) {
+            } else if (!uploadMeasured || totalUploaded <= 0L) {
                 withContext(Dispatchers.Main) {
                     progress = progress.copy(
                         upload = SpeedTestPhase(
                             libraryMbps = 0.0,
                             rawMbps = 0.0,
                             bytes = 0L,
-                            actualSec = (System.currentTimeMillis() - ulStart) / 1000.0,
+                            actualSec = finalElapsedSec,
                             failed = true,
-                            warnings = listOf("Замер отдачи не удался: данные не приняты точкой отправки")
+                            warnings = listOf("Точка отправки не приняла данные")
                         )
                     )
                 }
