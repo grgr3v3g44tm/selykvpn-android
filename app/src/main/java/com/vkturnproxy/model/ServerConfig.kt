@@ -18,6 +18,10 @@ data class ServerConfig(
     var name: String = "Server",
     var mode: ProxyMode = ProxyMode.SRTP,
     var vkLink: String = "",
+    // Ключ выдан сервером, но звонок VK ещё не создан: в vkLink лежит
+    // явная заглушка ServerConfig.PLACEHOLDER_CALL_LINK. Пока флаг не снят,
+    // туннель запускаться не должен — сначала нужно создать звонок.
+    var needsCallLink: Boolean = false,
     var peerAddress: String = "",
     var numConnections: Int = 30,
     var useUDP: Boolean = false,
@@ -116,6 +120,16 @@ data class ServerConfig(
     }
 
     companion object {
+        /**
+         * Явная заглушка вместо пустой ссылки на звонок VK.
+         *
+         * Сервер выдаёт ключ сразу, но сам звонок ещё не создан. Раньше это
+         * выглядело как обычная пустая ссылка, и импорт молча оставлял
+         * конфигурацию, к которой нельзя подключиться. Заглушка распознаётся
+         * при импорте и превращается в флаг needsCallLink.
+         */
+        const val PLACEHOLDER_CALL_LINK = "vkturnproxy://placeholder"
+
         fun keyToHex(key: String): String {
             val trimmed = key.trim()
             if (trimmed.length == 64 && trimmed.matches(Regex("^[0-9a-fA-F]+$"))) {
@@ -131,11 +145,37 @@ data class ServerConfig(
     }
 }
 
-fun ServerConfig.hasValidVKCallLink(): Boolean {
+/**
+ * Реальная ссылка на звонок VK — та, которую умеет использовать ядро.
+ * Заглушка «vkturnproxy://placeholder» реальной ссылкой не является.
+ */
+fun ServerConfig.hasRealVKCallLink(): Boolean {
     if (vkLink.isBlank()) return false
     return vkLink.lines().any { line ->
         line.trim().contains("call/join/")
     }
+}
+
+/**
+ * Ссылка на звонок ещё не создана: ключ получен с заглушкой, и туннель не
+ * может стартовать, пока пользователь не создаст звонок.
+ */
+fun ServerConfig.needsVKCallLink(): Boolean = needsCallLink && !hasRealVKCallLink()
+
+/**
+ * Подставляет реальную ссылку на звонок вместо заглушки, сохраняя остальные
+ * ссылки конфигурации (их может быть несколько — по одной на релей).
+ */
+fun ServerConfig.withCallLink(newLink: String): ServerConfig {
+    val clean = newLink.trim()
+    val rest = vkLink.lines()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.equals(ServerConfig.PLACEHOLDER_CALL_LINK, ignoreCase = true) }
+    return copy(vkLink = (listOf(clean) + rest).joinToString("\n"), needsCallLink = false)
+}
+
+fun ServerConfig.hasValidVKCallLink(): Boolean {
+    return hasRealVKCallLink()
 }
 
 fun hasValidVKCallLink(link: String?): Boolean {

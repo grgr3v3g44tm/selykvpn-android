@@ -22,6 +22,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.gson.Gson
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.google.gson.annotations.SerializedName
 import com.vkturnproxy.core.WgTurnCore
 import com.vkturnproxy.service.VkTurnVpnService
@@ -55,7 +57,18 @@ data class SpeedTestPhase(
     @SerializedName("library_mbps") val libraryMbps: Double = 0.0,
     @SerializedName("raw_mbps") val rawMbps: Double = 0.0,
     val bytes: Long = 0L,
-    @SerializedName("actual_sec") val actualSec: Double = 0.0
+    @SerializedName("actual_sec") val actualSec: Double = 0.0,
+    // Диагностика от Go-движка. Без неё предупреждения движка ("nothing moved
+    // in the measurement window" и прочие) ТЕРЯЛИСЬ по дороге, и нулевой
+    // результат выглядел как обычное число, а не как провал замера.
+    @SerializedName("warnings") val warnings: List<String> = emptyList(),
+    @SerializedName("window_sec") val windowSec: Double = 0.0,
+    @SerializedName("consistent") val consistent: Boolean = true,
+    @SerializedName("conns_used") val connsUsed: Int = 0,
+    // Фаза не измерена: ни одного байта не прошло. Движок отдаёт state == "done"
+    // даже в этом случае, поэтому без явного признака UI не может отличить
+    // "измерили 0.00" от "не измерили ничего".
+    @SerializedName("failed") val failed: Boolean = false
 )
 
 data class SpeedTestProgress(
@@ -70,6 +83,81 @@ data class SpeedTestProgress(
     val download: SpeedTestPhase? = null,
     val upload: SpeedTestPhase? = null
 )
+
+// Таймаут обращения к сервисам определения провайдера. Замер не должен висеть
+// из-за одного стороннего сервиса.
+private const val ISP_LOOKUP_TIMEOUT_MS = 2500
+
+/**
+ * Определение РЕАЛЬНОГО провайдера (ISP/ASN) по внешнему IP.
+ *
+ * Раньше здесь была заглушка "Direct CDN Network", которая не говорила
+ * пользователю ничего: по умолчанию она всегда показывалась, даже когда
+ * провайдера определить можно было.
+ *
+ * Используются только уже доступные зависимости проекта (Gson +
+ * HttpURLConnection) — новых библиотек не добавляем. Порядок источников:
+ * ipwho.is, затем ipapi.co. При недоступности обоих возвращается "Unknown".
+ */
+private suspend fun detectIsp(publicIp: String): String = withContext(Dispatchers.IO) {
+    val targets = if (publicIp.isNotBlank()) {
+        listOf("https://ipwho.is/$publicIp", "https://ipapi.co/$publicIp/json/")
+    } else {
+        listOf("https://ipwho.is/", "https://ipapi.co/json/")
+    }
+    for (target in targets) {
+        try {
+            val conn = URL(target).openConnection() as HttpURLConnection
+            conn.connectTimeout = ISP_LOOKUP_TIMEOUT_MS
+            conn.readTimeout = ISP_LOOKUP_TIMEOUT_MS
+            conn.setRequestProperty("User-Agent", "VKTurnProxy-SpeedTest")
+            val code = conn.responseCode
+            if (code != 200) {
+                conn.disconnect()
+                continue
+            }
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+            val name = parseIspName(body)
+            if (!name.isNullOrBlank()) return@withContext name
+        } catch (_: Exception) {
+            // Идём к следующему источнику
+        }
+    }
+    "Unknown"
+}
+
+/**
+ * Достаёт название провайдера из ответа ipwho.is / ipapi.co.
+ * Формат ответа у них разный, поэтому берём первое непустое поле из известных.
+ */
+private fun parseIspName(json: String): String? {
+    return try {
+        val root = JsonParser.parseString(json).asJsonObject
+        val connection = root.get("connection")?.takeIf { it.isJsonObject }?.asJsonObject
+        val company = root.get("company")?.takeIf { it.isJsonObject }?.asJsonObject
+        val candidates = listOf(
+            connection?.stringOrNull("isp"),
+            connection?.stringOrNull("org"),
+            root.stringOrNull("org"),
+            root.stringOrNull("isp"),
+            company?.stringOrNull("name")
+        )
+        candidates.firstOrNull { !it.isNullOrBlank() }?.trim()
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun JsonObject.stringOrNull(key: String): String? {
+    val element = get(key) ?: return null
+    if (!element.isJsonPrimitive) return null
+    return try {
+        element.asString.trim().ifEmpty { null }
+    } catch (_: Exception) {
+        null
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -128,6 +216,7 @@ fun SpeedTestScreen() {
         // 1. Measure Ping & get apparent IP
         var pingMs = 0.0
         var publicIp = ""
+        var colo = ""
         try {
             val pingStart = System.currentTimeMillis()
             val conn = URL("https://1.1.1.1").openConnection() as HttpURLConnection
@@ -151,16 +240,24 @@ fun SpeedTestScreen() {
                 val text = traceConn.inputStream.bufferedReader().use { it.readText() }
                 for (line in text.lines()) {
                     if (line.startsWith("ip=")) publicIp = line.removePrefix("ip=").trim()
+                    if (line.startsWith("colo=")) colo = line.removePrefix("colo=").trim()
                 }
             }
             traceConn.disconnect()
         } catch (_: Exception) {}
 
+        // Реальный провайдер по IP вместо заглушки "Direct CDN Network"
+        withContext(Dispatchers.Main) {
+            statusText = "Определение провайдера (ISP)..."
+        }
+        val isp = detectIsp(publicIp)
+        val ispLabel = if (colo.isNotBlank()) "$isp · CF $colo" else isp
+
         withContext(Dispatchers.Main) {
             progress = progress.copy(
                 pingMs = if (pingMs > 0) pingMs else 25.0,
                 ooklaSeesIp = publicIp,
-                ooklaSeesIsp = "Direct CDN Network"
+                ooklaSeesIsp = ispLabel
             )
         }
 
@@ -218,6 +315,23 @@ fun SpeedTestScreen() {
                     Log.w(TAG, "Download endpoint $endpoint failed: ${e.message}")
                 }
             }
+
+            // Замер не удался ни с одного CDN-эндпоинта. Показываем честную
+            // пустую фазу с предупреждением, а не молчаливый ноль.
+            if (totalBytesRead <= 0L) {
+                withContext(Dispatchers.Main) {
+                    progress = progress.copy(
+                        download = SpeedTestPhase(
+                            libraryMbps = 0.0,
+                            rawMbps = 0.0,
+                            bytes = 0L,
+                            actualSec = 0.0,
+                            failed = true,
+                            warnings = listOf("Ни один CDN-эндпоинт не отдал данных, загрузка не измерена")
+                        )
+                    )
+                }
+            }
         }
 
         // 3. Upload phase
@@ -230,6 +344,7 @@ fun SpeedTestScreen() {
             val ulStart = System.currentTimeMillis()
             val ulDurationMs = 6000L
             var totalUploaded = 0L
+            var uploadMeasured = false
 
             try {
                 val conn = URL("https://speed.cloudflare.com/__up").openConnection() as HttpURLConnection
@@ -246,6 +361,7 @@ fun SpeedTestScreen() {
                         if (!kotlinx.coroutines.currentCoroutineContext().isActive) break
                         out.write(chunk)
                         totalUploaded += chunk.size
+                        uploadMeasured = true
                         val elapsedSec = (System.currentTimeMillis() - ulStart) / 1000.0
                         if (elapsedSec > 0.1) {
                             val currentMbps = (totalUploaded * 8.0) / (elapsedSec * 1_000_000.0)
@@ -267,15 +383,38 @@ fun SpeedTestScreen() {
                 conn.disconnect()
             } catch (e: Exception) {
                 Log.w(TAG, "Upload failed: ${e.message}")
-                // If direct upload endpoint is blocked, emulate consistent ratio from download
-                if (progress.download != null && totalUploaded == 0L) {
-                    val dlVal = progress.download?.rawMbps ?: 10.0
-                    val estUl = (dlVal * 0.85).coerceAtLeast(1.0)
-                    withContext(Dispatchers.Main) {
-                        progress = progress.copy(
-                            upload = SpeedTestPhase(libraryMbps = estUl, rawMbps = estUl, bytes = 5_000_000L, actualSec = 5.0)
+                // 🚨 НИКАКОЙ ВЫДУМАННОЙ СКОРОСТИ. Раньше здесь скорость отдачи
+                // вычислялась из скорости загрузки (dl * 0.85) — это была
+                // ФИКТИВНАЯ цифра, которую пользователь принимал за настоящий
+                // замер. Теперь фаза помечается как неизмеренная, и UI честно
+                // показывает «н/д» вместе с причиной.
+                withContext(Dispatchers.Main) {
+                    progress = progress.copy(
+                        upload = SpeedTestPhase(
+                            libraryMbps = 0.0,
+                            rawMbps = 0.0,
+                            bytes = totalUploaded,
+                            actualSec = (System.currentTimeMillis() - ulStart) / 1000.0,
+                            failed = true,
+                            warnings = listOf("Замер отдачи не удался: точка отправки вернула ошибку")
                         )
-                    }
+                    )
+                }
+            }
+
+            // Отправка прошла, но ни одного байта не ушло — замер не состоялся.
+            if (!uploadMeasured && totalUploaded <= 0L) {
+                withContext(Dispatchers.Main) {
+                    progress = progress.copy(
+                        upload = SpeedTestPhase(
+                            libraryMbps = 0.0,
+                            rawMbps = 0.0,
+                            bytes = 0L,
+                            actualSec = (System.currentTimeMillis() - ulStart) / 1000.0,
+                            failed = true,
+                            warnings = listOf("Замер отдачи не удался: данные не приняты точкой отправки")
+                        )
+                    )
                 }
             }
         }
@@ -352,9 +491,36 @@ fun SpeedTestScreen() {
                     }
 
                     if (snap.state == "done") {
-                        withContext(Dispatchers.Main) {
-                            statusText = "Тестирование успешно завершено"
+                        // 🚨 ПРОВАЛ ЗАМЕРА — ЭТО НЕ «0.00 Мбит/с». Движок отдаёт
+                        // state == "done" и тогда, когда НИ ОДИН запрос не прошёл:
+                        // фаза приходит пустой (raw_mbps == 0, bytes == 0,
+                        // failed == true). Раньше фоллбэк запускался только при
+                        // state == "error", поэтому пользователь видел уверенный
+                        // ноль вместо результата. Теперь пустая фаза — это
+                        // повод перемерить через Direct CDN.
+                        val measuredPhase = if (selectedDirection == "upload") snap.upload else snap.download
+                        val hasResult = measuredPhase != null &&
+                            !measuredPhase.failed &&
+                            (measuredPhase.rawMbps > 0.0 || measuredPhase.bytes > 0L)
+
+                        if (hasResult) {
+                            withContext(Dispatchers.Main) {
+                                statusText = "Тестирование успешно завершено"
+                            }
+                            break
                         }
+
+                        Log.w(
+                            TAG,
+                            "Ookla finished without a result (download=${snap.download?.rawMbps}, " +
+                                "upload=${snap.upload?.rawMbps}, failed=${measuredPhase?.failed}). " +
+                                "Running HTTP fallback..."
+                        )
+                        withContext(Dispatchers.Main) {
+                            isRunning = true
+                            statusText = "Ookla не отдал скорость, замер через Direct CDN..."
+                        }
+                        runHttpFallback(selectedDirection)
                         break
                     } else if (snap.state == "error") {
                         // Smoothly switch to fallback CDN without failing
@@ -436,6 +602,8 @@ fun SpeedTestScreen() {
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = SurfaceDark)
                 ) {
+                    val dlPhase = progress.download
+                    val dlHasValue = animatedDl > 0f
                     Column(
                         modifier = Modifier.padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -447,12 +615,44 @@ fun SpeedTestScreen() {
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = if (animatedDl > 0f) "%.1f".format(animatedDl) else "--",
-                            color = AccentGreen,
+                            // «н/д» — фаза существует, но ничего не измерено.
+                            // Раньше здесь стояло «--» наравне с «не запускали»,
+                            // и провал замера выглядел как пустое место.
+                            text = when {
+                                dlHasValue -> "%.1f".format(animatedDl)
+                                dlPhase != null -> "н/д"
+                                else -> "--"
+                            },
+                            color = if (dlHasValue) AccentGreen else TextSecondary,
                             fontSize = 28.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Text("Мбит/с", color = TextSecondary, fontSize = 12.sp)
+                        if (dlPhase != null && !dlHasValue) {
+                            Text("не измерено", color = TextSecondary, fontSize = 10.sp)
+                        }
+                        // Диагностика движка: без неё пользователь не видел,
+                        // ПОЧЕМУ цифры нет.
+                        dlPhase?.warnings?.filter { it.isNotBlank() }?.forEach { warning ->
+                            Row(
+                                modifier = Modifier.padding(top = 6.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Icon(
+                                    Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = AccentAmber,
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = warning,
+                                    color = AccentAmber,
+                                    fontSize = 9.sp,
+                                    lineHeight = 12.sp
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -462,6 +662,8 @@ fun SpeedTestScreen() {
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = SurfaceDark)
                 ) {
+                    val ulPhase = progress.upload
+                    val ulHasValue = animatedUl > 0f
                     Column(
                         modifier = Modifier.padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -473,12 +675,39 @@ fun SpeedTestScreen() {
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = if (animatedUl > 0f) "%.1f".format(animatedUl) else "--",
-                            color = PrimaryBlue,
+                            text = when {
+                                ulHasValue -> "%.1f".format(animatedUl)
+                                ulPhase != null -> "н/д"
+                                else -> "--"
+                            },
+                            color = if (ulHasValue) PrimaryBlue else TextSecondary,
                             fontSize = 28.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Text("Мбит/с", color = TextSecondary, fontSize = 12.sp)
+                        if (ulPhase != null && !ulHasValue) {
+                            Text("не измерено", color = TextSecondary, fontSize = 10.sp)
+                        }
+                        ulPhase?.warnings?.filter { it.isNotBlank() }?.forEach { warning ->
+                            Row(
+                                modifier = Modifier.padding(top = 6.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Icon(
+                                    Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = AccentAmber,
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = warning,
+                                    color = AccentAmber,
+                                    fontSize = 9.sp,
+                                    lineHeight = 12.sp
+                                )
+                            }
+                        }
                     }
                 }
             }

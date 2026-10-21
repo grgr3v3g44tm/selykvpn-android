@@ -18,9 +18,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.vkturnproxy.BuildConfig
 import com.vkturnproxy.VkTurnApp
+import com.vkturnproxy.auth.VKCallCreatorDialog
 import com.vkturnproxy.model.ProxyMode
 import com.vkturnproxy.model.ServerConfig
 import com.vkturnproxy.model.hasValidVKCallLink
+import com.vkturnproxy.model.needsVKCallLink
+import com.vkturnproxy.model.withCallLink
 import com.vkturnproxy.parser.ConfigParser
 import com.vkturnproxy.service.VkTurnVpnService
 import com.vkturnproxy.service.VpnStatus
@@ -30,6 +33,7 @@ import com.vkturnproxy.ui.theme.PrimaryBlue
 import com.vkturnproxy.ui.theme.SurfaceDark
 import com.vkturnproxy.ui.theme.TextSecondary
 import com.vkturnproxy.ui.theme.VkTurnTheme
+import kotlinx.coroutines.flow.MutableStateFlow
 
 enum class Screen(val title: String, val icon: ImageVector) {
     DASHBOARD("Главная", Icons.Default.FlashOn),
@@ -40,6 +44,11 @@ enum class Screen(val title: String, val icon: ImageVector) {
 }
 
 class MainActivity : ComponentActivity() {
+
+    // Запрос на открытие диалога создания звонка VK.
+    // StateFlow, а не поле Compose, потому что handleIntent() вызывается
+    // ДО setContent{} и из onNewIntent() — то есть вне дерева композиции.
+    private val callCreatorRequest = MutableStateFlow<ServerConfig?>(null)
 
     private val vpnPrepareLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -69,9 +78,19 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         val data = intent?.dataString ?: return
-        val parsed = ConfigParser.parse(data)
-        if (parsed != null) {
-            VkTurnApp.instance.serverRepository.saveServer(parsed)
+        val parsed = ConfigParser.parse(data) ?: return
+        VkTurnApp.instance.serverRepository.saveServer(parsed)
+        if (parsed.needsCallLink) {
+            // Ключ получен с заглушкой: сразу открываем диалог создания звонка.
+            // Иначе пользователь увидел бы «импортировано» и не понимал, почему
+            // подключиться нельзя.
+            callCreatorRequest.value = parsed
+            Toast.makeText(
+                this,
+                "Конфигурация «${parsed.name}» импортирована. Создайте звонок VK для запуска VPN.",
+                Toast.LENGTH_LONG
+            ).show()
+        } else {
             Toast.makeText(this, "Конфигурация «${parsed.name}» импортирована!", Toast.LENGTH_LONG).show()
         }
     }
@@ -97,7 +116,13 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (!active.hasValidVKCallLink()) {
-            Toast.makeText(this, "Не указана ссылка на звонок VK. Создайте звонок или вставьте ссылку из буфера.", Toast.LENGTH_LONG).show()
+            if (active.needsVKCallLink()) {
+                // Ключ выдан с заглушкой: вместо бездействующего тоста открываем
+                // диалог создания звонка — без него туннель не запустится.
+                callCreatorRequest.value = active
+            } else {
+                Toast.makeText(this, "Не указана ссылка на звонок VK. Создайте звонок или вставьте ссылку из буфера.", Toast.LENGTH_LONG).show()
+            }
             return
         }
         VkTurnVpnService.start(this, active)
@@ -117,6 +142,7 @@ class MainActivity : ComponentActivity() {
         val vpnStatus by VkTurnVpnService.statusFlow.collectAsState()
         val vpnStats by VkTurnVpnService.statsFlow.collectAsState()
         val updateState by updateMgr.updateState.collectAsState()
+        val pendingCallCreator by callCreatorRequest.collectAsState()
 
         val prefs = remember { getSharedPreferences("vkturn_settings", Context.MODE_PRIVATE) }
         var isRootHotspotEnabled by remember { mutableStateOf(prefs.getBoolean("root_hotspot_enabled", false)) }
@@ -185,9 +211,9 @@ class MainActivity : ComponentActivity() {
                             onCallCreated = { newLink ->
                                 val active = activeServer
                                 if (active != null) {
-                                    val currentLinks = active.vkLink
-                                    val updatedVkLink = if (currentLinks.isBlank()) newLink else "$newLink\n$currentLinks"
-                                    val updated = active.copy(vkLink = updatedVkLink)
+                                    // withCallLink выбрасывает заглушку и ставит
+                                    // новую ссылку первой, сохраняя остальные.
+                                    val updated = active.withCallLink(newLink)
                                     serverRepo.saveServer(updated)
                                     Toast.makeText(this@MainActivity, "Звонок VK создан и привязан к «${updated.name}»!", Toast.LENGTH_LONG).show()
                                 } else {
@@ -234,6 +260,24 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+
+        // Диалог создания звонка VK. Открывается при импорте ключа с
+        // заглушкой (needsCallLink) и при попытке подключиться без ссылки.
+        pendingCallCreator?.let { request ->
+            VKCallCreatorDialog(
+                onDismiss = { callCreatorRequest.value = null },
+                onCallCreated = { newLink ->
+                    val updated = request.withCallLink(newLink)
+                    serverRepo.saveServer(updated)
+                    callCreatorRequest.value = null
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Звонок VK создан и привязан к «${updated.name}»!",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            )
         }
     }
 }

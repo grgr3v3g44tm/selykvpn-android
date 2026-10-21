@@ -121,6 +121,9 @@ fun ServerEditScreen(
                             name = name,
                             mode = mode,
                             vkLink = vkLink,
+                            // Флаг «звонок ещё не создан» снимается, как только
+                            // в поле появилась настоящая ссылка на звонок.
+                            needsCallLink = server.needsCallLink && !hasValidVKCallLink(vkLink),
                             peerAddress = peerAddress,
                             numConnections = numConnections.toInt(),
                             useUDP = useUDP,
@@ -562,7 +565,12 @@ fun ServerEditScreen(
         VKCallCreatorDialog(
             onDismiss = { showVKCallCreatorDialog = false },
             onCallCreated = { newLink ->
-                vkLink = if (vkLink.isBlank()) newLink else "$newLink\n$vkLink"
+                // Заглушка «vkturnproxy://placeholder» выбрасывается: она не является
+                // ссылкой на звонок, и её нельзя оставлять в списке релеев.
+                val rest = vkLink.lines()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() && !it.equals(ServerConfig.PLACEHOLDER_CALL_LINK, ignoreCase = true) }
+                vkLink = (listOf(newLink.trim()) + rest).joinToString("\n")
                 showVKCallCreatorDialog = false
             }
         )

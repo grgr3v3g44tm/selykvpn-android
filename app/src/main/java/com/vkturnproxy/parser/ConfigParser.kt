@@ -27,11 +27,45 @@ object ConfigParser {
         return try {
             val uri = Uri.parse(uriString)
             val data = uri.getQueryParameter("data") ?: return null
-            val jsonBytes = Base64.decode(data, Base64.DEFAULT)
+            val jsonBytes = decodeBase64Flexible(data) ?: return null
             val jsonStr = String(jsonBytes, Charsets.UTF_8)
             parseJson(jsonStr)
         } catch (e: Exception) {
             e.printStackTrace()
+            null
+        }
+    }
+
+    /**
+     * Декодит base64 в любом из вариантов: стандартный или url-safe, с padding
+     * или без.
+     *
+     * Сервер выдаёт ключ в формате base64url БЕЗ padding — так же, как это делает
+     * эталонный генератор ссылок iOS-приложения (quick_link.py:
+     * base64.urlsafe_b64encode(...).rstrip("=")), потому что «+» и «/» в
+     * query-параметре URL неоднозначны. Старые ключи лежат в стандартном
+     * base64 с «=» — принимаем оба, иначе смена формата тихо ломает импорт.
+     */
+    private fun decodeBase64Flexible(input: String): ByteArray? {
+        val variants = intArrayOf(
+            Base64.DEFAULT,
+            Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP,
+            Base64.URL_SAFE or Base64.NO_WRAP,
+            Base64.NO_PADDING or Base64.NO_WRAP
+        )
+        for (flags in variants) {
+            try {
+                return Base64.decode(input, flags)
+            } catch (_: Exception) {
+                // пробуем следующий вариант
+            }
+        }
+        // Последний шанс: нормализуем url-safe → standard и дополняем padding.
+        return try {
+            val norm = input.replace('-', '+').replace('_', '/')
+            val padded = norm + "=".repeat((4 - norm.length % 4) % 4)
+            Base64.decode(padded, Base64.DEFAULT)
+        } catch (_: Exception) {
             null
         }
     }
@@ -47,6 +81,11 @@ object ConfigParser {
             val vkLink = settings.get("vkLink")?.asString
                 ?: settings.get("vk_link")?.asString
                 ?: ""
+            // Явная заглушка от сервера: ключ выдан, но сам звонок VK ещё не
+            // создан. Раньше такой импорт молча давал конфигурацию, к которой
+            // нельзя было подключиться, и пользователь не понимал, что делать.
+            val needsCallLink = vkLink.trim()
+                .equals(ServerConfig.PLACEHOLDER_CALL_LINK, ignoreCase = true)
             val peerAddress = settings.get("peerAddress")?.asString
                 ?: settings.get("peer_addr")?.asString
                 ?: ""
@@ -119,6 +158,7 @@ object ConfigParser {
                 name = name,
                 mode = mode,
                 vkLink = vkLink,
+                needsCallLink = needsCallLink,
                 peerAddress = peerAddress,
                 numConnections = numConns,
                 useUDP = useUDP,

@@ -219,3 +219,23 @@ unmeasured traffic on the link under test.
 ⇒ **Do not compare a research figure across this line**: before Method 9 the
 `engine` column and the connection counts of a research run include time the
 window deliberately excluded.
+
+### Reporting addition after Method 9 — a failed phase says so
+
+**No figure changed.** What changed is that a phase which moved NO bytes now
+carries an explicit `failed` flag, and the wrapper's own connection counters
+corroborate it: not one connection carried any data.
+
+**Why it was needed.** A phase that measured nothing and a phase that measured
+zero were the same line on the wire: `raw_mbps = 0`. The engine's own failure
+marker (`-1` / N/A in `DLSpeed`/`ULSpeed`) never left the Go process — and is
+not even set when the phase made no request at all, because its guard divides
+by a request count that is then zero. So a run in which every request failed
+was published as a **successful** run carrying `0.00 Mbit/s`, and the app could
+not tell it from a link that genuinely measured zero. It now falls back to a
+CDN measurement instead of showing a confident zero.
+
+⚖️ **This is a REPORTING fix, not a measurement one** — the same distinction
+Method 6 drew for `confirmed_known`: no number changes, a verdict that was
+being lost is now carried. ⇒ no method revision, and nothing here may be
+compared differently because of it.

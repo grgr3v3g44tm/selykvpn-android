@@ -31,6 +31,7 @@ data class GithubRelease(
     @SerializedName("name") val name: String = "",
     @SerializedName("body") val body: String = "",
     @SerializedName("prerelease") val prerelease: Boolean = false,
+    @SerializedName("published_at") val publishedAt: String = "",
     @SerializedName("assets") val assets: List<GithubAsset> = emptyList()
 )
 
@@ -140,9 +141,12 @@ class UpdateManager(private val context: Context) {
     }
 
     private suspend fun fetchLatestRelease(currentVersion: String): UpdateInfo? = withContext(Dispatchers.IO) {
+        // per_page=100 ОБЯЗАТЕЛЕН: без параметра GitHub отдаёт только 30 релизов,
+        // а новый релиз может оказаться дальше по списку — приложение его не видело
+        // и показывало «обновление не найдено».
         val endpoints = listOf(
-            "https://api.github.com/repos/maximyt288/my-vpn-releases/releases",
-            "https://api.github.com/repos/maximyt288/my-vpn/releases"
+            "https://api.github.com/repos/maximyt288/my-vpn-releases/releases?per_page=100",
+            "https://api.github.com/repos/maximyt288/my-vpn/releases?per_page=100"
         )
 
         for (endpoint in endpoints) {
@@ -153,10 +157,14 @@ class UpdateManager(private val context: Context) {
                 val releases: Array<GithubRelease> = gson.fromJson(json, Array<GithubRelease>::class.java)
                 if (releases.isEmpty()) continue
 
-                // Find candidate release: must contain VK TURN APK assets
-                val candidate = releases.firstOrNull { rel ->
-                    rel.assets.any { isVkTurnApk(it.name) }
-                }
+                // Кандидат — САМЫЙ СВЕЖИЙ релиз с VK TURN-ассетами.
+                // Порядок в ответе GitHub нельзя принимать за «новый сверху»:
+                // у релизов, созданных скриптом, created_at совпадает до секунды,
+                // и порядок получается произвольным. Поэтому сортируем сами
+                // по published_at.
+                val candidate = releases
+                    .filter { rel -> rel.assets.any { isVkTurnApk(it.name) } }
+                    .maxByOrNull { rel -> rel.publishedAt }
 
                 if (candidate != null) {
                     val remoteVersion = extractVersion(candidate.tagName)

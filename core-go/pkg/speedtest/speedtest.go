@@ -266,6 +266,27 @@ type Phase struct {
 	// cannot be trusted. Empty means nothing was detected — not that the number
 	// is right.
 	Warnings []string `json:"warnings,omitempty"`
+
+	// Failed is the WRAPPER'S OWN VERDICT on the phase: it measured nothing,
+	// so there is no figure to believe.
+	//
+	// 🚨 IT EXISTS BECAUSE "MEASURED NOTHING" AND "MEASURED ZERO" LOOK THE SAME
+	// ON THE WIRE WITHOUT IT. RawMbps is 0.0 in both cases, and the engine's
+	// OWN failure signal — the -1 (N/A) it puts in DLSpeed when more than a
+	// tenth of its requests failed — never leaves the Go process (and is not
+	// even set when no request was made at all, because its guard divides by a
+	// request count that is then zero). So a run in which every request failed
+	// was published as a SUCCESSFUL run carrying 0.00 Mbit/s, and the app had
+	// no way to tell that line from a link that legitimately measured zero. It
+	// falls back to a CDN measurement on this flag now, instead of showing the
+	// user a confident zero.
+	//
+	// ⚖️ IT IS NOT A NEW FIGURE: no number changes, a verdict that was being
+	// LOST is now carried. It is reported per phase, because a download that
+	// measured nothing and an upload that measured nothing are different
+	// events: the first is worth measuring again elsewhere, the second is
+	// printed as "not measured".
+	Failed bool `json:"failed"`
 }
 
 // Progress is the whole snapshot Swift polls.
@@ -1263,6 +1284,13 @@ func setRaw(p Phase, bytes int64, sec float64) Phase {
 	switch {
 	case bytes <= 0:
 		p.RawMbps = 0
+		// 🚨 NOTHING MOVED IS A FAILED PHASE, NOT A SLOW ONE. The app used to
+		// receive 0.0 Mbit/s with no way of telling it from a measured zero,
+		// because the engine's own failure marker (-1 = N/A) stays inside this
+		// process. The verdict travels with the phase so the caller can decide
+		// what a zero means — and the only honest reading of a phase that moved
+		// no bytes is that it was not measured.
+		p.Failed = true
 		p.Warnings = append(p.Warnings, "nothing moved in the measurement window")
 	case sec < minRateWindow:
 		p.RawMbps = 0
@@ -1277,6 +1305,27 @@ func setRaw(p Phase, bytes int64, sec float64) Phase {
 // applyConnStats records how many TCP connections the phase really used.
 func applyConnStats(p Phase, used, dials, threads int, warm bool) Phase {
 	p.ConnsUsed, p.Dials = used, dials
+
+	// 🚨 NOT A SINGLE CONNECTION CARRIED A BYTE. This is the wrapper's own
+	// evidence that the phase measured nothing, and it comes from the
+	// connection counters — which are the wrapper's own — rather than from the
+	// engine's post-phase speed fields, which this package must not read (see
+	// TestTheEngineRateAndConnsComeFromTheWindowEdge: the rate is delivered by
+	// the engine's own goroutine and never read out of its state).
+	//
+	// ⚖️ IT IS THE SAME FACT AS "no bytes moved", CORROBORATED FROM THE OTHER
+	// SIDE: the byte counter and the connection counter are different counters,
+	// and a phase in which not one connection carried data cannot have a rate.
+	// The engine's own failure marker (-1 = N/A, set when more than a tenth of
+	// its requests failed) stays inside the engine, and its guard divides by a
+	// request count that is ZERO when no request was made at all — so the
+	// marker is not even set on a phase that never started. That is why the
+	// verdict is made HERE, where the counters are.
+	if used == 0 {
+		p.Failed = true
+		p.Warnings = append(p.Warnings,
+			"not one connection carried any data in this phase — the measurement did not happen")
+	}
 
 	// 🚨 AN UNPRIMED PHASE CANNOT BE READ AS A FLOW COUNT AT ALL. Go dials once
 	// per concurrent request from an empty pool — the thundering herd — so it
