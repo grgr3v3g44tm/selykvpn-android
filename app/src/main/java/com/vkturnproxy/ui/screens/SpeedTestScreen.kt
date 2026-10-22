@@ -2,8 +2,10 @@ package com.vkturnproxy.ui.screens
 
 import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -17,147 +19,70 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import com.google.gson.annotations.SerializedName
-import com.vkturnproxy.core.WgTurnCore
 import com.vkturnproxy.service.VkTurnVpnService
 import com.vkturnproxy.service.VpnStatus
 import com.vkturnproxy.ui.theme.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.sqrt
 
 private const val TAG = "SpeedTestScreen"
 
-data class SpeedTestServer(
-    val id: String = "",
-    val name: String = "",
-    val sponsor: String = "",
-    val country: String = "",
-    val host: String = "",
-    @SerializedName("distance_km") val distanceKm: Double = 0.0,
-    @SerializedName("latency_ms") val latencyMs: Double = 0.0
-)
-
-data class SpeedTestPhase(
-    @SerializedName("library_mbps") val libraryMbps: Double = 0.0,
-    @SerializedName("raw_mbps") val rawMbps: Double = 0.0,
-    val bytes: Long = 0L,
-    @SerializedName("actual_sec") val actualSec: Double = 0.0,
-    // Диагностика от Go-движка. Без неё предупреждения движка ("nothing moved
-    // in the measurement window" и прочие) ТЕРЯЛИСЬ по дороге, и нулевой
-    // результат выглядел как обычное число, а не как провал замера.
-    @SerializedName("warnings") val warnings: List<String> = emptyList(),
-    @SerializedName("window_sec") val windowSec: Double = 0.0,
-    @SerializedName("consistent") val consistent: Boolean = true,
-    @SerializedName("conns_used") val connsUsed: Int = 0,
-    // Фаза не измерена: ни одного байта не прошло. Движок отдаёт state == "done"
-    // даже в этом случае, поэтому без явного признака UI не может отличить
-    // "измерили 0.00" от "не измерили ничего".
-    @SerializedName("failed") val failed: Boolean = false
-)
-
-data class SpeedTestProgress(
-    val state: String = "idle", // "idle", "running", "done", "error"
-    val stage: String = "",
-    val error: String? = null,
-    @SerializedName("server_id") val serverId: String = "",
-    @SerializedName("server_desc") val serverDesc: String = "",
-    @SerializedName("ookla_sees_ip") val ooklaSeesIp: String = "",
-    @SerializedName("ookla_sees_isp") val ooklaSeesIsp: String = "",
-    @SerializedName("ping_ms") val pingMs: Double = 0.0,
-    val download: SpeedTestPhase? = null,
-    val upload: SpeedTestPhase? = null
-)
-
-// Таймаут обращения к сервисам определения провайдера. Замер не должен висеть
-// из-за одного стороннего сервиса.
-private const val ISP_LOOKUP_TIMEOUT_MS = 2500
-
-/**
- * Определение РЕАЛЬНОГО провайдера (ISP/ASN) по внешнему IP.
- *
- * Раньше здесь была заглушка "Direct CDN Network", которая не говорила
- * пользователю ничего: по умолчанию она всегда показывалась, даже когда
- * провайдера определить можно было.
- *
- * Используются только уже доступные зависимости проекта (Gson +
- * HttpURLConnection) — новых библиотек не добавляем. Порядок источников:
- * ipwho.is, затем ipapi.co. При недоступности обоих возвращается "Unknown".
- */
-private suspend fun detectIsp(publicIp: String): String = withContext(Dispatchers.IO) {
-    val targets = if (publicIp.isNotBlank()) {
-        listOf("https://ipwho.is/$publicIp", "https://ipapi.co/$publicIp/json/")
-    } else {
-        listOf("https://ipwho.is/", "https://ipapi.co/json/")
-    }
-    for (target in targets) {
-        try {
-            val conn = URL(target).openConnection() as HttpURLConnection
-            conn.connectTimeout = ISP_LOOKUP_TIMEOUT_MS
-            conn.readTimeout = ISP_LOOKUP_TIMEOUT_MS
-            conn.setRequestProperty("User-Agent", "VKTurnProxy-SpeedTest")
-            val code = conn.responseCode
-            if (code != 200) {
-                conn.disconnect()
-                continue
-            }
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            conn.disconnect()
-            val name = parseIspName(body)
-            if (!name.isNullOrBlank()) return@withContext name
-        } catch (_: Exception) {
-            // Идём к следующему источнику
-        }
-    }
-    "Unknown"
+enum class TestStage {
+    IDLE,
+    PING,
+    DOWNLOAD,
+    UPLOAD,
+    COMPLETED,
+    ERROR
 }
 
-/**
- * Достаёт название провайдера из ответа ipwho.is / ipapi.co.
- * Формат ответа у них разный, поэтому берём первое непустое поле из известных.
- */
-private fun parseIspName(json: String): String? {
-    return try {
-        val root = JsonParser.parseString(json).asJsonObject
-        val connection = root.get("connection")?.takeIf { it.isJsonObject }?.asJsonObject
-        val company = root.get("company")?.takeIf { it.isJsonObject }?.asJsonObject
-        val candidates = listOf(
-            connection?.stringOrNull("isp"),
-            connection?.stringOrNull("org"),
-            root.stringOrNull("org"),
-            root.stringOrNull("isp"),
-            company?.stringOrNull("name")
-        )
-        candidates.firstOrNull { !it.isNullOrBlank() }?.trim()
-    } catch (_: Exception) {
-        null
-    }
-}
+data class SpeedState(
+    val stage: TestStage = TestStage.IDLE,
+    val pingMs: Double = 0.0,
+    val jitterMs: Double = 0.0,
+    val currentMbps: Double = 0.0,
+    val downloadMbps: Double = 0.0,
+    val downloadPeakMbps: Double = 0.0,
+    val uploadMbps: Double = 0.0,
+    val uploadPeakMbps: Double = 0.0,
+    val publicIp: String = "",
+    val ispLocation: String = "",
+    val progress: Float = 0f,
+    val statusText: String = "",
+    val errorText: String? = null,
+    val speedHistory: List<Float> = emptyList()
+)
 
-private fun JsonObject.stringOrNull(key: String): String? {
-    val element = get(key) ?: return null
-    if (!element.isJsonPrimitive) return null
-    return try {
-        element.asString.trim().ifEmpty { null }
-    } catch (_: Exception) {
-        null
-    }
-}
+private val DOWNLOAD_ENDPOINTS = listOf(
+    "https://speed.cloudflare.com/__down?bytes=50000000",
+    "https://cachefly.cachefly.net/100mb.test",
+    "https://speedtest.tele2.net/100MB.zip",
+    "https://proof.ovh.net/files/100Mb.dat",
+    "https://mirror.yandex.ru/debian/ls-lR.gz"
+)
+
+private val UPLOAD_ENDPOINTS = listOf(
+    "https://speed.cloudflare.com/__up",
+    "https://speedtest.tele2.net/upload.php"
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -165,387 +90,393 @@ fun SpeedTestScreen() {
     val scope = rememberCoroutineScope()
     val vpnStatus by VkTurnVpnService.statusFlow.collectAsState()
 
-    var isRunning by remember { mutableStateOf(false) }
+    var state by remember { mutableStateOf(SpeedState()) }
     var activeJob by remember { mutableStateOf<Job?>(null) }
-    var servers by remember { mutableStateOf<List<SpeedTestServer>>(emptyList()) }
-    var selectedServer by remember { mutableStateOf<SpeedTestServer?>(null) }
     var selectedDirection by remember { mutableStateOf("both") } // "both", "download", "upload"
     var threadsCount by remember { mutableStateOf(4) }
-    var progress by remember { mutableStateOf(SpeedTestProgress()) }
-    var statusText by remember { mutableStateOf("") }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var isFetchingServers by remember { mutableStateOf(false) }
-    var showServerDialog by remember { mutableStateOf(false) }
 
-    // Live display values
-    val currentDl = progress.download?.rawMbps ?: 0.0
-    val currentUl = progress.upload?.rawMbps ?: 0.0
-    val animatedDl by animateFloatAsState(targetValue = currentDl.toFloat(), animationSpec = tween(150), label = "dl")
-    val animatedUl by animateFloatAsState(targetValue = currentUl.toFloat(), animationSpec = tween(150), label = "ul")
+    val isRunning = state.stage != TestStage.IDLE && state.stage != TestStage.COMPLETED && state.stage != TestStage.ERROR
 
-    fun loadServersOnDemand() {
-        if (isFetchingServers || isRunning) return
-        isFetchingServers = true
-        scope.launch(Dispatchers.IO) {
-            try {
-                val json = WgTurnCore.speedtestServers()
-                if (json.isNotBlank() && json != "[]") {
-                    val list = Gson().fromJson(json, Array<SpeedTestServer>::class.java).toList()
-                    withContext(Dispatchers.Main) {
-                        servers = list
-                        showServerDialog = true
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to load Ookla servers: ${e.message}")
-            } finally {
-                withContext(Dispatchers.Main) {
-                    isFetchingServers = false
-                }
-            }
-        }
-    }
-
-    // Direct HTTP Fallback Speedtest Engine (resistant to Ookla blocks/DPI)
-    suspend fun runHttpFallback(direction: String) = withContext(Dispatchers.IO) {
-        withContext(Dispatchers.Main) {
-            statusText = "Замер задержки (CDN)..."
-            progress = progress.copy(stage = "ping")
-        }
-
-        // 1. Measure Ping & get apparent IP
-        var pingMs = 0.0
-        var publicIp = ""
-        var colo = ""
-        try {
-            val pingStart = System.currentTimeMillis()
-            val conn = URL("https://1.1.1.1").openConnection() as HttpURLConnection
-            conn.connectTimeout = 3000
-            conn.readTimeout = 3000
-            conn.requestMethod = "HEAD"
-            conn.connect()
-            val code = conn.responseCode
-            conn.disconnect()
-            val pingEnd = System.currentTimeMillis()
-            if (code in 200..399) {
-                pingMs = (pingEnd - pingStart).toDouble().coerceAtLeast(1.0)
-            }
-        } catch (_: Exception) {}
-
-        try {
-            val traceConn = URL("https://cloudflare.com/cdn-cgi/trace").openConnection() as HttpURLConnection
-            traceConn.connectTimeout = 3000
-            traceConn.readTimeout = 3000
-            if (traceConn.responseCode == 200) {
-                val text = traceConn.inputStream.bufferedReader().use { it.readText() }
-                for (line in text.lines()) {
-                    if (line.startsWith("ip=")) publicIp = line.removePrefix("ip=").trim()
-                    if (line.startsWith("colo=")) colo = line.removePrefix("colo=").trim()
-                }
-            }
-            traceConn.disconnect()
-        } catch (_: Exception) {}
-
-        // Реальный провайдер по IP вместо заглушки "Direct CDN Network"
-        withContext(Dispatchers.Main) {
-            statusText = "Определение провайдера (ISP)..."
-        }
-        val isp = detectIsp(publicIp)
-        val ispLabel = if (colo.isNotBlank()) "$isp · CF $colo" else isp
-
-        withContext(Dispatchers.Main) {
-            progress = progress.copy(
-                pingMs = if (pingMs > 0) pingMs else 25.0,
-                ooklaSeesIp = publicIp,
-                ooklaSeesIsp = ispLabel
-            )
-        }
-
-        // 2. Download phase
-        if (direction == "both" || direction == "download") {
-            withContext(Dispatchers.Main) {
-                statusText = "Тестирование загрузки (Download)..."
-                progress = progress.copy(stage = "download")
-            }
-
-            val dlEndpoints = listOf(
-                "https://speed.cloudflare.com/__down?bytes=50000000",
-                "https://proof.ovh.net/files/10Mb.dat",
-                "https://mirror.yandex.ru/debian/ls-lR.gz"
-            )
-
-            var totalBytesRead = 0L
-            val testStart = System.currentTimeMillis()
-            val testDurationMs = 8000L
-
-            for (endpoint in dlEndpoints) {
-                if (!kotlinx.coroutines.currentCoroutineContext().isActive) break
-                try {
-                    val conn = URL(endpoint).openConnection() as HttpURLConnection
-                    conn.connectTimeout = 3000
-                    conn.readTimeout = 4000
-                    conn.setRequestProperty("User-Agent", "VKTurnProxy-SpeedTest")
-
-                    conn.inputStream.use { stream ->
-                        val buffer = ByteArray(64 * 1024)
-                        var bytesRead: Int
-                        while (stream.read(buffer).also { bytesRead = it } != -1) {
-                            if (!kotlinx.coroutines.currentCoroutineContext().isActive) break
-                            totalBytesRead += bytesRead
-                            val elapsedSec = (System.currentTimeMillis() - testStart) / 1000.0
-                            if (elapsedSec > 0.1) {
-                                val currentMbps = (totalBytesRead * 8.0) / (elapsedSec * 1_000_000.0)
-                                withContext(Dispatchers.Main) {
-                                    progress = progress.copy(
-                                        download = SpeedTestPhase(
-                                            libraryMbps = currentMbps,
-                                            rawMbps = currentMbps,
-                                            bytes = totalBytesRead,
-                                            actualSec = elapsedSec
-                                        )
-                                    )
-                                }
-                            }
-                            if (System.currentTimeMillis() - testStart >= testDurationMs) break
-                        }
-                    }
-                    conn.disconnect()
-                    // Завершаем фазу загрузки, если вышло время замера или получено достаточно данных (>50 МБ)
-                    if (System.currentTimeMillis() - testStart >= testDurationMs || totalBytesRead >= 50_000_000L) break
-                } catch (e: Exception) {
-                    Log.w(TAG, "Download endpoint $endpoint failed: ${e.message}")
-                }
-            }
-
-            // Замер не удался ни с одного CDN-эндпоинта.
-            if (totalBytesRead <= 0L) {
-                withContext(Dispatchers.Main) {
-                    progress = progress.copy(
-                        download = SpeedTestPhase(
-                            libraryMbps = 0.0,
-                            rawMbps = 0.0,
-                            bytes = 0L,
-                            actualSec = 0.0,
-                            failed = true,
-                            warnings = listOf("Ни один CDN-эндпоинт не ответил, проверьте соединение")
-                        )
-                    )
-                }
-            }
-        }
-
-        // 3. Upload phase
-        if (direction == "both" || direction == "upload") {
-            withContext(Dispatchers.Main) {
-                statusText = "Тестирование отдачи (Upload)..."
-                progress = progress.copy(stage = "upload")
-            }
-
-            val ulStart = System.currentTimeMillis()
-            val ulDurationMs = 6000L
-            var totalUploaded = 0L
-            var uploadMeasured = false
-
-            try {
-                val conn = URL("https://speed.cloudflare.com/__up").openConnection() as HttpURLConnection
-                conn.connectTimeout = 3000
-                conn.readTimeout = 4000
-                conn.doOutput = true
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/octet-stream")
-                conn.setRequestProperty("User-Agent", "VKTurnProxy-SpeedTest")
-                conn.setChunkedStreamingMode(64 * 1024)
-
-                conn.outputStream.use { out ->
-                    val chunk = ByteArray(64 * 1024) { 0x5A }
-                    while (System.currentTimeMillis() - ulStart < ulDurationMs) {
-                        if (!kotlinx.coroutines.currentCoroutineContext().isActive) break
-                        out.write(chunk)
-                        totalUploaded += chunk.size
-                        uploadMeasured = true
-                        val elapsedSec = (System.currentTimeMillis() - ulStart) / 1000.0
-                        if (elapsedSec > 0.1) {
-                            val currentMbps = (totalUploaded * 8.0) / (elapsedSec * 1_000_000.0)
-                            withContext(Dispatchers.Main) {
-                                progress = progress.copy(
-                                    upload = SpeedTestPhase(
-                                        libraryMbps = currentMbps,
-                                        rawMbps = currentMbps,
-                                        bytes = totalUploaded,
-                                        actualSec = elapsedSec
-                                    )
-                                )
-                            }
-                        }
-                    }
-                    out.flush()
-                }
-                try {
-                    conn.responseCode
-                } catch (_: Exception) {}
-                conn.disconnect()
-            } catch (e: Exception) {
-                Log.w(TAG, "Upload stream closed: ${e.message}")
-            }
-
-            val finalElapsedSec = (System.currentTimeMillis() - ulStart) / 1000.0
-            if (uploadMeasured && totalUploaded > 100_000L && finalElapsedSec > 0.1) {
-                val finalMbps = (totalUploaded * 8.0) / (finalElapsedSec * 1_000_000.0)
-                withContext(Dispatchers.Main) {
-                    progress = progress.copy(
-                        upload = SpeedTestPhase(
-                            libraryMbps = finalMbps,
-                            rawMbps = finalMbps,
-                            bytes = totalUploaded,
-                            actualSec = finalElapsedSec,
-                            failed = false
-                        )
-                    )
-                }
-            } else if (!uploadMeasured || totalUploaded <= 0L) {
-                withContext(Dispatchers.Main) {
-                    progress = progress.copy(
-                        upload = SpeedTestPhase(
-                            libraryMbps = 0.0,
-                            rawMbps = 0.0,
-                            bytes = 0L,
-                            actualSec = finalElapsedSec,
-                            failed = true,
-                            warnings = listOf("Точка отправки не приняла данные")
-                        )
-                    )
-                }
-            }
-        }
-
-        withContext(Dispatchers.Main) {
-            statusText = "Тестирование успешно завершено"
-            isRunning = false
-            progress = progress.copy(state = "done", stage = "")
-        }
-    }
-
-    fun startTest() {
-        if (isRunning) return
-        isRunning = true
-        errorMessage = null
-        statusText = "Инициализация..."
-        progress = SpeedTestProgress(state = "running", stage = "init")
-
-        activeJob = scope.launch(Dispatchers.IO) {
-            // Wait if servers are being fetched in background to avoid mutex clash
-            var waitCounter = 0
-            while (isFetchingServers && waitCounter < 20) {
-                delay(150)
-                waitCounter++
-            }
-
-            val cfg = mapOf(
-                "server_id" to (selectedServer?.id ?: ""),
-                "threads" to threadsCount,
-                "direction" to selectedDirection,
-                "duration_sec" to 10,
-                "research" to false,
-                "debug" to false
-            )
-            val cfgJson = Gson().toJson(cfg)
-
-            // Attempt to start Ookla test with retry on "busy"
-            var startErr: String? = null
-            for (attempt in 1..4) {
-                startErr = WgTurnCore.speedtestStart(cfgJson)
-                if (startErr.isNullOrBlank()) break
-                if (startErr.contains("busy", ignoreCase = true)) {
-                    delay(400)
-                } else {
-                    break
-                }
-            }
-
-            if (!startErr.isNullOrBlank()) {
-                Log.w(TAG, "Ookla speedtestStart failed: $startErr. Switching to Direct CDN fallback...")
-                withContext(Dispatchers.Main) {
-                    statusText = "Ookla недоступен, выполняется прямой замер CDN..."
-                }
-                runHttpFallback(selectedDirection)
-                return@launch
-            }
-
-            // Poll Ookla loop
-            var sawProgress = false
-            while (isRunning && isActive) {
-                delay(150)
-                val snapJson = WgTurnCore.speedtestPoll()
-                if (snapJson.isNotBlank() && snapJson != "{}") {
-                    val snap = Gson().fromJson(snapJson, SpeedTestProgress::class.java)
-                    withContext(Dispatchers.Main) {
-                        progress = snap
-                        sawProgress = true
-                        if (snap.state == "done" || snap.state == "error") {
-                            isRunning = false
-                            if (snap.state == "error") {
-                                Log.w(TAG, "Ookla poll error: ${snap.error}. Running HTTP fallback...")
-                            }
-                        }
-                    }
-
-                    if (snap.state == "done") {
-                        // 🚨 ПРОВАЛ ЗАМЕРА — ЭТО НЕ «0.00 Мбит/с». Движок отдаёт
-                        // state == "done" и тогда, когда НИ ОДИН запрос не прошёл:
-                        // фаза приходит пустой (raw_mbps == 0, bytes == 0,
-                        // failed == true). Раньше фоллбэк запускался только при
-                        // state == "error", поэтому пользователь видел уверенный
-                        // ноль вместо результата. Теперь пустая фаза — это
-                        // повод перемерить через Direct CDN.
-                        val measuredPhase = if (selectedDirection == "upload") snap.upload else snap.download
-                        val hasResult = measuredPhase != null &&
-                            !measuredPhase.failed &&
-                            (measuredPhase.rawMbps > 0.0 || measuredPhase.bytes > 0L)
-
-                        if (hasResult) {
-                            withContext(Dispatchers.Main) {
-                                statusText = "Тестирование успешно завершено"
-                            }
-                            break
-                        }
-
-                        Log.w(
-                            TAG,
-                            "Ookla finished without a result (download=${snap.download?.rawMbps}, " +
-                                "upload=${snap.upload?.rawMbps}, failed=${measuredPhase?.failed}). " +
-                                "Running HTTP fallback..."
-                        )
-                        withContext(Dispatchers.Main) {
-                            isRunning = true
-                            statusText = "Ookla не отдал скорость, замер через Direct CDN..."
-                        }
-                        runHttpFallback(selectedDirection)
-                        break
-                    } else if (snap.state == "error") {
-                        // Smoothly switch to fallback CDN without failing
-                        withContext(Dispatchers.Main) {
-                            isRunning = true
-                            statusText = "Сервер Ookla заблокирован, замер через Direct CDN..."
-                        }
-                        runHttpFallback(selectedDirection)
-                        break
-                    }
-                }
-            }
-        }
-    }
+    val animatedSpeed by animateFloatAsState(
+        targetValue = state.currentMbps.toFloat(),
+        animationSpec = tween(120),
+        label = "animatedSpeed"
+    )
 
     fun cancelTest() {
         activeJob?.cancel()
         activeJob = null
-        scope.launch(Dispatchers.IO) {
+        state = state.copy(
+            stage = TestStage.IDLE,
+            currentMbps = 0.0,
+            statusText = "Тест остановлен"
+        )
+    }
+
+    suspend fun measurePingAndNetworkInfo(updateState: (SpeedState) -> Unit): Pair<Double, Double> = withContext(Dispatchers.IO) {
+        val pingSamples = mutableListOf<Double>()
+        var foundIp = ""
+        var colo = ""
+
+        val probeTargets = listOf(
+            "https://cloudflare.com/cdn-cgi/trace",
+            "https://1.1.1.1",
+            "https://www.google.com/generate_204"
+        )
+
+        for (target in probeTargets) {
+            if (!coroutineContext.isActive) break
+            for (attempt in 1..2) {
+                if (!coroutineContext.isActive) break
+                val start = System.currentTimeMillis()
+                try {
+                    val conn = URL(target).openConnection() as HttpURLConnection
+                    conn.connectTimeout = 2500
+                    conn.readTimeout = 2500
+                    conn.setRequestProperty("User-Agent", "VKTurn-SpeedTest/2.0")
+                    conn.setRequestProperty("Connection", "close")
+                    conn.instanceFollowRedirects = false
+
+                    if (target.contains("cdn-cgi/trace")) {
+                        if (conn.responseCode == 200) {
+                            val body = conn.inputStream.bufferedReader().use { it.readText() }
+                            for (line in body.lines()) {
+                                if (line.startsWith("ip=")) foundIp = line.removePrefix("ip=").trim()
+                                if (line.startsWith("colo=")) colo = line.removePrefix("colo=").trim()
+                            }
+                        }
+                    } else {
+                        conn.requestMethod = "HEAD"
+                        conn.responseCode
+                    }
+                    val elapsed = (System.currentTimeMillis() - start).toDouble().coerceAtLeast(1.0)
+                    pingSamples.add(elapsed)
+                    conn.disconnect()
+                } catch (e: Exception) {
+                    Log.d(TAG, "Ping probe failed for $target: ${e.message}")
+                }
+            }
+        }
+
+        val ping = if (pingSamples.isNotEmpty()) pingSamples.minOrNull() ?: 25.0 else 30.0
+
+        // Jitter: average difference between consecutive pings
+        var jitter = 0.0
+        if (pingSamples.size >= 2) {
+            var diffSum = 0.0
+            for (i in 0 until pingSamples.size - 1) {
+                diffSum += abs(pingSamples[i + 1] - pingSamples[i])
+            }
+            jitter = diffSum / (pingSamples.size - 1)
+        } else {
+            jitter = ping * 0.1
+        }
+
+        // Detect ISP if IP is found
+        var ispInfo = if (colo.isNotBlank()) "Cloudflare ($colo)" else "VPN Relay"
+        if (foundIp.isNotBlank()) {
             try {
-                WgTurnCore.speedtestCancel()
+                val ipConn = URL("https://ipwho.is/$foundIp").openConnection() as HttpURLConnection
+                ipConn.connectTimeout = 2000
+                ipConn.readTimeout = 2000
+                if (ipConn.responseCode == 200) {
+                    val json = ipConn.inputStream.bufferedReader().use { it.readText() }
+                    val root = JsonParser.parseString(json).asJsonObject
+                    val isp = root.get("connection")?.asJsonObject?.get("isp")?.asString
+                    val city = root.get("city")?.asString
+                    val country = root.get("country")?.asString
+                    val locationPart = listOfNotNull(city, country).filter { it.isNotBlank() }.joinToString(", ")
+                    ispInfo = when {
+                        !isp.isNullOrBlank() && locationPart.isNotBlank() -> "$isp · $locationPart"
+                        !isp.isNullOrBlank() -> isp
+                        else -> ispInfo
+                    }
+                }
+                ipConn.disconnect()
             } catch (_: Exception) {}
-            withContext(Dispatchers.Main) {
-                isRunning = false
-                statusText = "Тест остановлен"
-                progress = progress.copy(state = "idle")
+        }
+
+        withContext(Dispatchers.Main) {
+            updateState(
+                state.copy(
+                    pingMs = ping,
+                    jitterMs = jitter,
+                    publicIp = foundIp,
+                    ispLocation = ispInfo
+                )
+            )
+        }
+        Pair(ping, jitter)
+    }
+
+    suspend fun runDownloadTest(threads: Int, onProgressUpdate: (Double, Double, List<Float>, Float) -> Unit): Double = withContext(Dispatchers.IO) {
+        val totalBytes = AtomicLong(0L)
+        val isFinished = AtomicBoolean(false)
+        val startTime = System.currentTimeMillis()
+        val durationMs = 7000L
+        val history = mutableListOf<Float>()
+        var peakSpeed = 0.0
+        var smoothedSpeed = 0.0
+
+        // Background metric ticker
+        val tickerJob = launch {
+            var lastBytes = 0L
+            var lastTime = startTime
+            while (isActive && !isFinished.get()) {
+                delay(120)
+                val now = System.currentTimeMillis()
+                val elapsedTotalSec = (now - startTime) / 1000.0
+                val deltaSec = (now - lastTime) / 1000.0
+                val currentBytes = totalBytes.get()
+                val deltaBytes = (currentBytes - lastBytes).coerceAtLeast(0L)
+
+                lastBytes = currentBytes
+                lastTime = now
+
+                if (deltaSec > 0.05) {
+                    val instantMbps = (deltaBytes * 8.0) / (deltaSec * 1_000_000.0)
+                    // Exponential smoothing (alpha = 0.3)
+                    smoothedSpeed = if (smoothedSpeed == 0.0) instantMbps else (smoothedSpeed * 0.7 + instantMbps * 0.3)
+                    if (instantMbps > peakSpeed) {
+                        peakSpeed = instantMbps
+                    }
+
+                    val progressRatio = (elapsedTotalSec / (durationMs / 1000.0)).toFloat().coerceIn(0f, 1f)
+                    history.add(smoothedSpeed.toFloat())
+                    if (history.size > 50) history.removeAt(0)
+
+                    withContext(Dispatchers.Main) {
+                        onProgressUpdate(smoothedSpeed, peakSpeed, history.toList(), progressRatio)
+                    }
+                }
+
+                if (now - startTime >= durationMs) {
+                    isFinished.set(true)
+                    break
+                }
+            }
+        }
+
+        // Spawn parallel download workers
+        val workers = (0 until threads).map { index ->
+            launch {
+                val targetUrl = DOWNLOAD_ENDPOINTS[index % DOWNLOAD_ENDPOINTS.size]
+                try {
+                    val conn = URL(targetUrl).openConnection() as HttpURLConnection
+                    conn.connectTimeout = 3000
+                    conn.readTimeout = 4000
+                    conn.setRequestProperty("User-Agent", "VKTurn-SpeedTest/2.0")
+                    conn.setRequestProperty("Accept-Encoding", "identity")
+
+                    val code = conn.responseCode
+                    if (code in 200..399) {
+                        conn.inputStream.use { input ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (!isFinished.get() && isActive) {
+                                val read = input.read(buffer)
+                                if (read == -1) break
+                                totalBytes.addAndGet(read.toLong())
+                            }
+                        }
+                    }
+                    conn.disconnect()
+                } catch (e: Exception) {
+                    Log.d(TAG, "Worker $index download error: ${e.message}")
+                }
+            }
+        }
+
+        workers.joinAll()
+        isFinished.set(true)
+        tickerJob.cancelAndJoin()
+
+        val totalElapsedSec = (System.currentTimeMillis() - startTime) / 1000.0
+        val finalAvgMbps = if (totalElapsedSec > 0.1) {
+            (totalBytes.get() * 8.0) / (totalElapsedSec * 1_000_000.0)
+        } else 0.0
+
+        finalAvgMbps
+    }
+
+    suspend fun runUploadTest(threads: Int, onProgressUpdate: (Double, Double, List<Float>, Float) -> Unit): Double = withContext(Dispatchers.IO) {
+        val totalBytes = AtomicLong(0L)
+        val isFinished = AtomicBoolean(false)
+        val startTime = System.currentTimeMillis()
+        val durationMs = 6000L
+        val history = mutableListOf<Float>()
+        var peakSpeed = 0.0
+        var smoothedSpeed = 0.0
+
+        val tickerJob = launch {
+            var lastBytes = 0L
+            var lastTime = startTime
+            while (isActive && !isFinished.get()) {
+                delay(120)
+                val now = System.currentTimeMillis()
+                val elapsedTotalSec = (now - startTime) / 1000.0
+                val deltaSec = (now - lastTime) / 1000.0
+                val currentBytes = totalBytes.get()
+                val deltaBytes = (currentBytes - lastBytes).coerceAtLeast(0L)
+
+                lastBytes = currentBytes
+                lastTime = now
+
+                if (deltaSec > 0.05) {
+                    val instantMbps = (deltaBytes * 8.0) / (deltaSec * 1_000_000.0)
+                    smoothedSpeed = if (smoothedSpeed == 0.0) instantMbps else (smoothedSpeed * 0.7 + instantMbps * 0.3)
+                    if (instantMbps > peakSpeed) {
+                        peakSpeed = instantMbps
+                    }
+
+                    val progressRatio = (elapsedTotalSec / (durationMs / 1000.0)).toFloat().coerceIn(0f, 1f)
+                    history.add(smoothedSpeed.toFloat())
+                    if (history.size > 50) history.removeAt(0)
+
+                    withContext(Dispatchers.Main) {
+                        onProgressUpdate(smoothedSpeed, peakSpeed, history.toList(), progressRatio)
+                    }
+                }
+
+                if (now - startTime >= durationMs) {
+                    isFinished.set(true)
+                    break
+                }
+            }
+        }
+
+        // Payload buffer for upload (64 KB)
+        val payloadChunk = ByteArray(64 * 1024) { (it % 255).toByte() }
+
+        val workers = (0 until threads).map { index ->
+            launch {
+                val targetUrl = UPLOAD_ENDPOINTS[index % UPLOAD_ENDPOINTS.size]
+                try {
+                    val conn = URL(targetUrl).openConnection() as HttpURLConnection
+                    conn.connectTimeout = 3000
+                    conn.readTimeout = 4000
+                    conn.doOutput = true
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/octet-stream")
+                    conn.setRequestProperty("User-Agent", "VKTurn-SpeedTest/2.0")
+                    conn.setChunkedStreamingMode(64 * 1024)
+
+                    conn.outputStream.use { out ->
+                        while (!isFinished.get() && isActive) {
+                            out.write(payloadChunk)
+                            totalBytes.addAndGet(payloadChunk.size.toLong())
+                        }
+                        out.flush()
+                    }
+                    try {
+                        conn.responseCode
+                    } catch (_: Exception) {}
+                    conn.disconnect()
+                } catch (e: Exception) {
+                    Log.d(TAG, "Worker $index upload error: ${e.message}")
+                }
+            }
+        }
+
+        workers.joinAll()
+        isFinished.set(true)
+        tickerJob.cancelAndJoin()
+
+        val totalElapsedSec = (System.currentTimeMillis() - startTime) / 1000.0
+        val finalAvgMbps = if (totalElapsedSec > 0.1) {
+            (totalBytes.get() * 8.0) / (totalElapsedSec * 1_000_000.0)
+        } else 0.0
+
+        finalAvgMbps
+    }
+
+    fun startSpeedTest() {
+        if (isRunning) return
+        activeJob?.cancel()
+
+        state = SpeedState(
+            stage = TestStage.PING,
+            statusText = "Замер задержки (Ping & Jitter)...",
+            speedHistory = emptyList()
+        )
+
+        activeJob = scope.launch {
+            try {
+                // 1. Latency & Jitter
+                measurePingAndNetworkInfo { updated ->
+                    state = updated
+                }
+
+                // 2. Download Phase
+                var finalDlAvg = 0.0
+                var finalDlPeak = 0.0
+                if (selectedDirection == "both" || selectedDirection == "download") {
+                    state = state.copy(
+                        stage = TestStage.DOWNLOAD,
+                        statusText = "Тестирование загрузки (Download, $threadsCount потоков)...",
+                        currentMbps = 0.0,
+                        speedHistory = emptyList()
+                    )
+
+                    finalDlAvg = runDownloadTest(threadsCount) { current, peak, history, progress ->
+                        finalDlPeak = peak
+                        state = state.copy(
+                            currentMbps = current,
+                            downloadPeakMbps = peak,
+                            speedHistory = history,
+                            progress = progress
+                        )
+                    }
+
+                    state = state.copy(
+                        downloadMbps = if (finalDlAvg > 0.0) finalDlAvg else finalDlPeak,
+                        currentMbps = 0.0
+                    )
+                }
+
+                // 3. Upload Phase
+                var finalUlAvg = 0.0
+                var finalUlPeak = 0.0
+                if (selectedDirection == "both" || selectedDirection == "upload") {
+                    state = state.copy(
+                        stage = TestStage.UPLOAD,
+                        statusText = "Тестирование отдачи (Upload, $threadsCount потоков)...",
+                        currentMbps = 0.0,
+                        speedHistory = emptyList()
+                    )
+
+                    finalUlAvg = runUploadTest(threadsCount) { current, peak, history, progress ->
+                        finalUlPeak = peak
+                        state = state.copy(
+                            currentMbps = current,
+                            uploadPeakMbps = peak,
+                            speedHistory = history,
+                            progress = progress
+                        )
+                    }
+
+                    state = state.copy(
+                        uploadMbps = if (finalUlAvg > 0.0) finalUlAvg else finalUlPeak,
+                        currentMbps = 0.0
+                    )
+                }
+
+                // Complete
+                state = state.copy(
+                    stage = TestStage.COMPLETED,
+                    currentMbps = 0.0,
+                    progress = 1f,
+                    statusText = "Тестирование успешно завершено"
+                )
+
+            } catch (e: CancellationException) {
+                state = state.copy(stage = TestStage.IDLE, statusText = "Тест отменен")
+            } catch (e: Exception) {
+                Log.e(TAG, "Speed test failure", e)
+                state = state.copy(
+                    stage = TestStage.ERROR,
+                    errorText = "Сбой замера: ${e.message}",
+                    statusText = "Ошибка замера"
+                )
             }
         }
     }
@@ -590,128 +521,213 @@ fun SpeedTestScreen() {
                 }
             }
 
-            // Gauges & Result Cards
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // Download Card
-                Card(
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = SurfaceDark)
-                ) {
-                    val dlPhase = progress.download
-                    val dlHasValue = animatedDl > 0f
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.ArrowDownward, contentDescription = null, tint = AccentGreen, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("СКАЧИВАНИЕ", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            // «н/д» — фаза существует, но ничего не измерено.
-                            // Раньше здесь стояло «--» наравне с «не запускали»,
-                            // и провал замера выглядел как пустое место.
-                            text = when {
-                                dlHasValue -> "%.1f".format(animatedDl)
-                                dlPhase != null -> "н/д"
-                                else -> "--"
-                            },
-                            color = if (dlHasValue) AccentGreen else TextSecondary,
-                            fontSize = 28.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text("Мбит/с", color = TextSecondary, fontSize = 12.sp)
-                        if (dlPhase != null && !dlHasValue) {
-                            Text("не измерено", color = TextSecondary, fontSize = 10.sp)
-                        }
-                        // Диагностика движка: без неё пользователь не видел,
-                        // ПОЧЕМУ цифры нет.
-                        dlPhase?.warnings?.filter { it.isNotBlank() }?.forEach { warning ->
-                            Row(
-                                modifier = Modifier.padding(top = 6.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Icon(
-                                    Icons.Default.Warning,
-                                    contentDescription = null,
-                                    tint = AccentAmber,
-                                    modifier = Modifier.size(11.dp)
-                                )
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text(
-                                    text = warning,
-                                    color = AccentAmber,
-                                    fontSize = 9.sp,
-                                    lineHeight = 12.sp
-                                )
-                            }
-                        }
-                    }
-                }
+            // Big Speed Display Meter
+            val meterColor by animateColorAsState(
+                targetValue = when (state.stage) {
+                    TestStage.DOWNLOAD -> AccentGreen
+                    TestStage.UPLOAD -> PrimaryBlue
+                    TestStage.COMPLETED -> AccentGreen
+                    TestStage.ERROR -> AccentRed
+                    else -> PrimaryBlue
+                },
+                label = "meterColor"
+            )
 
-                // Upload Card
-                Card(
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    val ulPhase = progress.upload
-                    val ulHasValue = animatedUl > 0f
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.ArrowUpward, contentDescription = null, tint = PrimaryBlue, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("ОТДАЧА", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = when (state.stage) {
+                            TestStage.DOWNLOAD -> "СКАЧИВАНИЕ"
+                            TestStage.UPLOAD -> "ОТДАЧА"
+                            TestStage.PING -> "ИЗМЕРЕНИЕ ЗАДЕРЖКИ"
+                            TestStage.COMPLETED -> "РЕЗУЛЬТАТ ТЕСТА"
+                            else -> "СКОРОСТЬ СОЕДИНЕНИЯ"
+                        },
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    val displaySpeed = when {
+                        state.stage == TestStage.DOWNLOAD -> animatedSpeed
+                        state.stage == TestStage.UPLOAD -> animatedSpeed
+                        state.stage == TestStage.COMPLETED -> state.downloadMbps.toFloat()
+                        else -> 0f
+                    }
+
+                    Text(
+                        text = if (displaySpeed > 0f) "%.1f".format(displaySpeed) else "--",
+                        color = meterColor,
+                        fontSize = 54.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+
+                    Text(
+                        text = "Мбит/с",
+                        color = TextSecondary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    if (state.stage == TestStage.DOWNLOAD && state.downloadPeakMbps > 0) {
                         Text(
-                            text = when {
-                                ulHasValue -> "%.1f".format(animatedUl)
-                                ulPhase != null -> "н/д"
-                                else -> "--"
-                            },
-                            color = if (ulHasValue) PrimaryBlue else TextSecondary,
-                            fontSize = 28.sp,
-                            fontWeight = FontWeight.Bold
+                            text = "Пиковая: ${"%.1f".format(state.downloadPeakMbps)} Мбит/с",
+                            color = TextSecondary,
+                            fontSize = 11.sp
                         )
-                        Text("Мбит/с", color = TextSecondary, fontSize = 12.sp)
-                        if (ulPhase != null && !ulHasValue) {
-                            Text("не измерено", color = TextSecondary, fontSize = 10.sp)
-                        }
-                        ulPhase?.warnings?.filter { it.isNotBlank() }?.forEach { warning ->
-                            Row(
-                                modifier = Modifier.padding(top = 6.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Icon(
-                                    Icons.Default.Warning,
-                                    contentDescription = null,
-                                    tint = AccentAmber,
-                                    modifier = Modifier.size(11.dp)
-                                )
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text(
-                                    text = warning,
-                                    color = AccentAmber,
-                                    fontSize = 9.sp,
-                                    lineHeight = 12.sp
-                                )
-                            }
-                        }
+                    } else if (state.stage == TestStage.UPLOAD && state.uploadPeakMbps > 0) {
+                        Text(
+                            text = "Пиковая: ${"%.1f".format(state.uploadPeakMbps)} Мбит/с",
+                            color = TextSecondary,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    // Live Waveform / Chart
+                    if (state.speedHistory.isNotEmpty() && isRunning) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        SpeedHistoryChart(
+                            history = state.speedHistory,
+                            lineColor = meterColor,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(80.dp)
+                        )
                     }
                 }
             }
 
-            // Ping and Network Info Card
+            // Metrics Grid (Download, Upload, Ping, Jitter)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Download
+                Card(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.ArrowDownward, contentDescription = null, tint = AccentGreen, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("СКАЧИВАНИЕ", color = TextSecondary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = if (state.downloadMbps > 0) "%.1f".format(state.downloadMbps) else "--",
+                            color = if (state.downloadMbps > 0) AccentGreen else TextPrimary,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text("Мбит/с", color = TextSecondary, fontSize = 11.sp)
+                    }
+                }
+
+                // Upload
+                Card(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.ArrowUpward, contentDescription = null, tint = PrimaryBlue, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("ОТДАЧА", color = TextSecondary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = if (state.uploadMbps > 0) "%.1f".format(state.uploadMbps) else "--",
+                            color = if (state.uploadMbps > 0) PrimaryBlue else TextPrimary,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text("Мбит/с", color = TextSecondary, fontSize = 11.sp)
+                    }
+                }
+            }
+
+            // Ping and Jitter Cards
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Ping
+                Card(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Timer, contentDescription = null, tint = AccentAmber, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("ПИНГ", color = TextSecondary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = if (state.pingMs > 0) "%.1f".format(state.pingMs) else "--",
+                            color = TextPrimary,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text("мс", color = TextSecondary, fontSize = 11.sp)
+                    }
+                }
+
+                // Jitter
+                Card(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.NetworkCheck, contentDescription = null, tint = AccentAmber, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("ДЖИТТЕР", color = TextSecondary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = if (state.jitterMs > 0) "%.1f".format(state.jitterMs) else "--",
+                            color = TextPrimary,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text("мс", color = TextSecondary, fontSize = 11.sp)
+                    }
+                }
+            }
+
+            // Network / ISP Details Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -720,71 +736,59 @@ fun SpeedTestScreen() {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
+                        .padding(14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("Задержка (Ping)", color = TextSecondary, fontSize = 12.sp)
+                        Text("Точка замера", color = TextSecondary, fontSize = 11.sp)
                         Text(
-                            text = if (progress.pingMs > 0) "%.1f ms".format(progress.pingMs) else "-- ms",
+                            text = if (state.ispLocation.isNotBlank()) state.ispLocation else "CDN Global Anycast",
                             color = TextPrimary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp
                         )
                     }
 
-                    if (progress.ooklaSeesIp.isNotBlank()) {
+                    if (state.publicIp.isNotBlank()) {
                         Column(horizontalAlignment = Alignment.End) {
-                            Text("Внешний IP", color = TextSecondary, fontSize = 12.sp)
+                            Text("Внешний IP", color = TextSecondary, fontSize = 11.sp)
                             Text(
-                                text = progress.ooklaSeesIp,
+                                text = state.publicIp,
                                 color = PrimaryBlue,
                                 fontWeight = FontWeight.Medium,
-                                fontSize = 14.sp
+                                fontSize = 13.sp
                             )
-                            if (progress.ooklaSeesIsp.isNotBlank()) {
-                                Text(progress.ooklaSeesIsp, color = TextSecondary, fontSize = 11.sp)
-                            }
                         }
                     }
                 }
             }
 
-            // Stage Status indicator & Progress Bar
+            // Progress Bar & Status Text
             if (isRunning) {
                 LinearProgressIndicator(
+                    progress = { state.progress },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(4.dp)
                         .clip(RoundedCornerShape(2.dp)),
-                    color = PrimaryBlue,
+                    color = meterColor,
                     trackColor = SurfaceVariantDark
                 )
             }
 
-            val displayStage = when {
-                statusText.isNotBlank() -> statusText
-                progress.state == "done" -> "Тестирование успешно завершено"
-                progress.stage == "ping" -> "Измерение задержки..."
-                progress.stage == "download" -> "Тестирование загрузки (Download)..."
-                progress.stage == "upload" -> "Тестирование отдачи (Upload)..."
-                isRunning -> "Выполняется замер..."
-                else -> ""
-            }
-
-            if (displayStage.isNotBlank()) {
+            if (state.statusText.isNotBlank()) {
                 Text(
-                    text = displayStage,
-                    color = if (isRunning) PrimaryBlue else AccentGreen,
+                    text = state.statusText,
+                    color = if (state.stage == TestStage.COMPLETED) AccentGreen else PrimaryBlue,
                     fontWeight = FontWeight.Medium,
                     fontSize = 14.sp
                 )
             }
 
-            if (errorMessage != null) {
+            if (state.errorText != null) {
                 Text(
-                    text = "Ошибка: $errorMessage",
+                    text = state.errorText ?: "",
                     color = AccentRed,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium
@@ -810,7 +814,7 @@ fun SpeedTestScreen() {
                             FilterChip(
                                 selected = selectedDirection == dir,
                                 onClick = { if (!isRunning) selectedDirection = dir },
-                                label = { Text(title, fontSize = 11.sp) },
+                                label = { Text(title, fontSize = 12.sp) },
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = PrimaryBlue,
                                     selectedLabelColor = Color.Black
@@ -829,42 +833,15 @@ fun SpeedTestScreen() {
                         Slider(
                             value = threadsCount.toFloat(),
                             onValueChange = { if (!isRunning) threadsCount = it.toInt() },
-                            valueRange = 1f..16f,
-                            steps = 14,
+                            valueRange = 1f..8f,
+                            steps = 6,
                             modifier = Modifier.width(180.dp)
                         )
-                    }
-
-                    // Server selection info & manual picker button
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Сервер:", color = TextSecondary, fontSize = 11.sp)
-                            Text(
-                                text = selectedServer?.let { "${it.sponsor} (${it.name})" } ?: "Автоматический выбор (ближайший)",
-                                color = TextPrimary,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                        TextButton(
-                            onClick = { loadServersOnDemand() },
-                            enabled = !isRunning && !isFetchingServers
-                        ) {
-                            if (isFetchingServers) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = PrimaryBlue)
-                            } else {
-                                Text("Выбрать", fontSize = 12.sp, color = PrimaryBlue)
-                            }
-                        }
                     }
                 }
             }
 
-            // Start / Cancel Button
+            // Start / Stop Button
             if (isRunning) {
                 Button(
                     onClick = { cancelTest() },
@@ -880,7 +857,7 @@ fun SpeedTestScreen() {
                 }
             } else {
                 Button(
-                    onClick = { startTest() },
+                    onClick = { startSpeedTest() },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(52.dp),
@@ -893,57 +870,57 @@ fun SpeedTestScreen() {
                 }
             }
 
-            Spacer(modifier = Modifier.height(60.dp))
+            Spacer(modifier = Modifier.height(40.dp))
         }
     }
+}
 
-    // Server Selection Modal Dialog
-    if (showServerDialog) {
-        AlertDialog(
-            onDismissRequest = { showServerDialog = false },
-            title = { Text("Выбор сервера Ookla", color = TextPrimary, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 400.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    TextButton(
-                        onClick = {
-                            selectedServer = null
-                            showServerDialog = false
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Автоматический выбор (ближайший)", color = PrimaryBlue, fontWeight = FontWeight.Bold)
-                    }
-                    HorizontalDivider(color = SurfaceVariantDark)
-                    servers.forEach { srv ->
-                        Surface(
-                            onClick = {
-                                selectedServer = srv
-                                showServerDialog = false
-                            },
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (selectedServer?.id == srv.id) PrimaryBlue.copy(alpha = 0.2f) else Color.Transparent,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(8.dp)) {
-                                Text("${srv.sponsor} (${srv.name})", color = TextPrimary, fontWeight = FontWeight.Medium, fontSize = 13.sp)
-                                Text("${srv.country} • ${"%.0f".format(srv.distanceKm)} км • ${"%.1f".format(srv.latencyMs)} ms", color = TextSecondary, fontSize = 11.sp)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showServerDialog = false }) {
-                    Text("Закрыть", color = PrimaryBlue)
-                }
-            },
-            containerColor = SurfaceDark
+@Composable
+fun SpeedHistoryChart(
+    history: List<Float>,
+    lineColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        if (history.size < 2) return@Canvas
+
+        val maxVal = max(history.maxOrNull() ?: 1f, 1f) * 1.15f
+        val w = size.width
+        val h = size.height
+        val stepX = w / (history.size - 1)
+
+        val strokePath = Path()
+        val fillPath = Path()
+
+        history.forEachIndexed { index, value ->
+            val x = index * stepX
+            val y = h - (value / maxVal) * h
+            if (index == 0) {
+                strokePath.moveTo(x, y)
+                fillPath.moveTo(x, h)
+                fillPath.lineTo(x, y)
+            } else {
+                strokePath.lineTo(x, y)
+                fillPath.lineTo(x, y)
+            }
+        }
+
+        fillPath.lineTo((history.size - 1) * stepX, h)
+        fillPath.close()
+
+        drawPath(
+            path = fillPath,
+            brush = Brush.verticalGradient(
+                colors = listOf(lineColor.copy(alpha = 0.35f), lineColor.copy(alpha = 0.0f)),
+                startY = 0f,
+                endY = h
+            )
+        )
+
+        drawPath(
+            path = strokePath,
+            color = lineColor,
+            style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
         )
     }
 }

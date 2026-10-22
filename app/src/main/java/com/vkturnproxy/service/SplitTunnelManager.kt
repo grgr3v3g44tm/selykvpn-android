@@ -60,12 +60,8 @@ class SplitTunnelManager(context: Context) {
 
         if (splitEnabled && splitMode == SplitTunnelMode.ALLOW_SELECTED) {
             // Whitelist mode: ONLY apps explicitly added via addAllowedApplication go through VPN.
-            // All other apps (including this app) automatically bypass the VPN.
-            // Do NOT call addDisallowedApplication here because Android throws UnsupportedOperationException
-            // if both addAllowedApplication and addDisallowedApplication are called on the same builder.
             Log.i("SplitTunnelManager", "Applying split tunneling (mode=ALLOW_SELECTED, count=${selected.size})")
             for (pkg in selected) {
-                if (pkg == myPackageName) continue // Never route self into VPN
                 try {
                     builder.addAllowedApplication(pkg)
                 } catch (e: PackageManager.NameNotFoundException) {
@@ -76,18 +72,11 @@ class SplitTunnelManager(context: Context) {
             }
         } else {
             // Default / Blacklist mode: all apps go through VPN EXCEPT disallowed apps.
-            // ALWAYS disallow the VPN app itself so OAuth webviews, APIs and background checks never get trapped in a broken tunnel.
-            try {
-                builder.addDisallowedApplication(myPackageName)
-                Log.i("SplitTunnelManager", "Disallowed $myPackageName from VPN tunnel")
-            } catch (e: Exception) {
-                Log.w("SplitTunnelManager", "Cannot disallow $myPackageName: ${e.message}")
-            }
-
+            // Note: The VPN app itself is NOT disallowed, allowing in-app speed tests and diagnostics
+            // to measure real VPN performance. Outbound carrier/TURN sockets are protected via VpnService.protect(fd).
             if (splitEnabled && splitMode == SplitTunnelMode.DISALLOW_SELECTED) {
                 Log.i("SplitTunnelManager", "Applying split tunneling (mode=DISALLOW_SELECTED, count=${selected.size})")
                 for (pkg in selected) {
-                    if (pkg == myPackageName) continue
                     try {
                         builder.addDisallowedApplication(pkg)
                     } catch (e: PackageManager.NameNotFoundException) {

@@ -464,7 +464,7 @@ fun DashboardScreen(
                 ) {
                     Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Замерить скорость (Ookla)", fontSize = 12.sp)
+                    Text("Замерить скорость", fontSize = 12.sp)
                 }
             }
         }
