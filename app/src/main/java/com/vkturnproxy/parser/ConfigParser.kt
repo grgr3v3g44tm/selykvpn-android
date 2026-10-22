@@ -94,7 +94,9 @@ object ConfigParser {
                 ?: 30
 
             val useDTLS = settings.get("useDTLS")?.asBoolean ?: true
-            val useUDP = settings.get("useUDP")?.asBoolean ?: false
+            val useUDP = settings.get("useUDP")?.asBoolean
+                ?: settings.get("use_udp")?.asBoolean
+                ?: true
             val useSrtp = settings.get("useSrtp")?.asBoolean ?: true
             val useWrap = settings.get("useWrap")?.asBoolean ?: false
             val useWrapA = settings.get("useWrapA")?.asBoolean ?: false
@@ -127,7 +129,7 @@ object ConfigParser {
             val dnsServers = settings.get("dnsServers")?.asString
                 ?: settings.get("dns_servers")?.asString
                 ?: "1.1.1.1, 77.88.8.8, 10.77.77.1"
-            val mtu = settings.get("mtu")?.asInt ?: 1280
+            val mtu = settings.get("mtu")?.asInt ?: if (useUDP) 1360 else 1280
 
             val useCookieAuth = settings.get("useCookieAuth")?.asBoolean
                 ?: settings.get("use_cookie_auth")?.asBoolean

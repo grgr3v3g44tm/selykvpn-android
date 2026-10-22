@@ -20,6 +20,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -38,10 +39,17 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+func init() {
+	if n := runtime.NumCPU(); n > 0 {
+		runtime.GOMAXPROCS(n)
+	}
+}
+
 // tunnelEntry holds a running tunnel's state.
 type tunnelEntry struct {
 	device *device.Device // guarded by tunnelsMu; written once by the attach (the device owns its bind)
 	proxy  *proxy.Proxy   // set before the entry is registered; immutable after
+	mtu    int
 }
 
 // deviceNow is the ONLY way to read an entry's device. The attach installs
@@ -232,6 +240,9 @@ type ProxyConfig struct {
 	// server keys the minted WG device on it). The app should persist one in
 	// the App Group; if empty, the proxy generates a per-session UUID.
 	DeviceID string `json:"device_id,omitempty"`
+
+	// MTU is the desired interface MTU passed from the app (1280-1500).
+	MTU int `json:"mtu,omitempty"`
 }
 
 // --- Phased startup (the APNs-through-tunnel refactor) ---
@@ -374,11 +385,21 @@ func wgStartVKBootstrap(proxyConfigJSON *C.char) C.int32_t {
 		}
 	}()
 
+	effMTU := pcfg.MTU
+	if effMTU <= 0 {
+		if pcfg.UseUDP {
+			effMTU = 1360
+		} else {
+			effMTU = 1280
+		}
+	}
+
 	tunnelsMu.Lock()
 	id := nextID
 	nextID++
 	tunnels[id] = &tunnelEntry{
 		proxy: p,
+		mtu:   effMTU,
 		// device and bind stay nil until wgAttachWireGuard.
 	}
 	tunnelsMu.Unlock()
@@ -443,10 +464,8 @@ func wgAttachWireGuard(tunnelHandle C.int32_t, wgConfigSettings *C.char, tunFd C
 // wireguard-go's tun over the dup'd descriptor and binds through the proxy;
 // a test swaps in a socketpair device and a plain UDP bind so the whole
 // attach — the device, Up, the install against the stop — runs on the host.
-var wgOpenTun = func(dupFd int) (tun.Device, error) {
-	tunFile := os.NewFile(uintptr(dupFd), "/dev/tun")
-	dev := createAndroidTUN(tunFile, 1420)
-	return dev, nil
+var wgOpenTun = func(dupFd int, mtu int) (tun.Device, error) {
+	return openAndroidTUN(dupFd, mtu)
 }
 
 var wgNewBind = func(p *proxy.Proxy) conn.Bind { return turnbind.NewTURNBind(p) }
@@ -500,7 +519,7 @@ func wgAttachWireGuardImpl(id int32, goSettings string, tunFd int) int32 {
 		unix.Close(dupFd)
 		return -3
 	}
-	tunDev, err := wgOpenTun(dupFd)
+	tunDev, err := wgOpenTun(dupFd, entry.mtu)
 	if err != nil {
 		log.Printf("wgAttachWireGuard: CreateTUNFromFile failed: %s", err)
 		return -4

@@ -152,6 +152,8 @@ func DialRelay(creds TURNCredentials, peer *net.UDPAddr, transport string, logLe
 			return nil, fmt.Errorf("local udp: %w", err)
 		}
 		proxy.ProtectConn(uc)
+		_ = uc.SetReadBuffer(4 << 20)
+		_ = uc.SetWriteBuffer(4 << 20)
 		ctl = uc
 	case "tcp":
 		tcp, err := (&net.Dialer{
@@ -165,6 +167,11 @@ func DialRelay(creds TURNCredentials, peer *net.UDPAddr, transport string, logLe
 		}).Dial("tcp4", creds.Address)
 		if err != nil {
 			return nil, fmt.Errorf("dial tcp to relay: %w", err)
+		}
+		if tc, ok := tcp.(*net.TCPConn); ok {
+			_ = tc.SetReadBuffer(4 << 20)
+			_ = tc.SetWriteBuffer(4 << 20)
+			_ = tc.SetNoDelay(true)
 		}
 		ctl = turn.NewSTUNConn(tcp)
 	default:

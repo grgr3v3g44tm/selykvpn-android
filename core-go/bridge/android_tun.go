@@ -1,11 +1,46 @@
 package main
 
 import (
+	"fmt"
+	"log"
 	"os"
 	"sync"
 
+	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/tun"
 )
+
+// openAndroidTUN creates a high-performance tun.Device from a duplicated TUN descriptor.
+// It prioritizes wireguard-go's native unmonitored TUN (CreateUnmonitoredTUNFromFD) which
+// registers the descriptor with Go's epoll netpoller, activates Linux TCP/UDP GRO offloads,
+// and supports conn.IdealBatchSize (multi-packet batching).
+// If native creation fails (e.g. on restricted kernel environments), it seamlessly falls
+// back to an optimized non-blocking androidTUN.
+func openAndroidTUN(fd int, mtu int) (tun.Device, error) {
+	if mtu <= 0 {
+		mtu = 1360
+	}
+
+	// 1. Ensure descriptor is non-blocking so Go's runtime poller (epoll) manages it.
+	if err := unix.SetNonblock(fd, true); err != nil {
+		log.Printf("openAndroidTUN: SetNonblock failed: %v", err)
+	}
+
+	// 2. Attempt native unmonitored TUN with epoll & GRO batching
+	dev, name, err := tun.CreateUnmonitoredTUNFromFD(fd)
+	if err == nil {
+		log.Printf("openAndroidTUN: opened native unmonitored TUN on %q (batchSize=%d, mtu=%d)", name, dev.BatchSize(), mtu)
+		return dev, nil
+	}
+	log.Printf("openAndroidTUN: CreateUnmonitoredTUNFromFD fallback (%v) -> using androidTUN", err)
+
+	// 3. Fallback to androidTUN
+	tunFile := os.NewFile(uintptr(fd), "/dev/tun")
+	if tunFile == nil {
+		return nil, fmt.Errorf("openAndroidTUN: os.NewFile failed for fd %d", fd)
+	}
+	return createAndroidTUN(tunFile, mtu), nil
+}
 
 type androidTUN struct {
 	file   *os.File
@@ -16,7 +51,7 @@ type androidTUN struct {
 
 func createAndroidTUN(file *os.File, mtu int) tun.Device {
 	if mtu <= 0 {
-		mtu = 1420
+		mtu = 1360
 	}
 	t := &androidTUN{
 		file:   file,

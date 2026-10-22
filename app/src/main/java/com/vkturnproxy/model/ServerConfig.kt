@@ -24,7 +24,7 @@ data class ServerConfig(
     var needsCallLink: Boolean = false,
     var peerAddress: String = "",
     var numConnections: Int = 30,
-    var useUDP: Boolean = false,
+    var useUDP: Boolean = true,
     var useDTLS: Boolean = true,
     var useSrtp: Boolean = true,
     var useWrap: Boolean = false,
@@ -46,7 +46,7 @@ data class ServerConfig(
     var presharedKey: String = "",
     var tunnelAddress: String = "10.77.77.2/24",
     var dnsServers: String = "1.1.1.1, 77.88.8.8, 10.77.77.1",
-    var mtu: Int = 1280
+    var mtu: Int = 1360
 ) {
     fun toProxyConfigJson(): String {
         val map = mutableMapOf<String, Any>()
@@ -54,6 +54,7 @@ data class ServerConfig(
         map["peer_addr"] = peerAddress
         map["use_dtls"] = useDTLS
         map["use_udp"] = useUDP
+        map["mtu"] = mtu
         map["num_conns"] = numConnections.coerceIn(1, 60)
         map["use_cookie_auth"] = useCookieAuth
         if (uplinkPaceKiB > 0) {

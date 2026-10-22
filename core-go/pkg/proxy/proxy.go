@@ -674,12 +674,16 @@ func NewProxy(cfg Config) *Proxy {
 	return p
 }
 
-// applyGOMAXPROCS is Start's thread count: 0 → 2 (the app), > 0 → n, < 0 →
-// Go's own default left in place (Config.GOMAXPROCS).
+// applyGOMAXPROCS is Start's thread count: 0 → NumCPU (all cores on Android/Linux),
+// > 0 → n, < 0 → Go's own default left in place (Config.GOMAXPROCS).
 func applyGOMAXPROCS(n int) {
 	switch {
 	case n == 0:
-		runtime.GOMAXPROCS(2)
+		if ncpu := runtime.NumCPU(); ncpu > 0 {
+			runtime.GOMAXPROCS(ncpu)
+		} else {
+			runtime.GOMAXPROCS(2)
+		}
 	case n > 0:
 		runtime.GOMAXPROCS(n)
 	}
@@ -3435,6 +3439,8 @@ func (p *Proxy) runTURN(ctx context.Context, turnAddr string, creds *TURNCreds, 
 			return fmt.Errorf("dial TURN UDP: %w", err)
 		}
 		defer udpConn.Close()
+		_ = udpConn.SetReadBuffer(4 << 20)
+		_ = udpConn.SetWriteBuffer(4 << 20)
 		turnConn = &connectedUDPConn{udpConn}
 	} else {
 		tcpCtx, tcpCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -3445,6 +3451,11 @@ func (p *Proxy) runTURN(ctx context.Context, turnAddr string, creds *TURNCreds, 
 			return fmt.Errorf("dial TURN TCP: %w", err)
 		}
 		defer tcpConn.Close()
+		if tc, ok := tcpConn.(*net.TCPConn); ok {
+			_ = tc.SetReadBuffer(4 << 20)
+			_ = tc.SetWriteBuffer(4 << 20)
+			_ = tc.SetNoDelay(true)
+		}
 		// Registered AFTER the Close defer, so LIFO runs unregister FIRST and
 		// the sampler can never hold a socket that is being torn down.
 		p.sockStats.register(connIdx, tcpConn)
@@ -5578,12 +5589,19 @@ func (p *Proxy) setupSRTPSession(ctx context.Context, turnAddr string, creds *TU
 			return nil, fmt.Errorf("local udp listen: %w", err)
 		}
 		ProtectConn(uc)
+		_ = uc.SetReadBuffer(4 << 20)
+		_ = uc.SetWriteBuffer(4 << 20)
 		ctlConn = uc
 	} else {
 		dialer := net.Dialer{Timeout: 5 * time.Second, Control: dialControl}
 		tcp, err := dialer.Dial("tcp", turnAddr)
 		if err != nil {
 			return nil, fmt.Errorf("dial tcp to relay: %w", err)
+		}
+		if tc, ok := tcp.(*net.TCPConn); ok {
+			_ = tc.SetReadBuffer(4 << 20)
+			_ = tc.SetWriteBuffer(4 << 20)
+			_ = tc.SetNoDelay(true)
 		}
 		// 🚨 THE SECOND DIAL SITE, AND THE ONE THAT MATTERS. Build 233 registered
 		// only runTURN's socket and shipped: SRTP is the production transport and

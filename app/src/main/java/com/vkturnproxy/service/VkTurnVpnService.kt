@@ -149,7 +149,7 @@ class VkTurnVpnService : VpnService() {
                 var dnsServers = config.dnsServers
                 var mtu = config.mtu
 
-                // 3. Special handling for WRAP-A (auto-provision from server)
+                // 3. Special handling for WRAP-A and CSQTT (auto-provision from server)
                 if (config.mode == ProxyMode.SRTP_WRAP_A) {
                     val provJson = WgTurnCore.waitWrapAProvision(handle, 30_000)
                     if (provJson.isNotBlank()) {
@@ -158,16 +158,34 @@ class VkTurnVpnService : VpnService() {
                             uapiConfig = map["uapi"] as? String ?: uapiConfig
                             tunnelAddr = map["address"] as? String ?: tunnelAddr
                             dnsServers = map["dns"] as? String ?: dnsServers
+                            (map["mtu"] as? Number)?.toInt()?.let { provMtu ->
+                                if (provMtu in 1200..1500) mtu = provMtu
+                            }
                         } catch (e: Exception) {
                             Log.w(TAG, "Error parsing WRAP-A provision", e)
                         }
                     }
+                } else if (isCsqttMode) {
+                    val provJson = WgTurnCore.csqttProvision(handle)
+                    if (provJson.isNotBlank()) {
+                        try {
+                            val map = Gson().fromJson(provJson, Map::class.java)
+                            tunnelAddr = map["address"] as? String ?: tunnelAddr
+                            dnsServers = map["dns"] as? String ?: dnsServers
+                            (map["mtu"] as? Number)?.toInt()?.let { provMtu ->
+                                if (provMtu in 1200..1500) mtu = provMtu
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Error parsing CSQTT provision", e)
+                        }
+                    }
                 }
 
-                // 4. Create Android TUN interface
+                // 4. Create Android TUN interface (non-blocking for epoll runtime)
                 val builder = Builder()
                     .setSession("VK TURN Proxy")
                     .setMtu(mtu.coerceIn(1280, 1500))
+                    .setBlocking(false)
 
                 val addrParts = tunnelAddr.split("/")
                 val ip = addrParts[0].trim()

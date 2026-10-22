@@ -96,6 +96,7 @@ type csqttConfig struct {
 	} `json:"seeded_turn"`
 	UseCookieAuth      bool `json:"use_cookie_auth"`
 	ForceLegacyCaptcha bool `json:"force_legacy_captcha"`
+	MTU                int  `json:"mtu"`
 }
 
 // csqttClient is what the bridge needs from csqtt.Client — an interface so
@@ -136,14 +137,9 @@ type packetDevice interface {
 	Close() error
 }
 
-// csqttOpenTun wraps an ALREADY DUPLICATED descriptor as a utun device.
-// Behind a variable so tests can substitute a socketpair-backed device with
-// the same Read/Write contract; the production one is wireguard-go's
-// darwin tun, which reads the address-family header itself.
-var csqttOpenTun = func(dupFd int) (packetDevice, error) {
-	f := os.NewFile(uintptr(dupFd), "/dev/tun")
-	dev := createAndroidTUN(f, 1420)
-	return dev, nil
+// csqttOpenTun wraps an ALREADY DUPLICATED descriptor as a tun device.
+var csqttOpenTun = func(dupFd int, mtu int) (packetDevice, error) {
+	return openAndroidTUN(dupFd, mtu)
 }
 
 // csqttAcquireBackstop is how long the credential adapter waits for a slot
@@ -176,6 +172,7 @@ var csqttDialJoinBudget = 2 * time.Second
 // device once attached, and the terminal error if it has one.
 type csqttEntry struct {
 	id      int32
+	mtu     int
 	ctx     context.Context
 	cancel  context.CancelFunc
 	pool    *proxy.CredPool
@@ -489,7 +486,11 @@ func csqttStartImpl(proxyConfigJSON string) int32 {
 		TurnPort:   cfg.TurnPort,
 		SeededTURN: seed,
 	})
-	e := &csqttEntry{ctx: ctx, cancel: cancel, pool: pool, started: time.Now(), dialed: make(chan struct{})}
+	effMTU := cfg.MTU
+	if effMTU <= 0 {
+		effMTU = 1300
+	}
+	e := &csqttEntry{ctx: ctx, cancel: cancel, pool: pool, started: time.Now(), dialed: make(chan struct{}), mtu: effMTU}
 	csqttTunnelsMu.Lock()
 	e.id = csqttNextID
 	csqttNextID++
@@ -686,7 +687,7 @@ func csqttAttachImpl(handle int32, tunFd int) int32 {
 		unix.Close(dupFd)
 		return -3
 	}
-	dev, err := csqttOpenTun(dupFd)
+	dev, err := csqttOpenTun(dupFd, e.mtu)
 	if err != nil {
 		log.Printf("csqttAttach: open tun failed: %v", err)
 		return -4
@@ -729,8 +730,12 @@ func (e *csqttEntry) logStatsEvery(client csqttClient) {
 // dropped here.
 func (e *csqttEntry) pumpUp(dev packetDevice, client csqttClient) {
 	defer e.pumps.Done()
-	bufs := [][]byte{make([]byte, csqttTunOffset+csqttMaxPacket)}
-	sizes := make([]int, 1)
+	const batch = 16
+	bufs := make([][]byte, batch)
+	for i := range bufs {
+		bufs[i] = make([]byte, csqttTunOffset+csqttMaxPacket)
+	}
+	sizes := make([]int, batch)
 	for {
 		n, err := dev.Read(bufs, sizes, csqttTunOffset)
 		if err != nil {
@@ -739,13 +744,15 @@ func (e *csqttEntry) pumpUp(dev packetDevice, client csqttClient) {
 			}
 			return
 		}
-		if n == 0 {
-			continue
-		}
-		pkt := bufs[0][csqttTunOffset : csqttTunOffset+sizes[0]]
-		e.tunIn.Add(1)
-		if err := client.WritePacket(pkt); err != nil {
-			e.sendErr.Add(1)
+		for i := 0; i < n; i++ {
+			if sizes[i] <= 0 {
+				continue
+			}
+			pkt := bufs[i][csqttTunOffset : csqttTunOffset+sizes[i]]
+			e.tunIn.Add(1)
+			if err := client.WritePacket(pkt); err != nil {
+				e.sendErr.Add(1)
+			}
 		}
 	}
 }
