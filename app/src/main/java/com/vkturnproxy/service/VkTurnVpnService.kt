@@ -79,6 +79,7 @@ class VkTurnVpnService : VpnService() {
         }
 
         currentServerName = config.name
+        isCsqttMode = (config.mode == ProxyMode.CSQTT)
         _statusFlow.value = VpnStatus.CONNECTING
         startForeground(NOTIFICATION_ID, buildNotification("Инициализация звонка VK…"))
 
@@ -335,6 +336,7 @@ class VkTurnVpnService : VpnService() {
             Log.w(TAG, "Error closing tunPfd", e)
         }
         tunPfd = null
+        isCsqttMode = false
 
         _statusFlow.value = VpnStatus.DISCONNECTED
         _statsFlow.value = TunnelStats()

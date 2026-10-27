@@ -90,6 +90,8 @@ data class ServerConfig(
             }
             ProxyMode.CSQTT -> {
                 map["use_csqtt"] = true
+                map["use_srtp"] = true
+                map["use_udp"] = true
                 map["csqtt_password"] = serverPassword
                 map["csqtt_device_id"] = deviceId.ifEmpty { id.replace("-", "").take(16) }
             }
