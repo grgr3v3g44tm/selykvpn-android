@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
@@ -35,6 +36,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -58,7 +60,8 @@ import java.net.URL
 private const val TAG = "VKAuthActivity"
 private const val VK_LOGIN_URL = "https://m.vk.ru/login?lang=ru"
 private const val VK_OAUTH_CLIENT_ID = "6287487"
-private const val VK_OAUTH_URL = "https://oauth.vk.ru/authorize?client_id=$VK_OAUTH_CLIENT_ID&scope=calls&response_type=token"
+private const val VK_OAUTH_REDIRECT_URI = "https://oauth.vk.com/blank.html"
+private const val VK_OAUTH_URL = "https://oauth.vk.com/authorize?client_id=$VK_OAUTH_CLIENT_ID&scope=calls,offline&redirect_uri=$VK_OAUTH_REDIRECT_URI&response_type=token&display=mobile&v=5.131"
 
 /**
  * Dedicated fullscreen Activity for VK Authentication and VK Call Creation.
@@ -92,6 +95,7 @@ class VKAuthActivity : ComponentActivity() {
     private var webViewInstance: WebView? = null
     private var isDone = false
     private var hasRedirectedToOAuth = false
+    private var onApiExecutionStateChange: ((Boolean, String) -> Unit)? = null
 
     @OptIn(ExperimentalMaterial3Api::class)
     @SuppressLint("SetJavaScriptEnabled")
@@ -124,6 +128,12 @@ class VKAuthActivity : ComponentActivity() {
                 var canGoBack by remember { mutableStateOf(false) }
                 var loadError by remember { mutableStateOf<String?>(null) }
                 var isExecutingApi by remember { mutableStateOf(false) }
+                val clipboardManager = LocalClipboardManager.current
+
+                onApiExecutionStateChange = { running, text ->
+                    isExecutingApi = running
+                    statusText = text
+                }
 
                 BackHandler {
                     if (canGoBack && webViewInstance?.canGoBack() == true) {
@@ -188,6 +198,23 @@ class VKAuthActivity : ComponentActivity() {
                                 }
                             },
                             actions = {
+                                // Paste from clipboard shortcut
+                                IconButton(onClick = {
+                                    val clipText = clipboardManager.getText()?.text?.trim() ?: ""
+                                    val foundLink = clipText.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") }
+                                    if (!foundLink.isNullOrBlank()) {
+                                        finishWithCallLink(foundLink)
+                                    } else {
+                                        Toast.makeText(this@VKAuthActivity, "В буфере нет ссылки на звонок (нужна ссылка vk.ru/call/join/...)", Toast.LENGTH_SHORT).show()
+                                    }
+                                }) {
+                                    Icon(
+                                        Icons.Default.ContentPaste,
+                                        contentDescription = "Вставить из буфера",
+                                        tint = PrimaryBlue
+                                    )
+                                }
+
                                 IconButton(onClick = {
                                     loadError = null
                                     isExecutingApi = false
@@ -212,7 +239,7 @@ class VKAuthActivity : ComponentActivity() {
                                 }) {
                                     Icon(
                                         Icons.Default.OpenInNew,
-                                        contentDescription = "Открыть в браузере",
+                                        contentDescription = "Создать в приложении/браузере",
                                         tint = TextSecondary
                                     )
                                 }
@@ -337,10 +364,7 @@ class VKAuthActivity : ComponentActivity() {
                                                 super.onProgressChanged(view, newProgress)
                                                 webProgress = newProgress
                                                 canGoBack = view?.canGoBack() == true
-                                                inspectForSuccess(view?.url, this@apply) {
-                                                    isExecutingApi = true
-                                                    statusText = it
-                                                }
+                                                inspectForSuccess(view?.url, this@apply)
                                             }
 
                                             override fun onJsBeforeUnload(
@@ -388,16 +412,17 @@ class VKAuthActivity : ComponentActivity() {
                                                 val url = uri.toString()
                                                 val scheme = uri.scheme?.lowercase() ?: return false
 
-                                                inspectForSuccess(url, view ?: this@apply) {
-                                                    isExecutingApi = true
-                                                    statusText = it
+                                                // 1. Check if token is already in URL path or fragment
+                                                val directToken = extractAccessToken(url)
+                                                if (directToken != null) {
+                                                    handleTokenFound(directToken, view ?: this@apply)
+                                                    return true
                                                 }
 
-                                                checkLoginLandingPage(url, view ?: this@apply) {
-                                                    statusText = it
-                                                }
+                                                inspectForSuccess(url, view ?: this@apply)
+                                                checkLoginLandingPage(url, view ?: this@apply)
 
-                                                if (isOAuthBlankPage(url) || url.contains("access_token=")) {
+                                                if (isOAuthBlankPage(url)) {
                                                     return false
                                                 }
 
@@ -405,7 +430,7 @@ class VKAuthActivity : ComponentActivity() {
                                                     return false
                                                 }
 
-                                                // Extract fallback URL for intent:, vk:, vkconnect:
+                                                // 2. Handle non-HTTP schemes (intent:, vkid:, vkconnect:, etc.)
                                                 var fallbackUrl: String? = null
                                                 if (url.startsWith("intent:") || url.startsWith("android-app:")) {
                                                     try {
@@ -424,6 +449,7 @@ class VKAuthActivity : ComponentActivity() {
 
                                                 if (fallbackUrl.isNullOrEmpty()) {
                                                     fallbackUrl = uri.getQueryParameter("fallback_url")
+                                                        ?: uri.getQueryParameter("browser_fallback_url")
                                                         ?: uri.getQueryParameter("redirect_uri")
                                                 }
 
@@ -432,8 +458,9 @@ class VKAuthActivity : ComponentActivity() {
                                                     return true
                                                 }
 
-                                                // Keep VK flows in webview
-                                                if (url.startsWith("vk:") || url.startsWith("vkconnect:") || url.contains("vk.com") || url.contains("vk.ru")) {
+                                                // If VK ID deep link has no fallback URL, do NOT freeze in a loop. Load OAuth URL directly.
+                                                if (url.startsWith("vkid:") || url.startsWith("vkconnect:") || url.startsWith("vk:")) {
+                                                    view?.loadUrl(VK_OAUTH_URL)
                                                     return true
                                                 }
 
@@ -443,34 +470,19 @@ class VKAuthActivity : ComponentActivity() {
                                             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                                 super.onPageStarted(view, url, favicon)
                                                 canGoBack = view?.canGoBack() == true
-                                                inspectForSuccess(url, view ?: this@apply) {
-                                                    isExecutingApi = true
-                                                    statusText = it
-                                                }
-                                                checkLoginLandingPage(url, view ?: this@apply) {
-                                                    statusText = it
-                                                }
+                                                inspectForSuccess(url, view ?: this@apply)
+                                                checkLoginLandingPage(url, view ?: this@apply)
                                             }
 
                                             override fun onPageFinished(view: WebView?, url: String?) {
                                                 super.onPageFinished(view, url)
                                                 canGoBack = view?.canGoBack() == true
-                                                inspectForSuccess(url, view ?: this@apply) {
-                                                    isExecutingApi = true
-                                                    statusText = it
-                                                }
-                                                checkLoginLandingPage(url, view ?: this@apply) {
-                                                    statusText = it
-                                                }
+                                                inspectForSuccess(url, view ?: this@apply)
+                                                checkLoginLandingPage(url, view ?: this@apply)
 
-                                                view?.evaluateJavascript("window.location.href") { jsUrl ->
-                                                    inspectForSuccess(jsUrl, view) {
-                                                        isExecutingApi = true
-                                                        statusText = it
-                                                    }
-                                                    checkLoginLandingPage(jsUrl, view) {
-                                                        statusText = it
-                                                    }
+                                                view?.evaluateJavascript("window.location.href + ' ' + window.location.hash") { jsHrefAndHash ->
+                                                    inspectForSuccess(jsHrefAndHash, view)
+                                                    checkLoginLandingPage(jsHrefAndHash, view)
                                                 }
 
                                                 // Auto-dismiss bottom promotional sheet ("Sign in without password or code")
@@ -536,10 +548,11 @@ class VKAuthActivity : ComponentActivity() {
                                 }
                             )
 
-                            // Background cookie watcher
+                            // Background watcher: checks cookies and hash changes rapidly
                             LaunchedEffect(Unit) {
                                 val cm = CookieManager.getInstance()
                                 while (isActive && !isDone) {
+                                    // 1. Check cookies for login landing
                                     checkCookies(cm) { header ->
                                         val expiry = System.currentTimeMillis() + 365L * 24 * 3600 * 1000
                                         VKCookieStore.save(header, expiry)
@@ -555,7 +568,15 @@ class VKAuthActivity : ComponentActivity() {
                                             }
                                         }
                                     }
-                                    delay(1000)
+
+                                    // 2. Poll URL and hash for instant access token capture
+                                    webViewInstance?.evaluateJavascript("window.location.href + ' ' + window.location.hash") { jsCombined ->
+                                        if (!jsCombined.isNullOrBlank() && jsCombined.contains("access_token=")) {
+                                            inspectForSuccess(jsCombined, webViewInstance ?: return@evaluateJavascript)
+                                        }
+                                    }
+
+                                    delay(400)
                                 }
                             }
                         }
@@ -586,14 +607,14 @@ class VKAuthActivity : ComponentActivity() {
         }
     }
 
-    private fun inspectForSuccess(url: String?, webView: WebView, onStatus: (String) -> Unit) {
+    private fun inspectForSuccess(url: String?, webView: WebView) {
         if (isDone || url.isNullOrBlank()) return
 
         val token = extractAccessToken(url)
         if (token != null) {
             VKCookieStore.saveToken(token)
             if (mode == MODE_CREATE_CALL) {
-                handleTokenFound(token, webView, onStatus)
+                handleTokenFound(token, webView)
             } else {
                 val header = VKCookieStore.getValidCookieHeader() ?: "access_token=$token"
                 finishWithLoginSuccess(header)
@@ -602,12 +623,12 @@ class VKAuthActivity : ComponentActivity() {
         }
 
         if (isOAuthBlankPage(url)) {
-            webView.evaluateJavascript("window.location.hash") { jsHash ->
-                val hashToken = extractAccessToken(jsHash)
+            webView.evaluateJavascript("window.location.href + ' ' + window.location.hash") { jsCombined ->
+                val hashToken = extractAccessToken(jsCombined)
                 if (hashToken != null) {
                     VKCookieStore.saveToken(hashToken)
                     if (mode == MODE_CREATE_CALL) {
-                        handleTokenFound(hashToken, webView, onStatus)
+                        handleTokenFound(hashToken, webView)
                     } else {
                         val header = VKCookieStore.getValidCookieHeader() ?: "access_token=$hashToken"
                         finishWithLoginSuccess(header)
@@ -617,10 +638,10 @@ class VKAuthActivity : ComponentActivity() {
         }
     }
 
-    private fun handleTokenFound(token: String, webView: WebView, onStatus: (String) -> Unit) {
+    private fun handleTokenFound(token: String, webView: WebView) {
         if (isDone) return
         isDone = true
-        onStatus("Токен получен, создаем звонок…")
+        onApiExecutionStateChange?.invoke(true, "Токен получен, создаем звонок…")
 
         try {
             webView.stopLoading()
@@ -632,6 +653,7 @@ class VKAuthActivity : ComponentActivity() {
                     finishWithCallLink(link)
                 } else {
                     isDone = false
+                    onApiExecutionStateChange?.invoke(false, "Ошибка создания звонка")
                     Toast.makeText(this@VKAuthActivity, err ?: "Ошибка создания звонка", Toast.LENGTH_LONG).show()
                 }
             }
@@ -665,11 +687,11 @@ class VKAuthActivity : ComponentActivity() {
         finish()
     }
 
-    private fun checkLoginLandingPage(url: String?, webView: WebView, onStatus: (String) -> Unit) {
+    private fun checkLoginLandingPage(url: String?, webView: WebView) {
         if (isDone || url.isNullOrBlank()) return
         val clean = url.lowercase()
         val isLanding = clean.contains("/feed") ||
-                clean.contains("/id.vk.") ||
+                clean.contains("id.vk.") ||
                 clean.contains("/account") ||
                 clean.contains("vk.ru/call/join") ||
                 clean.contains("vk.com/call/join")
@@ -684,7 +706,7 @@ class VKAuthActivity : ComponentActivity() {
                     finishWithLoginSuccess(header)
                 } else if (mode == MODE_CREATE_CALL && !hasRedirectedToOAuth) {
                     hasRedirectedToOAuth = true
-                    onStatus("Вход выполнен! Подтверждаем создание звонка…")
+                    onApiExecutionStateChange?.invoke(false, "Вход выполнен! Подтверждаем создание звонка…")
                     webView.post {
                         webView.loadUrl(VK_OAUTH_URL)
                     }
@@ -722,20 +744,20 @@ private fun plantCookies(cookieManager: CookieManager, cookieHeader: String) {
         }
     }
 
+    val domains = listOf("vk.ru", "vk.com", "login.vk.ru", "login.vk.com", "id.vk.ru", "id.vk.com", "oauth.vk.ru", "oauth.vk.com", "m.vk.ru", "m.vk.com")
+
     if (!remixsid.isNullOrBlank()) {
-        val domains = listOf(".vk.ru", ".vk.com", ".login.vk.ru", ".login.vk.com", ".id.vk.ru", ".id.vk.com", ".oauth.vk.ru", ".oauth.vk.com")
         for (d in domains) {
-            cookieManager.setCookie("https://$d/", "remixsid=$remixsid; Domain=$d; Path=/; Secure; SameSite=None")
+            val clean = d.removePrefix(".")
+            cookieManager.setCookie("https://$clean/", "remixsid=$remixsid; Domain=.$clean; Path=/; Secure; SameSite=None")
         }
     }
 
     if (!p.isNullOrBlank()) {
-        cookieManager.setCookie("https://login.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure; SameSite=None")
-        cookieManager.setCookie("https://login.vk.com/", "p=$p; Domain=.login.vk.com; Path=/; Secure; SameSite=None")
-        cookieManager.setCookie("https://vk.ru/", "p=$p; Domain=.vk.ru; Path=/; Secure; SameSite=None")
-        cookieManager.setCookie("https://vk.com/", "p=$p; Domain=.vk.com; Path=/; Secure; SameSite=None")
-        cookieManager.setCookie("https://oauth.vk.ru/", "p=$p; Domain=.vk.ru; Path=/; Secure; SameSite=None")
-        cookieManager.setCookie("https://oauth.vk.com/", "p=$p; Domain=.vk.com; Path=/; Secure; SameSite=None")
+        for (d in domains) {
+            val clean = d.removePrefix(".")
+            cookieManager.setCookie("https://$clean/", "p=$p; Domain=.$clean; Path=/; Secure; SameSite=None")
+        }
     }
 
     plantLanguageCookies(cookieManager)
@@ -743,9 +765,10 @@ private fun plantCookies(cookieManager: CookieManager, cookieHeader: String) {
 }
 
 private fun plantLanguageCookies(cookieManager: CookieManager) {
-    val langDomains = listOf(".vk.ru", ".vk.com", ".m.vk.ru", ".m.vk.com", ".id.vk.ru", ".id.vk.com", ".login.vk.ru", ".login.vk.com", ".oauth.vk.ru", ".oauth.vk.com")
+    val langDomains = listOf("vk.ru", "vk.com", "m.vk.ru", "m.vk.com", "id.vk.ru", "id.vk.com", "login.vk.ru", "login.vk.com", "oauth.vk.ru", "oauth.vk.com")
     for (d in langDomains) {
-        cookieManager.setCookie("https://$d/", "remixlang=0; Domain=$d; Path=/; Secure; SameSite=None")
+        val clean = d.removePrefix(".")
+        cookieManager.setCookie("https://$clean/", "remixlang=0; Domain=.$clean; Path=/; Secure; SameSite=None")
     }
     cookieManager.flush()
 }
@@ -839,46 +862,59 @@ suspend fun createCallWithToken(
     token: String,
     callback: (link: String?, error: String?) -> Unit
 ) = withContext(Dispatchers.IO) {
-    val hosts = listOf("api.vk.ru", "api.vk.com")
+    val hosts = listOf("api.vk.me", "api.vk.ru", "api.vk.com")
     var lastError = "Не удалось связаться с серверами VK"
 
     for (host in hosts) {
-        try {
-            val endpoint = "https://$host/method/calls.start?v=5.276&access_token=$token"
-            val conn = URL(endpoint).openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 20000
-            conn.readTimeout = 20000
-            conn.setRequestProperty("User-Agent", "VKAndroidApp/8.0 (Android 14)")
-            conn.setRequestProperty("Accept", "application/json")
-
-            val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
-            val response = BufferedReader(InputStreamReader(stream)).use { it.readText() }
-            conn.disconnect()
-
-            Log.d(TAG, "calls.start on $host response: $response")
-
-            val map = Gson().fromJson(response, Map::class.java)
-            if (map.containsKey("error")) {
-                val errMap = map["error"] as? Map<*, *>
-                val msg = errMap?.get("error_msg") as? String ?: "VK error"
-                val code = (errMap?.get("error_code") as? Number)?.toInt() ?: 0
-                lastError = "$msg (код: $code)"
-                Log.w(TAG, "calls.start returned VK error: $lastError")
-                continue
-            }
-
-            val respMap = map["response"] as? Map<*, *>
-            val joinLink = respMap?.get("join_link") as? String
-            if (!joinLink.isNullOrBlank()) {
-                withContext(Dispatchers.Main) {
-                    callback(joinLink.trim(), null)
+        for (method in listOf("GET", "POST")) {
+            try {
+                val endpoint = if (method == "GET") {
+                    "https://$host/method/calls.start?v=5.276&access_token=$token"
+                } else {
+                    "https://$host/method/calls.start"
                 }
-                return@withContext
+                val conn = URL(endpoint).openConnection() as HttpURLConnection
+                conn.requestMethod = method
+                conn.connectTimeout = 15000
+                conn.readTimeout = 15000
+                conn.setRequestProperty("User-Agent", "VKAndroidApp/8.0 (Android 14)")
+                conn.setRequestProperty("Accept", "application/json")
+
+                if (method == "POST") {
+                    conn.doOutput = true
+                    conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                    val postData = "v=5.276&access_token=$token".toByteArray(Charsets.UTF_8)
+                    conn.outputStream.use { it.write(postData) }
+                }
+
+                val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+                val response = BufferedReader(InputStreamReader(stream)).use { it.readText() }
+                conn.disconnect()
+
+                Log.d(TAG, "calls.start on $host ($method) response: $response")
+
+                val map = Gson().fromJson(response, Map::class.java)
+                if (map.containsKey("error")) {
+                    val errMap = map["error"] as? Map<*, *>
+                    val msg = errMap?.get("error_msg") as? String ?: "VK error"
+                    val code = (errMap?.get("error_code") as? Number)?.toInt() ?: 0
+                    lastError = "$msg (код: $code)"
+                    Log.w(TAG, "calls.start returned VK error on $host: $lastError")
+                    continue
+                }
+
+                val respMap = map["response"] as? Map<*, *>
+                val joinLink = respMap?.get("join_link") as? String
+                if (!joinLink.isNullOrBlank()) {
+                    withContext(Dispatchers.Main) {
+                        callback(joinLink.trim(), null)
+                    }
+                    return@withContext
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "calls.start on $host ($method) failed", e)
+                lastError = e.message ?: "Сетевая ошибка"
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "calls.start on $host failed", e)
-            lastError = e.message ?: "Сетевая ошибка"
         }
     }
 
