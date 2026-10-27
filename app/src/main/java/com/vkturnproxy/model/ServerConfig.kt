@@ -154,6 +154,7 @@ data class ServerConfig(
  * Заглушка «vkturnproxy://placeholder» реальной ссылкой не является.
  */
 fun ServerConfig.hasRealVKCallLink(): Boolean {
+    if (mode == ProxyMode.CSQTT) return true
     if (vkLink.isBlank()) return false
     return vkLink.lines().any { line ->
         line.trim().contains("call/join/")
@@ -164,7 +165,7 @@ fun ServerConfig.hasRealVKCallLink(): Boolean {
  * Ссылка на звонок ещё не создана: ключ получен с заглушкой, и туннель не
  * может стартовать, пока пользователь не создаст звонок.
  */
-fun ServerConfig.needsVKCallLink(): Boolean = needsCallLink && !hasRealVKCallLink()
+fun ServerConfig.needsVKCallLink(): Boolean = (mode != ProxyMode.CSQTT) && needsCallLink && !hasRealVKCallLink()
 
 /**
  * Подставляет реальную ссылку на звонок вместо заглушки, сохраняя остальные
@@ -179,6 +180,7 @@ fun ServerConfig.withCallLink(newLink: String): ServerConfig {
 }
 
 fun ServerConfig.hasValidVKCallLink(): Boolean {
+    if (mode == ProxyMode.CSQTT) return true
     return hasRealVKCallLink()
 }
 
