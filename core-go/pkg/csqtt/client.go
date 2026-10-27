@@ -78,8 +78,8 @@ type Config struct {
 }
 
 func (c *Config) defaults() {
-	if c.Mode != ModeVideo {
-		c.Mode = ModeAudio
+	if c.Mode != ModeAudio {
+		c.Mode = ModeVideo
 	}
 	if c.Revision == "" {
 		c.Revision = WireRevision

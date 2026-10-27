@@ -94,9 +94,11 @@ type csqttConfig struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	} `json:"seeded_turn"`
-	UseCookieAuth      bool `json:"use_cookie_auth"`
-	ForceLegacyCaptcha bool `json:"force_legacy_captcha"`
-	MTU                int  `json:"mtu"`
+	UseCookieAuth      bool   `json:"use_cookie_auth"`
+	ForceLegacyCaptcha bool   `json:"force_legacy_captcha"`
+	MTU                int    `json:"mtu"`
+	Mode               string `json:"csqtt_mode"`
+	UseSRTP            bool   `json:"use_srtp"`
 }
 
 // csqttClient is what the bridge needs from csqtt.Client — an interface so
@@ -530,11 +532,16 @@ func csqttStartImpl(proxyConfigJSON string) int32 {
 			e.fail(fmt.Errorf("csqtt server %q: %w", cfg.Server, err))
 			return
 		}
+		dialMode := csqtt.ModeVideo
+		if cfg.Mode == "audio" {
+			dialMode = csqtt.ModeAudio
+		}
 		client, err := csqttDial(ctx, csqtt.Config{
 			Server: server, Password: cfg.Password, DeviceID: cfg.DeviceID,
 			Generation: gen, Salt: salt, Workers: cfg.NumConns,
 			Creds: adapter.creds, TURNTransport: transport, TURNLogLevel: logging.LogLevelWarn,
 			WriteStall: stall,
+			Mode:       dialMode,
 			Logf:       log.Printf,
 		})
 		if err != nil {

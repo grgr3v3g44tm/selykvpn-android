@@ -163,7 +163,10 @@ class UpdateManager(private val context: Context) {
                 // и порядок получается произвольным. Поэтому сортируем сами
                 // по published_at.
                 val candidate = releases
-                    .filter { rel -> rel.assets.any { isVkTurnApk(it.name) } }
+                    .filter { rel ->
+                        (rel.tagName.startsWith("vkturn", ignoreCase = true) || !rel.tagName.startsWith("v", ignoreCase = true)) &&
+                        rel.assets.any { isVkTurnApk(it.name) }
+                    }
                     .maxByOrNull { rel -> rel.publishedAt }
 
                 if (candidate != null) {
