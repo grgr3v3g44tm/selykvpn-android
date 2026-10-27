@@ -23,7 +23,7 @@ data class ServerConfig(
     var needsCallLink: Boolean = false,
     var peerAddress: String = "",
     var numConnections: Int = 30,
-    var useUDP: Boolean = true,
+    var useUDP: Boolean = false,
     var useDTLS: Boolean = true,
     var useSrtp: Boolean = true,
     var useWrap: Boolean = false,
@@ -49,7 +49,8 @@ data class ServerConfig(
 ) {
     fun toProxyConfigJson(): String {
         val map = mutableMapOf<String, Any>()
-        map["vk_link"] = vkLink
+        val cleanVkLink = vkLink.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") } ?: vkLink.trim()
+        map["vk_link"] = cleanVkLink
         map["peer_addr"] = peerAddress
         map["use_dtls"] = useDTLS
         map["use_udp"] = useUDP
@@ -158,15 +159,12 @@ fun ServerConfig.hasRealVKCallLink(): Boolean {
 fun ServerConfig.needsVKCallLink(): Boolean = needsCallLink && !hasRealVKCallLink()
 
 /**
- * Подставляет реальную ссылку на звонок вместо заглушки, сохраняя остальные
- * ссылки конфигурации (их может быть несколько — по одной на релей).
+ * Подставляет реальную ссылку на звонок вместо заглушки.
+ * Очищает ссылку от лишних переводов строк и пробелов.
  */
 fun ServerConfig.withCallLink(newLink: String): ServerConfig {
-    val clean = newLink.trim()
-    val rest = vkLink.lines()
-        .map { it.trim() }
-        .filter { it.isNotEmpty() && !it.equals(ServerConfig.PLACEHOLDER_CALL_LINK, ignoreCase = true) }
-    return copy(vkLink = (listOf(clean) + rest).joinToString("\n"), needsCallLink = false)
+    val clean = newLink.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") } ?: newLink.trim()
+    return copy(vkLink = clean, needsCallLink = false)
 }
 
 fun ServerConfig.hasValidVKCallLink(): Boolean = hasRealVKCallLink()

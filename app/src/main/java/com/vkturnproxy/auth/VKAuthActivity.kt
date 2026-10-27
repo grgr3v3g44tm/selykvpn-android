@@ -556,7 +556,6 @@ class VKAuthActivity : ComponentActivity() {
                                     checkCookies(cm) { header ->
                                         val expiry = System.currentTimeMillis() + 365L * 24 * 3600 * 1000
                                         VKCookieStore.save(header, expiry)
-                                        VKCookieStore.isEnabled = true
 
                                         if (mode == MODE_LOGIN) {
                                             finishWithLoginSuccess(header)
@@ -701,7 +700,6 @@ class VKAuthActivity : ComponentActivity() {
             checkCookies(cm) { header ->
                 val expiry = System.currentTimeMillis() + 365L * 24 * 3600 * 1000
                 VKCookieStore.save(header, expiry)
-                VKCookieStore.isEnabled = true
                 if (mode == MODE_LOGIN) {
                     finishWithLoginSuccess(header)
                 } else if (mode == MODE_CREATE_CALL && !hasRedirectedToOAuth) {

@@ -135,17 +135,23 @@ func (p *CredPool) Close() {
 }
 
 // parseVKLinkID is Proxy.Start's link parsing: the id after "join/", cut at
-// the first "/", "?" or "#".
+// the first "/", "?", "#", whitespace or newline.
 func parseVKLinkID(link string) string {
-	id := link
+	id := strings.TrimSpace(link)
+	if strings.Contains(id, "\n") {
+		id = strings.TrimSpace(strings.Split(id, "\n")[0])
+	}
+	if strings.Contains(id, "\r") {
+		id = strings.TrimSpace(strings.Split(id, "\r")[0])
+	}
 	if strings.Contains(id, "join/") {
 		parts := strings.Split(id, "join/")
 		id = parts[len(parts)-1]
 	}
-	if i := strings.IndexAny(id, "/?#"); i != -1 {
+	if i := strings.IndexAny(id, "/?# \t\r\n"); i != -1 {
 		id = id[:i]
 	}
-	return id
+	return strings.TrimSpace(id)
 }
 
 // standardFetch is Proxy.fetchFreshCreds without the captcha bookkeeping:

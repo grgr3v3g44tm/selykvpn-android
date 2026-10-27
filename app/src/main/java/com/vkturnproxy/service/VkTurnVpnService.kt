@@ -83,14 +83,17 @@ class VkTurnVpnService : VpnService() {
 
         serviceScope.launch {
             try {
-                // 1. Setup VK Cookie Auth if enabled
-                val isCookieAuth = config.useCookieAuth || com.vkturnproxy.auth.VKCookieStore.isEnabled
+                // Sanitize VK call link (single trimmed URL) and force reliable TCP transport
+                val cleanLink = config.vkLink.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") } ?: config.vkLink.trim()
+                config.vkLink = cleanLink
+                config.useUDP = false
+
+                // 1. Setup VK Cookie Auth if enabled explicitly in config
+                val isCookieAuth = config.useCookieAuth && com.vkturnproxy.auth.VKCookieStore.hasValidCookie()
                 if (isCookieAuth) {
                     val cookie = com.vkturnproxy.auth.VKCookieStore.getValidCookieHeader()
                     if (!cookie.isNullOrBlank()) {
-                        val links = config.vkLink.split("\n")
-                            .map { it.trim() }
-                            .filter { it.isNotEmpty() }
+                        val links = listOf(cleanLink)
                         val linksJson = Gson().toJson(links)
                         Log.i(TAG, "Enabling VK Cookie Auth with ${links.size} call link(s)")
                         WgTurnCore.setVKCookieAuth(true, cookie, linksJson)
@@ -102,6 +105,7 @@ class VkTurnVpnService : VpnService() {
                     }
                 } else {
                     WgTurnCore.setVKCookieAuth(false, "", "")
+                    config.useCookieAuth = false
                 }
 
                 WgTurnCore.setUplinkPace(config.uplinkPaceKiB, config.uplinkPaceBurstKiB)

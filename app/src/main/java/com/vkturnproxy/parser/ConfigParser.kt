@@ -96,7 +96,7 @@ object ConfigParser {
             val useDTLS = settings.get("useDTLS")?.asBoolean ?: true
             val useUDP = settings.get("useUDP")?.asBoolean
                 ?: settings.get("use_udp")?.asBoolean
-                ?: true
+                ?: false
             val useSrtp = settings.get("useSrtp")?.asBoolean ?: true
             val useWrap = settings.get("useWrap")?.asBoolean ?: false
             val useWrapA = settings.get("useWrapA")?.asBoolean ?: false
