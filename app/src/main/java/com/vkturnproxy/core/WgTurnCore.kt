@@ -33,14 +33,6 @@ object WgTurnCore {
     external fun refreshCaptchaURL(handle: Int): String
     external fun setLogFilePath(path: String)
 
-    // CSQTT
-    external fun csqttStart(proxyConfigJson: String): Int
-    external fun csqttWaitReady(handle: Int, timeoutMs: Int): Int
-    external fun csqttAttach(handle: Int, tunFd: Int): Int
-    external fun csqttTurnOff(handle: Int)
-    external fun csqttProvision(handle: Int): String
-    external fun csqttGetStats(handle: Int): String
-
     // VK Cookie Auth & Advanced
     external fun setVKCookieAuth(enabled: Boolean, cookie: String, linksJson: String)
     external fun getAuthError(): String

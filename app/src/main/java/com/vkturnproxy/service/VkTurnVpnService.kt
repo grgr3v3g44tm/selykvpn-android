@@ -40,7 +40,6 @@ class VkTurnVpnService : VpnService() {
 
     private var tunnelHandle: Int = -1
     private var tunPfd: ParcelFileDescriptor? = null
-    private var isCsqttMode = false
     private val serviceScope = CoroutineScope(Dispatchers.IO + Job())
     private var statsJob: Job? = null
 
@@ -79,7 +78,6 @@ class VkTurnVpnService : VpnService() {
         }
 
         currentServerName = config.name
-        isCsqttMode = (config.mode == ProxyMode.CSQTT)
         _statusFlow.value = VpnStatus.CONNECTING
         startForeground(NOTIFICATION_ID, buildNotification("Инициализация звонка VK…"))
 
@@ -114,11 +112,7 @@ class VkTurnVpnService : VpnService() {
                 Log.i(TAG, "Starting proxy with mode=${config.mode}, cookieAuth=${config.useCookieAuth}, pace=${config.uplinkPaceKiB}KiB")
 
                 // 2. Launch bootstrap in Go
-                val handle = if (isCsqttMode) {
-                    WgTurnCore.csqttStart(proxyConfigJson)
-                } else {
-                    WgTurnCore.startVKBootstrap(proxyConfigJson)
-                }
+                val handle = WgTurnCore.startVKBootstrap(proxyConfigJson)
 
                 if (handle <= 0) {
                     Log.e(TAG, "Failed to start bootstrap, handle=$handle")
@@ -132,15 +126,12 @@ class VkTurnVpnService : VpnService() {
                 updateNotification("Ожидание TURN соединения…")
 
                 // 2. Wait for TURN allocation & DTLS readiness
-                val ready = if (isCsqttMode) {
-                    WgTurnCore.csqttWaitReady(handle, 120_000)
-                } else {
-                    WgTurnCore.waitBootstrapReady(handle, 120_000)
-                }
+                val ready = WgTurnCore.waitBootstrapReady(handle, 120_000)
 
                 if (ready != 1) {
                     Log.e(TAG, "Bootstrap failed or timed out: ready=$ready")
                     _statusFlow.value = VpnStatus.ERROR
+                    updateNotification("Ошибка подключения к серверам VK")
                     stopTunnel()
                     return@launch
                 }
@@ -150,7 +141,7 @@ class VkTurnVpnService : VpnService() {
                 var dnsServers = config.dnsServers
                 var mtu = config.mtu
 
-                // 3. Special handling for WRAP-A and CSQTT (auto-provision from server)
+                // 3. Special handling for WRAP-A (auto-provision from server)
                 if (config.mode == ProxyMode.SRTP_WRAP_A) {
                     val provJson = WgTurnCore.waitWrapAProvision(handle, 30_000)
                     if (provJson.isNotBlank()) {
@@ -164,20 +155,6 @@ class VkTurnVpnService : VpnService() {
                             }
                         } catch (e: Exception) {
                             Log.w(TAG, "Error parsing WRAP-A provision", e)
-                        }
-                    }
-                } else if (isCsqttMode) {
-                    val provJson = WgTurnCore.csqttProvision(handle)
-                    if (provJson.isNotBlank()) {
-                        try {
-                            val map = Gson().fromJson(provJson, Map::class.java)
-                            tunnelAddr = map["address"] as? String ?: tunnelAddr
-                            dnsServers = map["dns"] as? String ?: dnsServers
-                            (map["mtu"] as? Number)?.toInt()?.let { provMtu ->
-                                if (provMtu in 1200..1500) mtu = provMtu
-                            }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Error parsing CSQTT provision", e)
                         }
                     }
                 }
@@ -216,12 +193,8 @@ class VkTurnVpnService : VpnService() {
                 val tunFd = pfd.fd
                 Log.i(TAG, "TUN interface established, fd=$tunFd")
 
-                // 5. Attach TUN to WireGuard or CSQTT engine
-                val attachRes = if (isCsqttMode) {
-                    WgTurnCore.csqttAttach(handle, tunFd)
-                } else {
-                    WgTurnCore.attachWireGuard(handle, uapiConfig, tunFd)
-                }
+                // 5. Attach TUN to WireGuard engine
+                val attachRes = WgTurnCore.attachWireGuard(handle, uapiConfig, tunFd)
 
                 if (attachRes < 0) {
                     Log.e(TAG, "Attach failed with code: $attachRes")
@@ -267,18 +240,14 @@ class VkTurnVpnService : VpnService() {
             var tickCount = 0
             while (isActive && tunnelHandle > 0) {
                 try {
-                    val statsJson = if (isCsqttMode) {
-                        WgTurnCore.csqttGetStats(tunnelHandle)
-                    } else {
-                        WgTurnCore.getStats(tunnelHandle)
-                    }
+                    val statsJson = WgTurnCore.getStats(tunnelHandle)
                     if (statsJson.isNotBlank() && statsJson != "{}") {
                         val parsed = Gson().fromJson(statsJson, TunnelStats::class.java)
                         val speedRx = if (lastRxBytes > 0) (parsed.bytesRx - lastRxBytes).coerceAtLeast(0) else 0
                         val speedTx = if (lastTxBytes > 0) (parsed.bytesTx - lastTxBytes).coerceAtLeast(0) else 0
                         lastRxBytes = parsed.bytesRx
                         lastTxBytes = parsed.bytesTx
-                        val turnIp = if (isCsqttMode) "" else WgTurnCore.getTURNServerIP(tunnelHandle)
+                        val turnIp = WgTurnCore.getTURNServerIP(tunnelHandle)
                         _statsFlow.value = parsed.copy(
                             speedRxBps = speedRx,
                             speedTxBps = speedTx,
@@ -320,11 +289,7 @@ class VkTurnVpnService : VpnService() {
             val handle = tunnelHandle
             tunnelHandle = -1
             try {
-                if (isCsqttMode) {
-                    WgTurnCore.csqttTurnOff(handle)
-                } else {
-                    WgTurnCore.turnOff(handle)
-                }
+                WgTurnCore.turnOff(handle)
             } catch (e: Exception) {
                 Log.w(TAG, "Error stopping tunnel handle $handle", e)
             }
@@ -336,7 +301,6 @@ class VkTurnVpnService : VpnService() {
             Log.w(TAG, "Error closing tunPfd", e)
         }
         tunPfd = null
-        isCsqttMode = false
 
         _statusFlow.value = VpnStatus.DISCONNECTED
         _statsFlow.value = TunnelStats()

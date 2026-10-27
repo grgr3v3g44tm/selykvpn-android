@@ -101,22 +101,15 @@ object ConfigParser {
             val useWrap = settings.get("useWrap")?.asBoolean ?: false
             val useWrapA = settings.get("useWrapA")?.asBoolean ?: false
             val useWrapS = settings.get("useWrapS")?.asBoolean ?: false
-            val useCsqtt = settings.get("useCsqtt")?.asBoolean
-                ?: settings.get("use_csqtt")?.asBoolean
-                ?: false
 
             val wrapKeyHex = settings.get("wrapKeyHex")?.asString
                 ?: settings.get("wrap_key_hex")?.asString
                 ?: ""
             val serverPassword = settings.get("serverPassword")?.asString
                 ?: settings.get("server_password")?.asString
-                ?: settings.get("csqttPassword")?.asString
-                ?: settings.get("csqtt_password")?.asString
                 ?: ""
             val deviceId = settings.get("deviceId")?.asString
                 ?: settings.get("device_id")?.asString
-                ?: settings.get("csqttDeviceId")?.asString
-                ?: settings.get("csqtt_device_id")?.asString
                 ?: ""
 
             // WireGuard
@@ -154,7 +147,6 @@ object ConfigParser {
                 ?: false
 
             val mode = when {
-                useCsqtt -> ProxyMode.CSQTT
                 useWrapA -> ProxyMode.SRTP_WRAP_A
                 useWrapS -> ProxyMode.SRTP_WRAP_S
                 useWrap -> ProxyMode.SRTP_WRAP

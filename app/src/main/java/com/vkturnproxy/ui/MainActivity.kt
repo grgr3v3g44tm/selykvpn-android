@@ -79,19 +79,20 @@ class MainActivity : ComponentActivity() {
     private fun handleIntent(intent: Intent?) {
         val data = intent?.dataString ?: return
         val parsed = ConfigParser.parse(data) ?: return
-        VkTurnApp.instance.serverRepository.saveServer(parsed)
-        if (parsed.needsCallLink) {
+        VkTurnApp.instance.serverRepository.saveServer(parsed, makeActive = true)
+        val active = VkTurnApp.instance.serverRepository.activeServerFlow.value ?: parsed
+        if (active.needsCallLink) {
             // Ключ получен с заглушкой: сразу открываем диалог создания звонка.
             // Иначе пользователь увидел бы «импортировано» и не понимал, почему
             // подключиться нельзя.
-            callCreatorRequest.value = parsed
+            callCreatorRequest.value = active
             Toast.makeText(
                 this,
-                "Конфигурация «${parsed.name}» импортирована. Создайте звонок VK для запуска VPN.",
+                "Конфигурация «${active.name}» импортирована. Создайте звонок VK для запуска VPN.",
                 Toast.LENGTH_LONG
             ).show()
         } else {
-            Toast.makeText(this, "Конфигурация «${parsed.name}» импортирована!", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Конфигурация «${active.name}» импортирована!", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -269,7 +270,7 @@ class MainActivity : ComponentActivity() {
                 onDismiss = { callCreatorRequest.value = null },
                 onCallCreated = { newLink ->
                     val updated = request.withCallLink(newLink)
-                    serverRepo.saveServer(updated)
+                    serverRepo.saveServer(updated, makeActive = true)
                     callCreatorRequest.value = null
                     Toast.makeText(
                         this@MainActivity,

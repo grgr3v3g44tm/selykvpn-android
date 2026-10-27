@@ -47,26 +47,32 @@ class ServerRepository(private val context: Context) {
         try {
             listOf(context.cacheDir, context.filesDir).forEach { dir ->
                 java.io.File(dir, "creds-pool.json").delete()
-                java.io.File(dir, "creds-pool-csqtt.json").delete()
             }
         } catch (_: Exception) {}
     }
 
-    fun saveServer(config: ServerConfig) {
+    fun saveServer(config: ServerConfig, makeActive: Boolean = false) {
         val current = _serversFlow.value.toMutableList()
-        val index = current.indexOfFirst { it.id == config.id }
-        if (index >= 0) {
+        // Deduplicate: match by ID, or if matching peer address & public key
+        val index = current.indexOfFirst {
+            it.id == config.id ||
+            (config.peerPublicKey.isNotBlank() && it.peerPublicKey == config.peerPublicKey && it.peerAddress == config.peerAddress)
+        }
+        val targetConfig = if (index >= 0) {
             val old = current[index]
             if (old.vkLink != config.vkLink) {
                 purgeCredCache()
             }
-            current[index] = config
+            val merged = config.copy(id = old.id)
+            current[index] = merged
+            merged
         } else {
             current.add(config)
+            config
         }
         saveServers(current)
-        if (_activeServerFlow.value?.id == config.id || _activeServerFlow.value == null) {
-            setActiveServer(config)
+        if (makeActive || _activeServerFlow.value?.id == targetConfig.id || _activeServerFlow.value == null) {
+            setActiveServer(targetConfig)
         }
     }
 

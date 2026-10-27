@@ -9,7 +9,6 @@ enum class ProxyMode {
     SRTP_WRAP,
     SRTP_WRAP_A,
     SRTP_WRAP_S,
-    CSQTT,
     LEGACY
 }
 
@@ -88,14 +87,6 @@ data class ServerConfig(
                 map["obf_profile"] = wrapSProfile
                 map["client_id"] = deviceId.ifEmpty { id.replace("-", "").take(16) }
             }
-            ProxyMode.CSQTT -> {
-                map["use_csqtt"] = true
-                map["use_srtp"] = true
-                map["csqtt_mode"] = "video"
-                map["use_udp"] = true
-                map["csqtt_password"] = serverPassword
-                map["csqtt_device_id"] = deviceId.ifEmpty { id.replace("-", "").take(16) }
-            }
             ProxyMode.LEGACY -> {
                 map["use_srtp"] = false
                 map["use_wrap"] = false
@@ -106,7 +97,7 @@ data class ServerConfig(
     }
 
     fun toUAPIConfig(): String {
-        if (mode == ProxyMode.SRTP_WRAP_A || mode == ProxyMode.CSQTT) {
+        if (mode == ProxyMode.SRTP_WRAP_A) {
             return ""
         }
         val sb = StringBuilder()
@@ -154,7 +145,6 @@ data class ServerConfig(
  * Заглушка «vkturnproxy://placeholder» реальной ссылкой не является.
  */
 fun ServerConfig.hasRealVKCallLink(): Boolean {
-    if (mode == ProxyMode.CSQTT) return true
     if (vkLink.isBlank()) return false
     return vkLink.lines().any { line ->
         line.trim().contains("call/join/")
@@ -165,7 +155,7 @@ fun ServerConfig.hasRealVKCallLink(): Boolean {
  * Ссылка на звонок ещё не создана: ключ получен с заглушкой, и туннель не
  * может стартовать, пока пользователь не создаст звонок.
  */
-fun ServerConfig.needsVKCallLink(): Boolean = (mode != ProxyMode.CSQTT) && needsCallLink && !hasRealVKCallLink()
+fun ServerConfig.needsVKCallLink(): Boolean = needsCallLink && !hasRealVKCallLink()
 
 /**
  * Подставляет реальную ссылку на звонок вместо заглушки, сохраняя остальные
@@ -179,10 +169,7 @@ fun ServerConfig.withCallLink(newLink: String): ServerConfig {
     return copy(vkLink = (listOf(clean) + rest).joinToString("\n"), needsCallLink = false)
 }
 
-fun ServerConfig.hasValidVKCallLink(): Boolean {
-    if (mode == ProxyMode.CSQTT) return true
-    return hasRealVKCallLink()
-}
+fun ServerConfig.hasValidVKCallLink(): Boolean = hasRealVKCallLink()
 
 fun hasValidVKCallLink(link: String?): Boolean {
     if (link.isNullOrBlank()) return false

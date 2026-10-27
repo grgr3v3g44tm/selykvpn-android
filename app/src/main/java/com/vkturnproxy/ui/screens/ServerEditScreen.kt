@@ -180,7 +180,7 @@ fun ServerEditScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        listOf(ProxyMode.SRTP, ProxyMode.SRTP_WRAP, ProxyMode.SRTP_WRAP_A, ProxyMode.CSQTT).forEach { m ->
+                        listOf(ProxyMode.SRTP, ProxyMode.SRTP_WRAP, ProxyMode.SRTP_WRAP_A).forEach { m ->
                             FilterChip(
                                 selected = mode == m,
                                 onClick = { mode = m },
@@ -406,7 +406,7 @@ fun ServerEditScreen(
                 }
             }
 
-            if (mode == ProxyMode.SRTP_WRAP_A || mode == ProxyMode.CSQTT) {
+            if (mode == ProxyMode.SRTP_WRAP_A) {
                 Card(
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = SurfaceDark)
@@ -430,7 +430,7 @@ fun ServerEditScreen(
             }
 
             // WireGuard settings
-            if (mode != ProxyMode.CSQTT && mode != ProxyMode.SRTP_WRAP_A) {
+            if (mode != ProxyMode.SRTP_WRAP_A) {
                 Card(
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = SurfaceDark)
