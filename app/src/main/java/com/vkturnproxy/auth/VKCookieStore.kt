@@ -3,6 +3,7 @@ package com.vkturnproxy.auth
 import android.content.Context
 import android.content.SharedPreferences
 import android.webkit.CookieManager
+import com.vkturnproxy.log.AppLog
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -18,6 +19,7 @@ data class StoredCookie(
  * Strict 1-to-1 parity with anton48/vk-turn-proxy-ios VKCookieStore.swift and VKOAuth.swift.
  */
 object VKCookieStore {
+    private const val TAG = "VKCookieStore"
     private const val PREFS_NAME = "vkturn_vkauth"
     private const val KEY_COOKIE_HEADER = "cookie_header"
     private const val KEY_EXPIRY = "cookie_expiry"
@@ -28,6 +30,8 @@ object VKCookieStore {
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val hasLogin = hasValidLogin()
+        AppLog.d(TAG, "Initialized: hasValidLogin=$hasLogin, expiry=${getFormattedExpiry()}")
     }
 
     var isEnabled: Boolean
@@ -45,6 +49,7 @@ object VKCookieStore {
             .putLong(KEY_EXPIRY, expiryTimestamp)
             .putLong(KEY_SAVED_AT, System.currentTimeMillis())
             .apply()
+        AppLog.i(TAG, "Saved VK session cookies to storage: header=${AppLog.sanitize(cookieHeader)}")
     }
 
     fun load(): StoredCookie? {
@@ -66,6 +71,7 @@ object VKCookieStore {
             .remove(KEY_EXPIRY)
             .remove(KEY_SAVED_AT)
             .apply()
+        AppLog.i(TAG, "Deleted stored VK session cookies")
     }
 
     /**
@@ -85,6 +91,41 @@ object VKCookieStore {
             }
         }
         return null
+    }
+
+    /**
+     * Inspects CookieManager across all known VK domains (.vk.com and .vk.ru)
+     * to extract remixsid and optional p session cookies.
+     */
+    fun extractCookiesFromManager(cm: CookieManager): Pair<String?, String?> {
+        val domains = listOf(
+            "https://vk.ru/",
+            "https://m.vk.ru/",
+            "https://id.vk.ru/",
+            "https://login.vk.ru/",
+            "https://oauth.vk.ru/",
+            "https://vk.com/",
+            "https://m.vk.com/",
+            "https://id.vk.com/",
+            "https://login.vk.com/",
+            "https://oauth.vk.com/"
+        )
+
+        var remixsid: String? = null
+        var p: String? = null
+
+        for (domain in domains) {
+            val c = cm.getCookie(domain) ?: continue
+            if (remixsid == null) {
+                remixsid = extractCookieValue(c, "remixsid")
+            }
+            if (p == null) {
+                p = extractCookieValue(c, "p")
+            }
+            if (remixsid != null && p != null) break
+        }
+
+        return Pair(remixsid, p)
     }
 
     /**
@@ -127,6 +168,7 @@ object VKCookieStore {
         if (header.isNullOrBlank()) return
         val remixsid = extractCookieValue(header, "remixsid")
         val p = extractCookieValue(header, "p")
+        AppLog.d(TAG, "Planting cookies for OAuth: remixsid=${remixsid != null}, p=${p != null}")
 
         if (!remixsid.isNullOrBlank()) {
             val cookieVal = "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None"
@@ -178,6 +220,9 @@ object VKCookieStore {
             val cm = CookieManager.getInstance()
             cm.removeAllCookies(null)
             cm.flush()
-        } catch (_: Exception) {}
+            AppLog.i(TAG, "Cleared all WebKit cookies")
+        } catch (e: Exception) {
+            AppLog.w(TAG, "Failed to clear WebKit cookies", e)
+        }
     }
 }

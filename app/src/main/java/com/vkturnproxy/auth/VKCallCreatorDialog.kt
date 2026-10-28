@@ -6,6 +6,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -26,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.vkturnproxy.log.AppLog
+import com.vkturnproxy.log.DiagnosticsDialog
 import com.vkturnproxy.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -50,6 +53,8 @@ fun VKCallCreatorDialog(
     var hasLogin by remember { mutableStateOf(VKCookieStore.hasValidLogin()) }
     var expiryText by remember { mutableStateOf(VKCookieStore.getFormattedExpiry()) }
     var isCreatingFast by remember { mutableStateOf(false) }
+    var lastErrorMsg by remember { mutableStateOf<String?>(null) }
+    var showDiagnosticsDialog by remember { mutableStateOf(false) }
 
     val authLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -70,6 +75,8 @@ fun VKCallCreatorDialog(
             if (!cookieHeader.isNullOrBlank()) {
                 Toast.makeText(context, "Вход выполнен! Теперь нажмите «Создать звонок»", Toast.LENGTH_SHORT).show()
             }
+        } else {
+            AppLog.i(TAG, "Окно авторизации закрыто (resultCode=${result.resultCode})")
         }
     }
 
@@ -186,15 +193,24 @@ fun VKCallCreatorDialog(
                             onClick = {
                                 coroutineScope.launch {
                                     isCreatingFast = true
-                                    val fastLink = VKCallHelper.createCallFast(context)
-                                    if (!fastLink.isNullOrBlank()) {
-                                        isCreatingFast = false
-                                        onCallCreated(fastLink)
-                                        Toast.makeText(context, "Звонок успешно создан и привязан!", Toast.LENGTH_SHORT).show()
-                                        onDismiss()
-                                    } else {
-                                        isCreatingFast = false
-                                        authLauncher.launch(VKAuthActivity.createCallIntent(context))
+                                    lastErrorMsg = null
+                                    AppLog.i(TAG, "Нажата кнопка «Создать звонок автоматически»")
+                                    when (val result = VKCallHelper.createCallFast(context)) {
+                                        is FastCallResult.Success -> {
+                                            isCreatingFast = false
+                                            onCallCreated(result.joinLink)
+                                            Toast.makeText(context, "Звонок успешно создан и привязан!", Toast.LENGTH_SHORT).show()
+                                            onDismiss()
+                                        }
+                                        is FastCallResult.Error -> {
+                                            isCreatingFast = false
+                                            AppLog.w(TAG, "createCallFast error: ${result.message}")
+                                            if (result.needsUi) {
+                                                authLauncher.launch(VKAuthActivity.createCallIntent(context))
+                                            } else {
+                                                lastErrorMsg = result.message
+                                            }
+                                        }
                                     }
                                 }
                             },
@@ -217,6 +233,25 @@ fun VKCallCreatorDialog(
                                 Icon(Icons.Default.AutoMode, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text("Создать звонок автоматически", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
+                        }
+
+                        if (lastErrorMsg != null) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = CardDefaults.cardColors(containerColor = AccentRed.copy(alpha = 0.15f)),
+                                border = BorderStroke(1.dp, AccentRed.copy(alpha = 0.5f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = AccentRed, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(lastErrorMsg!!, color = AccentRed, fontSize = 12.sp, lineHeight = 16.sp)
+                                }
                             }
                         }
                     } else {
@@ -320,8 +355,41 @@ fun VKCallCreatorDialog(
                             Text("Применить введенную ссылку", fontWeight = FontWeight.Bold)
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider(color = SurfaceVariantDark, thickness = 1.dp)
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Diagnostics and log export bar
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedButton(
+                            onClick = { showDiagnosticsDialog = true },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
+                        ) {
+                            Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Журнал диагностики", fontSize = 12.sp)
+                        }
+
+                        IconButton(
+                            onClick = { AppLog.copyToClipboard(context) },
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Копировать логи", tint = PrimaryBlue)
+                        }
+                    }
                 }
             }
         }
+    }
+
+    if (showDiagnosticsDialog) {
+        DiagnosticsDialog(onDismiss = { showDiagnosticsDialog = false })
     }
 }

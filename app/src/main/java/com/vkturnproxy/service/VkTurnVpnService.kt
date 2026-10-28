@@ -14,6 +14,7 @@ import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
 import com.vkturnproxy.R
 import com.vkturnproxy.core.WgTurnCore
+import com.vkturnproxy.log.AppLog
 import com.vkturnproxy.model.ProxyMode
 import com.vkturnproxy.model.ServerConfig
 import com.vkturnproxy.model.TunnelStats
@@ -221,20 +222,20 @@ class VkTurnVpnService : VpnService() {
 
                 val pfd = builder.establish()
                 if (pfd == null) {
-                    Log.e(TAG, "VpnService.Builder.establish() returned null")
+                    AppLog.e(TAG, "VpnService.Builder.establish() returned null")
                     _statusFlow.value = VpnStatus.ERROR
                     stopTunnel()
                     return@launch
                 }
                 tunPfd = pfd
                 val tunFd = pfd.fd
-                Log.i(TAG, "TUN interface established, fd=$tunFd")
+                AppLog.i(TAG, "TUN interface established, fd=$tunFd")
 
                 // 5. Attach TUN to WireGuard engine
                 val attachRes = WgTurnCore.attachWireGuard(handle, uapiConfig, tunFd)
 
                 if (attachRes < 0) {
-                    Log.e(TAG, "Attach failed with code: $attachRes")
+                    AppLog.e(TAG, "Attach failed with code: $attachRes")
                     _statusFlow.value = VpnStatus.ERROR
                     stopTunnel()
                     return@launch
@@ -255,6 +256,7 @@ class VkTurnVpnService : VpnService() {
                 }
 
                 _statusFlow.value = VpnStatus.CONNECTED
+                AppLog.i(TAG, "VPN туннель успешно запущен: ${config.name} ($handle)")
                 updateNotification("Подключено — ${config.name}")
                 startStatsPolling()
 

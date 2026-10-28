@@ -2,6 +2,7 @@ package com.vkturnproxy
 
 import android.app.Application
 import com.vkturnproxy.data.ServerRepository
+import com.vkturnproxy.log.AppLog
 import com.vkturnproxy.service.SplitTunnelManager
 import com.vkturnproxy.update.UpdateManager
 
@@ -19,6 +20,7 @@ class VkTurnApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        AppLog.init(this)
         serverRepository = ServerRepository(this)
         splitTunnelManager = SplitTunnelManager(this)
         updateManager = UpdateManager(this)

@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import com.vkturnproxy.BuildConfig
 import com.vkturnproxy.R
 import com.vkturnproxy.auth.VKCallCreatorDialog
+import com.vkturnproxy.log.DiagnosticsDialog
 import com.vkturnproxy.model.ProxyMode
 import com.vkturnproxy.model.ServerConfig
 import com.vkturnproxy.model.TunnelStats
@@ -97,6 +98,7 @@ fun DashboardScreen(
     val clipboardManager = LocalClipboardManager.current
     var showVKCallCreatorDialog by remember { mutableStateOf(false) }
     var showManualLinkDialog by remember { mutableStateOf(false) }
+    var showDiagnosticsDialog by remember { mutableStateOf(false) }
     var manualLinkInput by remember { mutableStateOf("") }
 
     val onAddTileClicked = {
@@ -165,16 +167,30 @@ fun DashboardScreen(
                     }
                 }
 
-                IconButton(
-                    onClick = onCheckUpdateClicked,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = if (availableUpdate != null) Icons.Default.SystemUpdateAlt else Icons.Default.Sync,
-                        contentDescription = "Проверить обновления",
-                        tint = if (availableUpdate != null) AccentGreen else TextSecondary,
-                        modifier = Modifier.size(20.dp)
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = { showDiagnosticsDialog = true },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Terminal,
+                            contentDescription = "Журнал диагностики",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onCheckUpdateClicked,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (availableUpdate != null) Icons.Default.SystemUpdateAlt else Icons.Default.Sync,
+                            contentDescription = "Проверить обновления",
+                            tint = if (availableUpdate != null) AccentGreen else TextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
 
@@ -678,6 +694,10 @@ fun DashboardScreen(
                 showVKCallCreatorDialog = false
             }
         )
+    }
+
+    if (showDiagnosticsDialog) {
+        DiagnosticsDialog(onDismiss = { showDiagnosticsDialog = false })
     }
 
     if (showManualLinkDialog) {
