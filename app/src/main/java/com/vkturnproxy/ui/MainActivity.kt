@@ -214,7 +214,9 @@ class MainActivity : ComponentActivity() {
                                 if (active != null) {
                                     // withCallLink выбрасывает заглушку и ставит
                                     // новую ссылку первой, сохраняя остальные.
-                                    val updated = active.withCallLink(newLink)
+                                    val updated = active.withCallLink(newLink).copy(
+                                        useCookieAuth = com.vkturnproxy.auth.VKCookieStore.hasValidLogin()
+                                    )
                                     serverRepo.saveServer(updated)
                                     Toast.makeText(this@MainActivity, "Звонок VK создан и привязан к «${updated.name}»!", Toast.LENGTH_LONG).show()
                                 } else {

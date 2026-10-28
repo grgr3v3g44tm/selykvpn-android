@@ -1006,6 +1006,11 @@ func (p *Proxy) startConnections() error {
 		if errors.As(err, &captchaErr) {
 			break
 		}
+		var callErr *CallUnavailableError
+		if errors.As(err, &callErr) {
+			log.Printf("proxy: conn 0 failed with non-retryable call error: %v — aborting bootstrap retry loop immediately", err)
+			break
+		}
 
 		// Adaptive backoff: when NO slots are usable (either all in 486
 		// cooldown OR partly saturated + empty slots that grower can't

@@ -68,9 +68,10 @@ func (e *tunnelEntry) deviceNow() *device.Device {
 }
 
 var (
-	tunnels   = make(map[int32]*tunnelEntry)
-	tunnelsMu sync.Mutex
-	nextID    int32 = 1
+	tunnels            = make(map[int32]*tunnelEntry)
+	tunnelsMu          sync.Mutex
+	nextID             int32 = 1
+	lastBootstrapError atomic.Value
 )
 
 // decodeWrapKey parses the hex string the user typed in Settings into
@@ -278,6 +279,7 @@ type ProxyConfig struct {
 //
 //export wgStartVKBootstrap
 func wgStartVKBootstrap(proxyConfigJSON *C.char) C.int32_t {
+	lastBootstrapError.Store("")
 	goProxyJSON := C.GoString(proxyConfigJSON)
 
 	var pcfg ProxyConfig
@@ -440,9 +442,11 @@ func wgWaitBootstrapReady(tunnelHandle C.int32_t, timeoutMs C.int32_t) C.int32_t
 	// retry on timeout but fail-fast on error.
 	if strings.Contains(err.Error(), "bootstrap timeout") {
 		log.Printf("wgWaitBootstrapReady: tunnel %d timeout after %s", id, timeout)
+		lastBootstrapError.Store(err.Error())
 		return 0
 	}
 	log.Printf("wgWaitBootstrapReady: tunnel %d failed: %v", id, err)
+	lastBootstrapError.Store(err.Error())
 	return -1
 }
 
@@ -1059,7 +1063,13 @@ func wgSetUplinkPace(kib C.int32_t, burstKiB C.int32_t) {
 //
 //export wgGetAuthError
 func wgGetAuthError() *C.char {
-	return C.CString(proxy.CookieAuthFatalError())
+	if fatal := proxy.CookieAuthFatalError(); fatal != "" {
+		return C.CString(fatal)
+	}
+	if bErr, ok := lastBootstrapError.Load().(string); ok && bErr != "" {
+		return C.CString(bErr)
+	}
+	return C.CString("")
 }
 
 // wgProbeVKCreds runs one round of GetVKCreds from the main app's process,

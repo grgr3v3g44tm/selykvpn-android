@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class VpnStatus {
     DISCONNECTED,
@@ -88,8 +89,9 @@ class VkTurnVpnService : VpnService() {
                 config.vkLink = cleanLink
                 Log.i(TAG, "Configured transport: useUDP=${config.useUDP}, link=$cleanLink")
 
-                // 1. Setup VK Cookie Auth if enabled explicitly in config
-                val isCookieAuth = config.useCookieAuth && com.vkturnproxy.auth.VKCookieStore.hasValidCookie()
+                // 1. Setup VK Cookie Auth if enabled explicitly in config or if active login exists in VKCookieStore
+                val hasStoredLogin = com.vkturnproxy.auth.VKCookieStore.hasValidLogin()
+                val isCookieAuth = (config.useCookieAuth || hasStoredLogin) && com.vkturnproxy.auth.VKCookieStore.hasValidCookie()
                 if (isCookieAuth) {
                     val cookie = com.vkturnproxy.auth.VKCookieStore.getValidCookieHeader()
                     if (!cookie.isNullOrBlank()) {
@@ -133,9 +135,25 @@ class VkTurnVpnService : VpnService() {
                 val ready = WgTurnCore.waitBootstrapReady(handle, 120_000)
 
                 if (ready != 1) {
-                    Log.e(TAG, "Bootstrap failed or timed out: ready=$ready")
+                    val authError = try { WgTurnCore.getAuthError() } catch (_: Exception) { "" }
+                    Log.e(TAG, "Bootstrap failed or timed out: ready=$ready, authError=$authError")
                     _statusFlow.value = VpnStatus.ERROR
-                    updateNotification("Ошибка подключения к серверам VK")
+                    val userMsg = when {
+                        authError.contains("Invalid join link", ignoreCase = true) || authError.contains("954") || authError.contains("951") ->
+                            "Ссылка на звонок устарела. Создайте новый звонок VK."
+                        authError.contains("cookie rejected", ignoreCase = true) || authError.contains("re-login required", ignoreCase = true) ->
+                            "Сессия VK истекла. Войдите в аккаунт заново."
+                        ready == 0 ->
+                            "Таймаут ожидания серверов VK TURN"
+                        else ->
+                            "Ошибка подключения к серверам VK"
+                    }
+                    updateNotification(userMsg)
+                    try {
+                        withContext(Dispatchers.Main) {
+                            android.widget.Toast.makeText(applicationContext, userMsg, android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    } catch (_: Exception) {}
                     stopTunnel()
                     return@launch
                 }
