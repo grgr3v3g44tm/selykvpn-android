@@ -22,6 +22,7 @@ import java.net.URL
 
 data class GithubAsset(
     @SerializedName("name") val name: String = "",
+    @SerializedName("label") val label: String? = null,
     @SerializedName("browser_download_url") val downloadUrl: String = "",
     @SerializedName("size") val size: Long = 0L
 )
@@ -76,12 +77,14 @@ class UpdateManager(private val context: Context) {
 
             try {
                 val updateInfo = fetchLatestRelease(currentVersion)
-                if (updateInfo != null && updateInfo.isUpdateAvailable) {
-                    _updateState.value = UpdateState.Available(updateInfo)
-                } else {
-                    if (!silent) {
+                if (updateInfo != null) {
+                    if (updateInfo.isUpdateAvailable) {
+                        _updateState.value = UpdateState.Available(updateInfo)
+                    } else if (!silent) {
                         _updateState.value = UpdateState.UpToDate
                     }
+                } else if (!silent) {
+                    _updateState.value = UpdateState.Error("Не удалось проверить обновления")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Update check failed: ${e.message}", e)
@@ -165,14 +168,14 @@ class UpdateManager(private val context: Context) {
                 val candidate = releases
                     .filter { rel ->
                         (rel.tagName.startsWith("vkturn", ignoreCase = true) || !rel.tagName.startsWith("v", ignoreCase = true)) &&
-                        rel.assets.any { isVkTurnApk(it.name) }
+                        rel.assets.any { isVkTurnApk(it.name, rel.tagName) || isVkTurnApk(it.label ?: "", rel.tagName) }
                     }
                     .maxByOrNull { rel -> rel.publishedAt }
 
                 if (candidate != null) {
                     val remoteVersion = extractVersion(candidate.tagName)
                     val isNewer = isVersionNewer(currentVersion, remoteVersion)
-                    val asset = pickAssetForDevice(candidate.assets)
+                    val asset = pickAssetForDevice(candidate.assets, candidate.tagName)
 
                     if (asset != null) {
                         return@withContext UpdateInfo(
@@ -193,15 +196,17 @@ class UpdateManager(private val context: Context) {
         null
     }
 
-    private fun isVkTurnApk(name: String): Boolean {
+    private fun isVkTurnApk(name: String, releaseTag: String = ""): Boolean {
         if (!name.endsWith(".apk", ignoreCase = true)) return false
         val lower = name.lowercase()
         if (lower.startsWith("koala") || lower.contains("koala.clash")) return false
-        return lower.startsWith("vkturn") || lower.contains("vkturnproxy")
+        if (lower.startsWith("vkturn") || lower.contains("vkturnproxy")) return true
+        if (releaseTag.lowercase().startsWith("vkturn")) return true
+        return false
     }
 
-    private fun pickAssetForDevice(assets: List<GithubAsset>): GithubAsset? {
-        val apkAssets = assets.filter { isVkTurnApk(it.name) }
+    private fun pickAssetForDevice(assets: List<GithubAsset>, releaseTag: String = ""): GithubAsset? {
+        val apkAssets = assets.filter { isVkTurnApk(it.name, releaseTag) || isVkTurnApk(it.label ?: "", releaseTag) }
         if (apkAssets.isEmpty()) return null
 
         val deviceAbis = Build.SUPPORTED_ABIS ?: emptyArray()
@@ -209,10 +214,17 @@ class UpdateManager(private val context: Context) {
         // 1. Check matching device ABIs in order of preference
         for (abi in deviceAbis) {
             val matching = apkAssets.firstOrNull {
-                it.name.contains(abi, ignoreCase = true) ||
+                val matchesName = it.name.contains(abi, ignoreCase = true) ||
                     (abi == "arm64-v8a" && (it.name.contains("arm64", ignoreCase = true) || it.name.contains("v8a", ignoreCase = true))) ||
                     (abi == "armeabi-v7a" && (it.name.contains("armv7", ignoreCase = true) || it.name.contains("v7a", ignoreCase = true))) ||
                     (abi == "x86_64" && it.name.contains("x86_64", ignoreCase = true))
+                val matchesLabel = it.label != null && (
+                    it.label.contains(abi, ignoreCase = true) ||
+                    (abi == "arm64-v8a" && (it.label.contains("arm64", ignoreCase = true) || it.label.contains("v8a", ignoreCase = true))) ||
+                    (abi == "armeabi-v7a" && (it.label.contains("armv7", ignoreCase = true) || it.label.contains("v7a", ignoreCase = true))) ||
+                    (abi == "x86_64" && it.label.contains("x86_64", ignoreCase = true))
+                )
+                matchesName || matchesLabel
             }
             if (matching != null) return matching
         }
@@ -221,7 +233,8 @@ class UpdateManager(private val context: Context) {
         val universal = apkAssets.firstOrNull {
             it.name.contains("universal", ignoreCase = true) ||
                 it.name.contains("all", ignoreCase = true) ||
-                it.name.equals("vkturnproxy-android.apk", ignoreCase = true)
+                it.name.equals("vkturnproxy-android.apk", ignoreCase = true) ||
+                (it.label?.contains("universal", ignoreCase = true) == true)
         }
         if (universal != null) return universal
 
@@ -230,7 +243,7 @@ class UpdateManager(private val context: Context) {
     }
 
     private fun extractVersion(tag: String): String {
-        return tag.replace(Regex("^(vkturn-|v)", RegexOption.IGNORE_CASE), "").trim()
+        return tag.replace(Regex("^(vkturn-v|vkturn-|v)", RegexOption.IGNORE_CASE), "").trim()
     }
 
     private fun isVersionNewer(current: String, remote: String): Boolean {
