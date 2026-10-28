@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -13,11 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentPaste
-import androidx.compose.material.icons.filled.Login
-import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,11 +30,11 @@ import com.vkturnproxy.ui.theme.*
 private const val TAG = "VKCallCreator"
 
 /**
- * Clean modal dialog offering 4 fast, reliable methods to bind a VK call:
- * 1. 1-tap paste from clipboard
- * 2. Automatic OAuth creation via dedicated [VKAuthActivity]
- * 3. Create directly inside official VK app or browser
- * 4. Manual text input
+ * Clean modal dialog implementing iOS VKCallCreationGate pattern:
+ * 1. Shows account login state (remixsid + p).
+ * 2. If logged in: 1-tap "Создать автоматически через VK" (VKOAuth + calls.start).
+ * 3. If not logged in: "Войти в аккаунт VK" (VKAuth on https://vk.ru/).
+ * 4. 1-tap paste from clipboard & manual link input fallback.
  */
 @Composable
 fun VKCallCreatorDialog(
@@ -49,16 +44,27 @@ fun VKCallCreatorDialog(
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     var manualLinkInput by remember { mutableStateOf("") }
+    var hasLogin by remember { mutableStateOf(VKCookieStore.hasValidLogin()) }
+    var expiryText by remember { mutableStateOf(VKCookieStore.getFormattedExpiry()) }
 
     val authLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        hasLogin = VKCookieStore.hasValidLogin()
+        expiryText = VKCookieStore.getFormattedExpiry()
+
         if (result.resultCode == Activity.RESULT_OK) {
             val link = result.data?.getStringExtra(VKAuthActivity.EXTRA_CALL_LINK)
             if (!link.isNullOrBlank()) {
                 onCallCreated(link)
                 Toast.makeText(context, "Звонок успешно создан и привязан!", Toast.LENGTH_SHORT).show()
                 onDismiss()
+                return@rememberLauncherForActivityResult
+            }
+
+            val cookieHeader = result.data?.getStringExtra(VKAuthActivity.EXTRA_COOKIE_HEADER)
+            if (!cookieHeader.isNullOrBlank()) {
+                Toast.makeText(context, "Вход выполнен! Теперь нажмите «Создать звонок»", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -123,7 +129,7 @@ fun VKCallCreatorDialog(
                     Spacer(modifier = Modifier.height(14.dp))
 
                     Text(
-                        "Для работы VPN необходим звонок VK. Выберите удобный способ привязки:",
+                        "Для работы туннеля необходима ссылка на звонок VK. Выберите удобный способ:",
                         color = TextSecondary,
                         fontSize = 13.sp,
                         lineHeight = 18.sp,
@@ -131,10 +137,82 @@ fun VKCallCreatorDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    Spacer(modifier = Modifier.height(18.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    // Option 1: Paste from clipboard
-                    Button(
+                    // Account status card (1-to-1 with VKCallCreationGate)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceVariantDark)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (hasLogin) Icons.Default.CheckCircle else Icons.Default.Info,
+                                contentDescription = null,
+                                tint = if (hasLogin) AccentGreen else AccentAmber,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    if (hasLogin) "Аккаунт VK привязан" else "Вход в аккаунт VK не выполнен",
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                )
+                                Text(
+                                    if (hasLogin) "Сессия активна до $expiryText" else "Необходим для авто-создания ссылки",
+                                    color = TextSecondary,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Option 1 (Primary): Automatic creation via VK OAuth & API (or login first)
+                    if (hasLogin) {
+                        Button(
+                            onClick = {
+                                authLauncher.launch(VKAuthActivity.createCallIntent(context))
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                        ) {
+                            Icon(Icons.Default.AutoMode, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Создать звонок автоматически", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                    } else {
+                        Button(
+                            onClick = {
+                                authLauncher.launch(VKAuthActivity.createLoginIntent(context))
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                        ) {
+                            Icon(Icons.Default.Login, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Войти в аккаунт VK", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Option 2: Paste from clipboard
+                    OutlinedButton(
                         onClick = {
                             val clipText = clipboardManager.getText()?.text?.trim() ?: ""
                             val foundLink = clipText.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") }
@@ -150,29 +228,11 @@ fun VKCallCreatorDialog(
                             .fillMaxWidth()
                             .height(46.dp),
                         shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
-                    ) {
-                        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Вставить ссылку из буфера", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Option 2: Automatic OAuth API flow via dedicated VKAuthActivity
-                    OutlinedButton(
-                        onClick = {
-                            authLauncher.launch(VKAuthActivity.createCallIntent(context))
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(46.dp),
-                        shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
                     ) {
-                        Icon(Icons.Default.Login, contentDescription = null, modifier = Modifier.size(18.dp), tint = PrimaryBlue)
+                        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp), tint = PrimaryBlue)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Создать автоматически через VK", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Text("Вставить ссылку из буфера", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -184,7 +244,7 @@ fun VKCallCreatorDialog(
                                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://vk.ru/calls"))
                                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                 context.startActivity(intent)
-                            } catch (e: Exception) {
+                            } catch (_: Exception) {
                                 Toast.makeText(context, "Не удалось открыть браузер/VK", Toast.LENGTH_SHORT).show()
                             }
                         },
@@ -218,19 +278,19 @@ fun VKCallCreatorDialog(
                                 val clean = manualLinkInput.trim()
                                 if (clean.contains("call/join/")) {
                                     onCallCreated(clean)
-                                    Toast.makeText(context, "Ссылка успешно сохранена!", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Ссылка успешно привязана!", Toast.LENGTH_SHORT).show()
                                     onDismiss()
                                 } else {
-                                    Toast.makeText(context, "Ссылка должна содержать call/join/", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, "Ссылка должна содержать vk.ru/call/join/...", Toast.LENGTH_LONG).show()
                                 }
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(40.dp),
+                                .height(44.dp),
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
                         ) {
-                            Text("Привязать введенную ссылку", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Применить введенную ссылку", fontWeight = FontWeight.Bold)
                         }
                     }
                 }

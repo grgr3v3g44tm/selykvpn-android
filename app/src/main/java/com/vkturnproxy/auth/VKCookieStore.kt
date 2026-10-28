@@ -2,13 +2,10 @@ package com.vkturnproxy.auth
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.google.gson.Gson
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
+import android.webkit.CookieManager
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class StoredCookie(
     val cookieHeader: String,
@@ -16,14 +13,16 @@ data class StoredCookie(
     val savedAtTimestamp: Long
 )
 
+/**
+ * Manages persistent storage and domain-specific planting of VK session cookies (remixsid + p).
+ * Strict 1-to-1 parity with anton48/vk-turn-proxy-ios VKCookieStore.swift and VKOAuth.swift.
+ */
 object VKCookieStore {
     private const val PREFS_NAME = "vkturn_vkauth"
     private const val KEY_COOKIE_HEADER = "cookie_header"
     private const val KEY_EXPIRY = "cookie_expiry"
     private const val KEY_SAVED_AT = "cookie_saved_at"
     private const val KEY_ENABLED = "vkauth_enabled"
-    private const val KEY_ACCESS_TOKEN = "vk_access_token"
-    private const val KEY_ACCESS_TOKEN_EXPIRY = "vk_access_token_expiry"
 
     private lateinit var prefs: SharedPreferences
 
@@ -48,33 +47,6 @@ object VKCookieStore {
             .apply()
     }
 
-    fun saveToken(token: String, expiryTimestamp: Long = System.currentTimeMillis() + 86400L * 1000) {
-        if (!::prefs.isInitialized) return
-        prefs.edit()
-            .putString(KEY_ACCESS_TOKEN, token)
-            .putLong(KEY_ACCESS_TOKEN_EXPIRY, expiryTimestamp)
-            .apply()
-    }
-
-    fun getToken(): String? {
-        if (!::prefs.isInitialized) return null
-        val token = prefs.getString(KEY_ACCESS_TOKEN, null) ?: return null
-        val expiry = prefs.getLong(KEY_ACCESS_TOKEN_EXPIRY, 0L)
-        if (expiry in 1..System.currentTimeMillis()) {
-            clearToken()
-            return null
-        }
-        return token
-    }
-
-    fun clearToken() {
-        if (!::prefs.isInitialized) return
-        prefs.edit()
-            .remove(KEY_ACCESS_TOKEN)
-            .remove(KEY_ACCESS_TOKEN_EXPIRY)
-            .apply()
-    }
-
     fun load(): StoredCookie? {
         if (!::prefs.isInitialized) return null
         val header = prefs.getString(KEY_COOKIE_HEADER, null) ?: return null
@@ -96,12 +68,37 @@ object VKCookieStore {
             .apply()
     }
 
+    /**
+     * Extracts an individual cookie value by name from a semicolon-separated Cookie header string.
+     */
+    fun extractCookieValue(header: String?, name: String): String? {
+        if (header.isNullOrBlank()) return null
+        for (part in header.split(";")) {
+            val trimmed = part.trim()
+            val eqIdx = trimmed.indexOf('=')
+            if (eqIdx > 0) {
+                val k = trimmed.substring(0, eqIdx).trim()
+                val v = trimmed.substring(eqIdx + 1).trim()
+                if (k.equals(name, ignoreCase = true) && v.isNotEmpty() && v != "DELETED") {
+                    return v
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Checks if a valid, non-expired VK login session exists with BOTH remixsid and p.
+     * Mirrors iOS VKCallCreationGate / VKCookieStore.
+     */
     fun hasValidLogin(now: Long = System.currentTimeMillis()): Boolean {
         val stored = load() ?: return false
         if (stored.expiryTimestamp <= now) return false
         val header = stored.cookieHeader
-        if (header.contains("test_") || header.contains("dummy") || header.contains("token_123")) return false
-        return header.contains("remixsid=") || header.contains("remixdsid=") || header.contains("access_token=")
+        if (header.contains("test_") || header.contains("dummy")) return false
+        val remixsid = extractCookieValue(header, "remixsid")
+        val p = extractCookieValue(header, "p")
+        return !remixsid.isNullOrBlank() && !p.isNullOrBlank()
     }
 
     fun isValid(now: Long = System.currentTimeMillis()): Boolean = hasValidLogin(now)
@@ -115,19 +112,46 @@ object VKCookieStore {
 
     fun getFormattedExpiry(): String {
         val stored = load() ?: return "Неизвестно"
-        val sdf = java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale.getDefault())
-        return sdf.format(java.util.Date(stored.expiryTimestamp))
+        val sdf = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
+        return sdf.format(Date(stored.expiryTimestamp))
+    }
+
+    /**
+     * Plants stored session cookies strictly on their designated domains.
+     * Exact 1-to-1 parity with iOS VKOAuth.swift:
+     * - remixsid is issued on .vk.ru and .vk.com
+     * - p is issued on .login.vk.ru and .login.vk.com
+     * "Put both on one domain and the gate sees neither!"
+     */
+    fun plantCookiesForOAuth(cm: CookieManager, header: String? = getValidCookieHeader()) {
+        if (header.isNullOrBlank()) return
+        val remixsid = extractCookieValue(header, "remixsid")
+        val p = extractCookieValue(header, "p")
+
+        if (!remixsid.isNullOrBlank()) {
+            cm.setCookie("https://vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure")
+            cm.setCookie("https://vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure")
+            cm.setCookie("https://oauth.vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure")
+            cm.setCookie("https://oauth.vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure")
+        }
+
+        if (!p.isNullOrBlank()) {
+            cm.setCookie("https://login.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure")
+            cm.setCookie("https://login.vk.com/", "p=$p; Domain=.login.vk.com; Path=/; Secure")
+            cm.setCookie("https://id.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure")
+            cm.setCookie("https://id.vk.com/", "p=$p; Domain=.login.vk.com; Path=/; Secure")
+        }
+
+        cm.flush()
     }
 
     fun clearCookies() {
         delete()
-        clearToken()
         isEnabled = false
         try {
-            android.webkit.CookieManager.getInstance().removeAllCookies(null)
-            android.webkit.CookieManager.getInstance().flush()
-        } catch (e: Exception) {
-            // Ignore webview errors
-        }
+            val cm = CookieManager.getInstance()
+            cm.removeAllCookies(null)
+            cm.flush()
+        } catch (_: Exception) {}
     }
 }
