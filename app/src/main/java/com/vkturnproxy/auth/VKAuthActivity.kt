@@ -47,12 +47,12 @@ import java.net.URL
 
 private const val TAG = "VKAuthActivity"
 
-// 1-to-1 parity with anton48/vk-turn-proxy-ios (VKAuthWebView.swift & VKOAuthWebView.swift)
-private const val VK_LOGIN_URL = "https://vk.ru/"
+// 1-to-1 parity with anton48/vk-turn-proxy-ios & SpaceNeuroX VkAuthWebViewManager
+private const val VK_LOGIN_URL = "https://m.vk.ru/login"
 private const val VK_OAUTH_CLIENT_ID = "6287487"
-private const val VK_OAUTH_REDIRECT_HOST = "oauth.vk.ru"
+private const val VK_OAUTH_REDIRECT_HOST = "oauth.vk.com"
 private const val VK_OAUTH_REDIRECT_PATH = "/blank.html"
-private const val VK_OAUTH_URL = "https://oauth.vk.ru/authorize?client_id=$VK_OAUTH_CLIENT_ID&scope=calls&response_type=token"
+private const val VK_OAUTH_URL = "https://oauth.vk.com/authorize?client_id=$VK_OAUTH_CLIENT_ID&display=mobile&redirect_uri=https%3A%2F%2Foauth.vk.com%2Fblank.html&response_type=token&scope=messages,calls&state=vkturn&v=5.199"
 
 /**
  * Dedicated fullscreen Activity for VK Authentication and VK Call Creation.
@@ -313,12 +313,12 @@ class VKAuthActivity : ComponentActivity() {
                                             javaScriptEnabled = true
                                             domStorageEnabled = true
                                             databaseEnabled = true
-                                            // Modern Mobile Chrome UA (prevents embedded webview blocks from VK ID)
-                                            userAgentString = "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
-                                            // CRITICAL: Disable multiple windows to prevent window.opener crashes and infinite spinner
-                                            setSupportMultipleWindows(false)
-                                            javaScriptCanOpenWindowsAutomatically = false
-                                            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                            // Modern Mobile Chrome UA
+                                            userAgentString = "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+                                            // Enable multiple windows + onCreateWindow to prevent window.open / VK ID promise hangs
+                                            setSupportMultipleWindows(true)
+                                            javaScriptCanOpenWindowsAutomatically = true
+                                            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                                             allowFileAccess = false
                                             allowContentAccess = false
                                             cacheMode = WebSettings.LOAD_DEFAULT
@@ -328,6 +328,18 @@ class VKAuthActivity : ComponentActivity() {
                                         }
 
                                         webChromeClient = object : WebChromeClient() {
+                                            override fun onCreateWindow(
+                                                view: WebView,
+                                                isDialog: Boolean,
+                                                isUserGesture: Boolean,
+                                                resultMsg: android.os.Message
+                                            ): Boolean {
+                                                val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                                                transport.webView = view
+                                                resultMsg.sendToTarget()
+                                                return true
+                                            }
+
                                             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                                                 super.onProgressChanged(view, newProgress)
                                                 webProgress = newProgress
@@ -384,39 +396,14 @@ class VKAuthActivity : ComponentActivity() {
                                                     return true
                                                 }
 
+                                                // Block external deep links (vk://, intent:, android-app:) so they don't escape WebView and hang
+                                                if (url.startsWith("intent:") || url.startsWith("vk://") || url.startsWith("android-app:")) {
+                                                    Log.i(TAG, "Suppressed external auth intent: $url")
+                                                    return true
+                                                }
+
                                                 if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "javascript" || scheme == "data") {
                                                     return false
-                                                }
-
-                                                // Handle deep link intents safely
-                                                if (url.startsWith("vk://")) {
-                                                    try {
-                                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                                        if (intent.resolveActivity(packageManager) != null) {
-                                                            startActivity(intent)
-                                                            return true
-                                                        }
-                                                    } catch (e: Exception) {
-                                                        Log.w(TAG, "Failed opening vk:// deep link", e)
-                                                    }
-                                                }
-
-                                                if (url.startsWith("intent:") || url.startsWith("android-app:")) {
-                                                    try {
-                                                        val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-                                                        if (intent.resolveActivity(packageManager) != null) {
-                                                            startActivity(intent)
-                                                            return true
-                                                        }
-                                                        val fallbackUrl = intent.getStringExtra("browser_fallback_url")
-                                                            ?: intent.dataString
-                                                        if (!fallbackUrl.isNullOrEmpty() && (fallbackUrl.startsWith("http://") || fallbackUrl.startsWith("https://"))) {
-                                                            view?.loadUrl(fallbackUrl)
-                                                            return true
-                                                        }
-                                                    } catch (e: Exception) {
-                                                        Log.w(TAG, "Failed parsing intent URI: $url", e)
-                                                    }
                                                 }
 
                                                 return true
@@ -460,12 +447,13 @@ class VKAuthActivity : ComponentActivity() {
                                         val hasValidLogin = VKCookieStore.hasValidLogin()
                                         if (mode == MODE_CREATE_CALL && hasValidLogin) {
                                             // User has saved login -> plant cookies and load OAuth directly with slight delay to ensure cookie sync
+                                            hasRedirectedToOAuth = true
                                             VKCookieStore.plantCookiesForOAuth(cm)
                                             postDelayed({
                                                 loadUrl(VK_OAUTH_URL)
                                             }, 150)
                                         } else {
-                                            // Clean login on https://vk.ru/
+                                            // Clean login on https://m.vk.ru/login
                                             loadUrl(VK_LOGIN_URL)
                                         }
                                     }
@@ -701,8 +689,8 @@ suspend fun createCallWithToken(
             val endpoint = "https://$host/method/calls.start?v=5.276&access_token=$token"
             val conn = URL(endpoint).openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
-            conn.connectTimeout = 20000
-            conn.readTimeout = 20000
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
             conn.setRequestProperty("User-Agent", "VKTurnProxy/1.4")
             conn.setRequestProperty("Accept", "application/json")
 

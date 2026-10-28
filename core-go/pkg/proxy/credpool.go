@@ -166,14 +166,20 @@ func (p *CredPool) standardFetch(cfg CredPoolConfig) func(bool, int) (string, *T
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			c, cerr := cookieCredForSlot(ctx, slot)
 			cancel()
-			if cerr != nil {
+			if cerr == nil {
+				clearCookieAuthFatal()
+				creds = c
+			} else {
+				log.Printf("vk: cookie cred for slot %d failed (%v), falling back to anonymous GetVKCreds", slot, cerr)
 				if errors.Is(cerr, ErrCookieRejected) {
 					setCookieAuthFatal(cerr.Error())
 				}
-				return "", nil, fmt.Errorf("cookie auth: %w", cerr)
+				cAnon, err := GetVKCreds(p.linkID, nil, "", "", 0, 0, "", "")
+				if err != nil {
+					return "", nil, fmt.Errorf("cookie (%v) and anon auth (%w) failed", cerr, err)
+				}
+				creds = cAnon
 			}
-			clearCookieAuthFatal()
-			creds = c
 		} else {
 			c, err := GetVKCreds(p.linkID, nil, "", "", 0, 0, "", "")
 			if err != nil {

@@ -17,6 +17,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -26,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.vkturnproxy.ui.theme.*
+import kotlinx.coroutines.launch
 
 private const val TAG = "VKCallCreator"
 
@@ -43,9 +45,11 @@ fun VKCallCreatorDialog(
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
+    val coroutineScope = rememberCoroutineScope()
     var manualLinkInput by remember { mutableStateOf("") }
     var hasLogin by remember { mutableStateOf(VKCookieStore.hasValidLogin()) }
     var expiryText by remember { mutableStateOf(VKCookieStore.getFormattedExpiry()) }
+    var isCreatingFast by remember { mutableStateOf(false) }
 
     val authLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -180,17 +184,40 @@ fun VKCallCreatorDialog(
                     if (hasLogin) {
                         Button(
                             onClick = {
-                                authLauncher.launch(VKAuthActivity.createCallIntent(context))
+                                coroutineScope.launch {
+                                    isCreatingFast = true
+                                    val fastLink = VKCallHelper.createCallFast(context)
+                                    if (!fastLink.isNullOrBlank()) {
+                                        isCreatingFast = false
+                                        onCallCreated(fastLink)
+                                        Toast.makeText(context, "Звонок успешно создан и привязан!", Toast.LENGTH_SHORT).show()
+                                        onDismiss()
+                                    } else {
+                                        isCreatingFast = false
+                                        authLauncher.launch(VKAuthActivity.createCallIntent(context))
+                                    }
+                                }
                             },
+                            enabled = !isCreatingFast,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(46.dp),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
                         ) {
-                            Icon(Icons.Default.AutoMode, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Создать звонок автоматически", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            if (isCreatingFast) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Создание звонка…", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            } else {
+                                Icon(Icons.Default.AutoMode, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Создать звонок автоматически", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
                         }
                     } else {
                         Button(
