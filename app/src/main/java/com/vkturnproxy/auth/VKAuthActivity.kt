@@ -61,7 +61,8 @@ private const val TAG = "VKAuthActivity"
 private const val VK_LOGIN_URL = "https://m.vk.ru/login?lang=ru"
 private const val VK_OAUTH_CLIENT_ID = "6287487"
 private const val VK_OAUTH_REDIRECT_URI = "https://oauth.vk.com/blank.html"
-private const val VK_OAUTH_URL = "https://oauth.vk.com/authorize?client_id=$VK_OAUTH_CLIENT_ID&scope=calls,offline&redirect_uri=$VK_OAUTH_REDIRECT_URI&response_type=token&display=mobile&v=5.131"
+private const val VK_OAUTH_URL = "https://oauth.vk.com/authorize?client_id=$VK_OAUTH_CLIENT_ID&scope=calls&redirect_uri=$VK_OAUTH_REDIRECT_URI&response_type=token"
+private const val SAFARI_IOS_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
 
 /**
  * Dedicated fullscreen Activity for VK Authentication and VK Call Creation.
@@ -95,6 +96,7 @@ class VKAuthActivity : ComponentActivity() {
     private var webViewInstance: WebView? = null
     private var isDone = false
     private var hasRedirectedToOAuth = false
+    private var hasStoredSessionAtStart = false
     private var onApiExecutionStateChange: ((Boolean, String) -> Unit)? = null
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -103,6 +105,7 @@ class VKAuthActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         mode = intent.getStringExtra(EXTRA_MODE) ?: MODE_CREATE_CALL
+        hasStoredSessionAtStart = VKCookieStore.hasValidLogin()
 
         // Ensure direct network routing for authentication
         if (VkTurnVpnService.statusFlow.value != VpnStatus.DISCONNECTED) {
@@ -345,7 +348,7 @@ class VKAuthActivity : ComponentActivity() {
                                             javaScriptEnabled = true
                                             domStorageEnabled = true
                                             databaseEnabled = true
-                                            setSupportMultipleWindows(false)
+                                            setSupportMultipleWindows(true)
                                             javaScriptCanOpenWindowsAutomatically = true
                                             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                                             allowFileAccess = false
@@ -354,9 +357,7 @@ class VKAuthActivity : ComponentActivity() {
                                             useWideViewPort = true
                                             loadWithOverviewMode = true
                                             textZoom = 100
-
-                                            val defaultUa = userAgentString ?: ""
-                                            userAgentString = defaultUa.replace("; wv", "")
+                                            userAgentString = SAFARI_IOS_UA
                                         }
 
                                         webChromeClient = object : WebChromeClient() {
@@ -365,6 +366,18 @@ class VKAuthActivity : ComponentActivity() {
                                                 webProgress = newProgress
                                                 canGoBack = view?.canGoBack() == true
                                                 inspectForSuccess(view?.url, this@apply)
+                                            }
+
+                                            override fun onCreateWindow(
+                                                view: WebView?,
+                                                isDialog: Boolean,
+                                                isUserGesture: Boolean,
+                                                resultMsg: android.os.Message?
+                                            ): Boolean {
+                                                val transport = resultMsg?.obj as? WebView.WebViewTransport
+                                                transport?.webView = view
+                                                resultMsg?.sendToTarget()
+                                                return true
                                             }
 
                                             override fun onJsBeforeUnload(
@@ -420,7 +433,6 @@ class VKAuthActivity : ComponentActivity() {
                                                 }
 
                                                 inspectForSuccess(url, view ?: this@apply)
-                                                checkLoginLandingPage(url, view ?: this@apply)
 
                                                 if (isOAuthBlankPage(url)) {
                                                     return false
@@ -458,9 +470,10 @@ class VKAuthActivity : ComponentActivity() {
                                                     return true
                                                 }
 
-                                                // If VK ID deep link has no fallback URL, do NOT freeze in a loop. Load OAuth URL directly.
-                                                if (url.startsWith("vkid:") || url.startsWith("vkconnect:") || url.startsWith("vk:")) {
-                                                    view?.loadUrl(VK_OAUTH_URL)
+                                                // Check if token was passed in deep link directly
+                                                val deepToken = extractAccessToken(url)
+                                                if (deepToken != null) {
+                                                    handleTokenFound(deepToken, view ?: this@apply)
                                                     return true
                                                 }
 
@@ -559,7 +572,7 @@ class VKAuthActivity : ComponentActivity() {
 
                                         if (mode == MODE_LOGIN) {
                                             finishWithLoginSuccess(header)
-                                        } else if (mode == MODE_CREATE_CALL && !hasRedirectedToOAuth) {
+                                        } else if (mode == MODE_CREATE_CALL && !hasRedirectedToOAuth && !hasStoredSessionAtStart) {
                                             hasRedirectedToOAuth = true
                                             statusText = "Вход выполнен! Подтверждаем создание звонка…"
                                             webViewInstance?.post {
@@ -689,8 +702,13 @@ class VKAuthActivity : ComponentActivity() {
     private fun checkLoginLandingPage(url: String?, webView: WebView) {
         if (isDone || url.isNullOrBlank()) return
         val clean = url.lowercase()
+
+        // If already on OAuth authorize or blank.html, do NOT intercept or reload!
+        if (clean.contains("oauth.vk.") || clean.contains("blank.html")) return
+
         val isLanding = clean.contains("/feed") ||
-                clean.contains("id.vk.") ||
+                clean.contains("vk.com/id") ||
+                clean.contains("vk.ru/id") ||
                 clean.contains("/account") ||
                 clean.contains("vk.ru/call/join") ||
                 clean.contains("vk.com/call/join")
@@ -702,7 +720,7 @@ class VKAuthActivity : ComponentActivity() {
                 VKCookieStore.save(header, expiry)
                 if (mode == MODE_LOGIN) {
                     finishWithLoginSuccess(header)
-                } else if (mode == MODE_CREATE_CALL && !hasRedirectedToOAuth) {
+                } else if (mode == MODE_CREATE_CALL && !hasRedirectedToOAuth && !hasStoredSessionAtStart) {
                     hasRedirectedToOAuth = true
                     onApiExecutionStateChange?.invoke(false, "Вход выполнен! Подтверждаем создание звонка…")
                     webView.post {
@@ -860,11 +878,11 @@ suspend fun createCallWithToken(
     token: String,
     callback: (link: String?, error: String?) -> Unit
 ) = withContext(Dispatchers.IO) {
-    val hosts = listOf("api.vk.me", "api.vk.ru", "api.vk.com")
+    val hosts = listOf("api.vk.com", "api.vk.ru")
     var lastError = "Не удалось связаться с серверами VK"
 
     for (host in hosts) {
-        for (method in listOf("GET", "POST")) {
+        for (method in listOf("POST", "GET")) {
             try {
                 val endpoint = if (method == "GET") {
                     "https://$host/method/calls.start?v=5.276&access_token=$token"
@@ -873,8 +891,8 @@ suspend fun createCallWithToken(
                 }
                 val conn = URL(endpoint).openConnection() as HttpURLConnection
                 conn.requestMethod = method
-                conn.connectTimeout = 15000
-                conn.readTimeout = 15000
+                conn.connectTimeout = 6000
+                conn.readTimeout = 6000
                 conn.setRequestProperty("User-Agent", "VKAndroidApp/8.0 (Android 14)")
                 conn.setRequestProperty("Accept", "application/json")
 
@@ -898,6 +916,10 @@ suspend fun createCallWithToken(
                     val code = (errMap?.get("error_code") as? Number)?.toInt() ?: 0
                     lastError = "$msg (код: $code)"
                     Log.w(TAG, "calls.start returned VK error on $host: $lastError")
+                    if (code == 5) {
+                        // User auth failed, invalidate immediately
+                        break
+                    }
                     continue
                 }
 

@@ -83,10 +83,10 @@ class VkTurnVpnService : VpnService() {
 
         serviceScope.launch {
             try {
-                // Sanitize VK call link (single trimmed URL) and force reliable TCP transport
+                // Sanitize VK call link (single trimmed URL)
                 val cleanLink = config.vkLink.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") } ?: config.vkLink.trim()
                 config.vkLink = cleanLink
-                config.useUDP = false
+                Log.i(TAG, "Configured transport: useUDP=${config.useUDP}, link=$cleanLink")
 
                 // 1. Setup VK Cookie Auth if enabled explicitly in config
                 val isCookieAuth = config.useCookieAuth && com.vkturnproxy.auth.VKCookieStore.hasValidCookie()
