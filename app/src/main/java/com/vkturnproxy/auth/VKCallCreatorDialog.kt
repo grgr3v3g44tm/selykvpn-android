@@ -182,6 +182,24 @@ fun VKCallCreatorDialog(
                                     fontSize = 11.sp
                                 )
                             }
+                            if (hasLogin) {
+                                IconButton(
+                                    onClick = {
+                                        VKCookieStore.clearCookies()
+                                        hasLogin = false
+                                        lastErrorMsg = null
+                                        Toast.makeText(context, "Сессия аккаунта сброшена", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.AccountCircle,
+                                        contentDescription = "Сменить аккаунт",
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -204,11 +222,12 @@ fun VKCallCreatorDialog(
                                         }
                                         is FastCallResult.Error -> {
                                             isCreatingFast = false
-                                            AppLog.w(TAG, "createCallFast error: ${result.message}")
-                                            if (result.needsUi) {
+                                            AppLog.w(TAG, "createCallFast error: ${result.message} (needsUi=${result.needsUi}, isBanned=${result.isAccountBanned})")
+                                            lastErrorMsg = result.message
+                                            if (result.isAccountBanned) {
+                                                // Banned account: keep in dialog, do NOT launch hanging webview
+                                            } else if (result.needsUi) {
                                                 authLauncher.launch(VKAuthActivity.createCallIntent(context))
-                                            } else {
-                                                lastErrorMsg = result.message
                                             }
                                         }
                                     }
@@ -244,13 +263,40 @@ fun VKCallCreatorDialog(
                                 colors = CardDefaults.cardColors(containerColor = AccentRed.copy(alpha = 0.15f)),
                                 border = BorderStroke(1.dp, AccentRed.copy(alpha = 0.5f))
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = AccentRed, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(lastErrorMsg!!, color = AccentRed, fontSize = 12.sp, lineHeight = 16.sp)
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = AccentRed, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(lastErrorMsg!!, color = AccentRed, fontSize = 12.sp, lineHeight = 16.sp)
+                                    }
+
+                                    val isBannedOrAuth = lastErrorMsg!!.contains("заблокирован") ||
+                                            lastErrorMsg!!.contains("blocked") ||
+                                            lastErrorMsg!!.contains("banned") ||
+                                            lastErrorMsg!!.contains("смените аккаунт") ||
+                                            lastErrorMsg!!.contains("Ошибка VK 5")
+                                    if (isBannedOrAuth) {
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                        Button(
+                                            onClick = {
+                                                VKCookieStore.clearCookies()
+                                                hasLogin = false
+                                                lastErrorMsg = null
+                                                Toast.makeText(context, "Сессия сброшена. Войдите в другой аккаунт.", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(38.dp),
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = AccentRed)
+                                        ) {
+                                            Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Сменить аккаунт VK", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        }
+                                    }
                                 }
                             }
                         }

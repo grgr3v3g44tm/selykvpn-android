@@ -2,6 +2,7 @@ package com.vkturnproxy.auth
 
 import android.content.Context
 import android.webkit.WebSettings
+import com.google.gson.Gson
 import com.vkturnproxy.log.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,14 +16,19 @@ private const val TAG = "VKCallHelper"
 
 sealed class FastCallResult {
     data class Success(val joinLink: String) : FastCallResult()
-    data class Error(val message: String, val needsUi: Boolean = false) : FastCallResult()
+    data class Error(
+        val message: String,
+        val needsUi: Boolean = false,
+        val isAccountBanned: Boolean = false
+    ) : FastCallResult()
 }
 
 /**
  * Helper for fast automated background HTTP token acquisition and VK call creation.
  * Pattern derived from SpaceNeuroX VkCallHashGenerator:
- * If valid session cookies (remixsid + p) exist, obtains access_token via HTTP redirect chain
- * without launching any WebView or UI dialog, and calls calls.start directly.
+ * 1. If session cookies exist, tries direct headless `act=web_token` against login.vk.ru / login.vk.com (100ms, zero WebView).
+ * 2. If web_token not available, falls back to HTTP OAuth redirect chain.
+ * 3. Immediately executes calls.start and handles blocked accounts gracefully without hanging.
  */
 object VKCallHelper {
 
@@ -45,7 +51,7 @@ object VKCallHelper {
                 return@withContext FastCallResult.Error("Требуется подтвердить доступ в окне VK", needsUi = true)
             }
 
-            AppLog.i(TAG, "OAuth токен успешно получен через HTTP-цепочку, вызываем calls.start…")
+            AppLog.i(TAG, "OAuth токен успешно получен через HTTP, вызываем calls.start…")
             var callLink: String? = null
             var errorMsg: String? = null
             val latch = CountDownLatch(1)
@@ -73,13 +79,24 @@ object VKCallHelper {
 
             val finalErr = errorMsg ?: "Не удалось создать звонок VK"
             AppLog.e(TAG, "Ошибка создания звонка: $finalErr")
-            return@withContext FastCallResult.Error(finalErr, needsUi = true)
+            val isBanned = finalErr.contains("заблокирован") || finalErr.contains("blocked") || finalErr.contains("banned")
+            return@withContext FastCallResult.Error(
+                message = finalErr,
+                needsUi = !isBanned,
+                isAccountBanned = isBanned
+            )
         } catch (e: Exception) {
             AppLog.e(TAG, "Исключение при создании звонка", e)
             return@withContext FastCallResult.Error("Ошибка: ${e.message ?: "Сетевой сбой"}", needsUi = true)
         }
     }
 
+    /**
+     * Tries fast headless token acquisition:
+     * 1. Direct POST https://login.vk.ru/?act=web_token (instant, no WebView)
+     * 2. Direct POST https://login.vk.com/?act=web_token (fallback)
+     * 3. Full HTTP redirect chain through oauth.vk.com/authorize
+     */
     fun obtainAccessTokenViaHttp(context: Context, cookieHeader: String): String? {
         if (cookieHeader.isBlank()) return null
         val ua = try {
@@ -88,6 +105,14 @@ object VKCallHelper {
             "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
         }
 
+        // 1. Direct headless web_token POST
+        val directToken = requestWebToken(cookieHeader, ua)
+        if (!directToken.isNullOrBlank()) {
+            AppLog.i(TAG, "Access token успешно получен через headless act=web_token!")
+            return directToken
+        }
+
+        // 2. Fallback: follow HTTP OAuth redirect chain
         val redirect = URLEncoder.encode(REDIRECT_URI, "UTF-8")
         var currentUrl = "https://oauth.vk.com/authorize" +
                 "?client_id=$VK_CLIENT_ID" +
@@ -166,6 +191,52 @@ object VKCallHelper {
                 try {
                     conn?.disconnect()
                 } catch (_: Exception) {}
+            }
+        }
+        return null
+    }
+
+    private fun requestWebToken(cookieHeader: String, ua: String): String? {
+        val hosts = listOf("login.vk.ru", "login.vk.com")
+        for (host in hosts) {
+            var conn: HttpURLConnection? = null
+            try {
+                val origin = "https://${if (host.endsWith(".ru")) "vk.ru" else "vk.com"}"
+                val url = "https://$host/?act=web_token"
+                AppLog.d(TAG, "Запрос act=web_token к $url...")
+                conn = URL(url).openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.instanceFollowRedirects = false
+                conn.connectTimeout = 6000
+                conn.readTimeout = 6000
+                conn.doOutput = true
+                conn.setRequestProperty("User-Agent", ua)
+                conn.setRequestProperty("Cookie", cookieHeader)
+                conn.setRequestProperty("Origin", origin)
+                conn.setRequestProperty("Referer", "$origin/")
+                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                conn.setRequestProperty("Accept", "application/json")
+
+                val postData = "version=1&app_id=$VK_CLIENT_ID".toByteArray(Charsets.UTF_8)
+                conn.outputStream.use { it.write(postData) }
+
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val response = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                AppLog.d(TAG, "Ответ act=web_token ($host, code=$code): ${AppLog.sanitize(response)}")
+
+                if (response.contains("\"access_token\"")) {
+                    val map = Gson().fromJson(response, Map::class.java)
+                    val data = map["data"] as? Map<*, *>
+                    val token = data?.get("access_token") as? String
+                    if (!token.isNullOrBlank()) {
+                        return token
+                    }
+                }
+            } catch (e: Exception) {
+                AppLog.w(TAG, "Ошибка act=web_token к $host: ${e.message}")
+            } finally {
+                try { conn?.disconnect() } catch (_: Exception) {}
             }
         }
         return null

@@ -485,16 +485,20 @@ class VKAuthActivity : ComponentActivity() {
                             // Background watcher: polls CookieManager every 800ms
                             LaunchedEffect(Unit) {
                                 val cm = CookieManager.getInstance()
+                                var lastSavedHeader: String? = null
                                 while (isActive && !isDone) {
                                     // 1. Poll for login completion across all VK domains (.vk.com, .vk.ru)
                                     val (remixsid, p) = VKCookieStore.extractCookiesFromManager(cm)
 
                                     if (!remixsid.isNullOrBlank()) {
                                         val header = if (!p.isNullOrBlank()) "remixsid=$remixsid; p=$p" else "remixsid=$remixsid"
-                                        val expiry = System.currentTimeMillis() + 365L * 24 * 3600 * 1000 // 1 year
-                                        VKCookieStore.save(header, expiry)
-                                        VKCookieStore.isEnabled = true
-                                        AppLog.i(TAG, "Сессия VK обнаружена (remixsid=${remixsid.take(4)}…, p=${p != null})")
+                                        if (header != lastSavedHeader) {
+                                            lastSavedHeader = header
+                                            val expiry = System.currentTimeMillis() + 365L * 24 * 3600 * 1000 // 1 year
+                                            VKCookieStore.save(header, expiry)
+                                            VKCookieStore.isEnabled = true
+                                            AppLog.i(TAG, "Сессия VK обнаружена (remixsid=${remixsid.take(4)}…, p=${p != null})")
+                                        }
 
                                         if (mode == MODE_LOGIN) {
                                             finishWithLoginSuccess(header)
@@ -605,6 +609,10 @@ class VKAuthActivity : ComponentActivity() {
                 } else {
                     isDone = false
                     onApiExecutionStateChange?.invoke(false, "Ошибка создания звонка")
+                    val isBanned = err?.contains("заблокирован") == true || err?.contains("blocked") == true
+                    if (isBanned) {
+                        VKCookieStore.clearCookies()
+                    }
                     Toast.makeText(this@VKAuthActivity, err ?: "Ошибка создания звонка", Toast.LENGTH_LONG).show()
                 }
             }
@@ -733,6 +741,20 @@ suspend fun createCallWithToken(
                 val errMap = map["error"] as? Map<*, *>
                 val msg = errMap?.get("error_msg") as? String ?: "VK error"
                 val code = (errMap?.get("error_code") as? Number)?.toInt() ?: 0
+                val banInfo = errMap?.get("ban_info") as? Map<*, *>
+                val memberName = banInfo?.get("member_name") as? String
+                val isBanned = code == 18 ||
+                        (code == 5 && msg.contains("blocked", ignoreCase = true)) ||
+                        banInfo != null ||
+                        msg.contains("banned", ignoreCase = true)
+
+                if (isBanned) {
+                    val namePart = if (!memberName.isNullOrBlank()) " «$memberName»" else ""
+                    lastError = "Аккаунт VK$namePart заблокирован (User is blocked). Разблокируйте его на vk.com или смените аккаунт."
+                    AppLog.e(TAG, "Обнаружена блокировка аккаунта VK: $lastError")
+                    break
+                }
+
                 lastError = "Ошибка VK $code: $msg"
                 AppLog.w(TAG, "calls.start вернул ошибку от $host: $lastError")
                 if (code == 5) {
