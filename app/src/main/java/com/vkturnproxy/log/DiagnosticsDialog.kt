@@ -31,6 +31,7 @@ fun DiagnosticsDialog(
 ) {
     val context = LocalContext.current
     val logs by AppLog.logsFlow.collectAsState()
+    val isLoggingEnabled by AppLog.isEnabledFlow.collectAsState()
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
@@ -104,8 +105,8 @@ fun DiagnosticsDialog(
                                     fontSize = 17.sp
                                 )
                                 Text(
-                                    "Событий в буфере: ${logs.size}",
-                                    color = TextSecondary,
+                                    if (isLoggingEnabled) "Запись активна • Событий: ${logs.size}" else "Запись выключена (по умолчанию)",
+                                    color = if (isLoggingEnabled) AccentGreen else TextSecondary,
                                     fontSize = 12.sp
                                 )
                             }
@@ -116,119 +117,214 @@ fun DiagnosticsDialog(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
-                    // Filters
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    // Logging toggle card
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isLoggingEnabled) PrimaryBlue.copy(alpha = 0.12f) else SurfaceVariantDark.copy(alpha = 0.6f)
+                        )
                     ) {
-                        FilterChip(
-                            selected = filterLevel == null && filterTag == null,
-                            onClick = {
-                                filterLevel = null
-                                filterTag = null
-                            },
-                            label = { Text("Все", fontSize = 12.sp) }
-                        )
-
-                        FilterChip(
-                            selected = filterLevel == LogLevel.ERROR,
-                            onClick = {
-                                filterLevel = if (filterLevel == LogLevel.ERROR) null else LogLevel.ERROR
-                            },
-                            label = { Text("Ошибки", fontSize = 12.sp) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = AccentRed.copy(alpha = 0.25f),
-                                selectedLabelColor = AccentRed
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = if (isLoggingEnabled) Icons.Default.CheckCircle else Icons.Default.PauseCircleOutline,
+                                    contentDescription = null,
+                                    tint = if (isLoggingEnabled) AccentGreen else TextSecondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = "Запись логов",
+                                        color = TextPrimary,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = if (isLoggingEnabled) "События записываются в память" else "Отключено (0% памяти и батареи)",
+                                        color = if (isLoggingEnabled) AccentGreen else TextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = isLoggingEnabled,
+                                onCheckedChange = { AppLog.setEnabled(context, it) }
                             )
-                        )
-
-                        FilterChip(
-                            selected = filterTag == "VKAuth" || filterTag == "VKCallHelper",
-                            onClick = {
-                                filterTag = if (filterTag != null) null else "VKCallHelper"
-                            },
-                            label = { Text("VK Звонки", fontSize = 12.sp) }
-                        )
-
-                        FilterChip(
-                            selected = filterTag == "VkTurnVpnService",
-                            onClick = {
-                                filterTag = if (filterTag == "VkTurnVpnService") null else "VkTurnVpnService"
-                            },
-                            label = { Text("VPN Туннель", fontSize = 12.sp) }
-                        )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // Log items box
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        color = BgDark
-                    ) {
-                        if (filteredLogs.isEmpty()) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    "События пока отсутствуют",
-                                    color = TextSecondary,
-                                    fontSize = 13.sp
+                    if (!isLoggingEnabled && logs.isEmpty()) {
+                        // Empty state when logging is disabled
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .background(BgDark, shape = RoundedCornerShape(12.dp))
+                                .padding(20.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = Icons.Default.Terminal,
+                                    contentDescription = null,
+                                    tint = TextSecondary.copy(alpha = 0.4f),
+                                    modifier = Modifier.size(48.dp)
                                 )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = "Запись логов выключена",
+                                    color = TextPrimary,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "По умолчанию логирование выключено для экономии ресурсов.\nВключите запись переключателем выше, если хотите собрать диагностику для разработчика.",
+                                    color = TextSecondary,
+                                    fontSize = 12.sp,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    lineHeight = 16.sp
+                                )
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Button(
+                                    onClick = { AppLog.setEnabled(context, true) },
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Включить запись логов", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                }
                             }
-                        } else {
-                            LazyColumn(
-                                state = listState,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                items(filteredLogs) { entry ->
-                                    val levelColor = when (entry.level) {
-                                        LogLevel.DEBUG -> TextSecondary
-                                        LogLevel.INFO -> PrimaryBlue
-                                        LogLevel.WARN -> AccentAmber
-                                        LogLevel.ERROR -> AccentRed
-                                    }
+                        }
+                    } else {
+                        // Filters
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = filterLevel == null && filterTag == null,
+                                onClick = {
+                                    filterLevel = null
+                                    filterTag = null
+                                },
+                                label = { Text("Все", fontSize = 12.sp) }
+                            )
 
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.Top
-                                    ) {
-                                        Text(
-                                            entry.formattedTime,
-                                            color = TextSecondary.copy(alpha = 0.7f),
-                                            fontSize = 11.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            modifier = Modifier.width(76.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            "[${entry.tag}]",
-                                            color = levelColor,
-                                            fontSize = 11.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontWeight = FontWeight.SemiBold,
-                                            modifier = Modifier.widthIn(max = 120.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            entry.message,
-                                            color = TextPrimary,
-                                            fontSize = 11.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            lineHeight = 15.sp,
-                                            modifier = Modifier.weight(1f)
-                                        )
+                            FilterChip(
+                                selected = filterLevel == LogLevel.ERROR,
+                                onClick = {
+                                    filterLevel = if (filterLevel == LogLevel.ERROR) null else LogLevel.ERROR
+                                },
+                                label = { Text("Ошибки", fontSize = 12.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = AccentRed.copy(alpha = 0.25f),
+                                    selectedLabelColor = AccentRed
+                                )
+                            )
+
+                            FilterChip(
+                                selected = filterTag == "VKAuth" || filterTag == "VKCallHelper",
+                                onClick = {
+                                    filterTag = if (filterTag != null) null else "VKCallHelper"
+                                },
+                                label = { Text("VK Звонки", fontSize = 12.sp) }
+                            )
+
+                            FilterChip(
+                                selected = filterTag == "VkTurnVpnService",
+                                onClick = {
+                                    filterTag = if (filterTag == "VkTurnVpnService") null else "VkTurnVpnService"
+                                },
+                                label = { Text("VPN Туннель", fontSize = 12.sp) }
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Log items box
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color = BgDark
+                        ) {
+                            if (filteredLogs.isEmpty()) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        "События пока отсутствуют",
+                                        color = TextSecondary,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                            } else {
+                                LazyColumn(
+                                    state = listState,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    items(filteredLogs) { entry ->
+                                        val levelColor = when (entry.level) {
+                                            LogLevel.DEBUG -> TextSecondary
+                                            LogLevel.INFO -> PrimaryBlue
+                                            LogLevel.WARN -> AccentAmber
+                                            LogLevel.ERROR -> AccentRed
+                                        }
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.Top
+                                        ) {
+                                            Text(
+                                                entry.formattedTime,
+                                                color = TextSecondary.copy(alpha = 0.7f),
+                                                fontSize = 11.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                modifier = Modifier.width(76.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                "[${entry.tag}]",
+                                                color = levelColor,
+                                                fontSize = 11.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                fontWeight = FontWeight.SemiBold,
+                                                modifier = Modifier.widthIn(max = 120.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                entry.message,
+                                                color = TextPrimary,
+                                                fontSize = 11.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                lineHeight = 15.sp,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
                                     }
                                 }
                             }

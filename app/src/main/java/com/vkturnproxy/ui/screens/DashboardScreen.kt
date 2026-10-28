@@ -99,6 +99,7 @@ fun DashboardScreen(
     var showVKCallCreatorDialog by remember { mutableStateOf(false) }
     var showManualLinkDialog by remember { mutableStateOf(false) }
     var showDiagnosticsDialog by remember { mutableStateOf(false) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
     var manualLinkInput by remember { mutableStateOf("") }
 
     val onAddTileClicked = {
@@ -188,6 +189,18 @@ fun DashboardScreen(
                             imageVector = if (availableUpdate != null) Icons.Default.SystemUpdateAlt else Icons.Default.Sync,
                             contentDescription = "Проверить обновления",
                             tint = if (availableUpdate != null) AccentGreen else TextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { showSettingsDialog = true },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Настройки",
+                            tint = TextSecondary,
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -698,6 +711,17 @@ fun DashboardScreen(
 
     if (showDiagnosticsDialog) {
         DiagnosticsDialog(onDismiss = { showDiagnosticsDialog = false })
+    }
+
+    if (showSettingsDialog) {
+        SettingsDialog(
+            onDismiss = { showSettingsDialog = false },
+            onOpenDiagnostics = {
+                showSettingsDialog = false
+                showDiagnosticsDialog = true
+            },
+            onCheckUpdate = onCheckUpdateClicked
+        )
     }
 
     if (showManualLinkDialog) {

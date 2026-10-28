@@ -46,16 +46,41 @@ data class LogEntry(
  */
 object AppLog {
 
+    private const val PREFS_NAME = "vkturn_settings"
+    private const val PREF_KEY_LOGS_ENABLED = "diagnostics_logging_enabled"
     private const val MAX_LOG_ENTRIES = 1000
+
     private val buffer = ArrayDeque<LogEntry>(MAX_LOG_ENTRIES + 10)
     private val _logsFlow = MutableStateFlow<List<LogEntry>>(emptyList())
     val logsFlow: StateFlow<List<LogEntry>> = _logsFlow.asStateFlow()
 
+    private val _isEnabledFlow = MutableStateFlow(false)
+    val isEnabledFlow: StateFlow<Boolean> = _isEnabledFlow.asStateFlow()
+    val isEnabled: Boolean get() = _isEnabledFlow.value
+
     private val lock = Any()
 
     fun init(context: Context) {
-        val info = "VK TURN v${getAppVersion(context)} | Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}) | ${Build.MANUFACTURER} ${Build.MODEL} (${Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"})"
-        i("System", info)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val enabled = prefs.getBoolean(PREF_KEY_LOGS_ENABLED, false)
+        _isEnabledFlow.value = enabled
+        if (enabled) {
+            val info = "VK TURN v${getAppVersion(context)} | Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}) | ${Build.MANUFACTURER} ${Build.MODEL} (${Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"})"
+            append(LogLevel.INFO, "System", info)
+        }
+    }
+
+    fun setEnabled(context: Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(PREF_KEY_LOGS_ENABLED, enabled).apply()
+        _isEnabledFlow.value = enabled
+        if (enabled) {
+            val info = "VK TURN v${getAppVersion(context)} | Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}) | ${Build.MANUFACTURER} ${Build.MODEL} (${Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"})"
+            append(LogLevel.INFO, "AppLog", "Запись логов включена пользователем")
+            append(LogLevel.INFO, "System", info)
+        } else {
+            append(LogLevel.INFO, "AppLog", "Запись логов выключена пользователем")
+        }
     }
 
     fun d(tag: String, message: String) {
@@ -89,6 +114,9 @@ object AppLog {
     }
 
     private fun append(level: LogLevel, tag: String, rawMessage: String) {
+        if (!_isEnabledFlow.value) {
+            return
+        }
         val sanitized = sanitize(rawMessage)
         val entry = LogEntry(level = level, tag = tag, message = sanitized)
 
@@ -136,15 +164,24 @@ object AppLog {
             val sb = java.lang.StringBuilder()
             sb.append("=== VK TURN DIAGNOSTIC LOG ===\n")
             sb.append("Generated at: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}\n")
+            sb.append("Logging enabled: ${_isEnabledFlow.value}\n")
             sb.append("Entries count: ${buffer.size}\n\n")
-            for (entry in buffer) {
-                sb.append(entry.toFormattedLine()).append("\n")
+            if (buffer.isEmpty()) {
+                sb.append("(Запись логов отключена в настройках приложения или буфер пуст)\n")
+            } else {
+                for (entry in buffer) {
+                    sb.append(entry.toFormattedLine()).append("\n")
+                }
             }
             return sb.toString()
         }
     }
 
     fun copyToClipboard(context: Context) {
+        if (!_isEnabledFlow.value && buffer.isEmpty()) {
+            Toast.makeText(context, "Запись логов выключена. Включите запись в настройках или журнале.", Toast.LENGTH_LONG).show()
+            return
+        }
         val text = getFormattedText()
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         if (cm != null) {
@@ -155,6 +192,10 @@ object AppLog {
     }
 
     fun share(context: Context) {
+        if (!_isEnabledFlow.value && buffer.isEmpty()) {
+            Toast.makeText(context, "Запись логов выключена. Включите запись в настройках или журнале.", Toast.LENGTH_LONG).show()
+            return
+        }
         val text = getFormattedText()
         val sendIntent = Intent().apply {
             action = Intent.ACTION_SEND
