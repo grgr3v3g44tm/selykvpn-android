@@ -2312,15 +2312,17 @@ func (p *Proxy) fetchFreshCreds(allowCaptchaBlock bool, slot int) (string, *TURN
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		c, cerr := cookieCredForSlot(ctx, slot)
 		cancel()
-		if cerr != nil {
+		if cerr == nil {
+			clearCookieAuthFatal()
+			creds = c
+		} else {
+			log.Printf("vk: cookie auth slot %d failed (%v), falling back to anonymous GetVKCreds", slot, cerr)
 			if errors.Is(cerr, ErrCookieRejected) {
 				setCookieAuthFatal(cerr.Error())
 			}
-			return "", nil, fmt.Errorf("cookie auth: %w", cerr)
 		}
-		clearCookieAuthFatal()
-		creds = c
-	} else {
+	}
+	if creds == nil {
 		var solver CaptchaSolver
 		if allowCaptchaBlock {
 			solver = p.config.CaptchaSolver

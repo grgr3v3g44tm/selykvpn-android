@@ -91,9 +91,8 @@ class VkTurnVpnService : VpnService() {
                     ?: config.vkLink.trim()
                 Log.i(TAG, "Configured transport: useUDP=${config.useUDP}, linksCount=${cookieLinks.size}, primary=$primaryLink")
 
-                // 1. Setup VK Cookie Auth if enabled explicitly in config or if active login exists in VKCookieStore
-                val hasStoredLogin = com.vkturnproxy.auth.VKCookieStore.hasValidLogin()
-                val isCookieAuth = (config.useCookieAuth || hasStoredLogin) && com.vkturnproxy.auth.VKCookieStore.hasValidCookie()
+                // 1. Setup VK Cookie Auth ONLY if explicitly enabled in server config and valid cookie exists
+                val isCookieAuth = config.useCookieAuth && com.vkturnproxy.auth.VKCookieStore.hasValidCookie()
                 if (isCookieAuth) {
                     val cookie = com.vkturnproxy.auth.VKCookieStore.getValidCookieHeader()
                     if (!cookie.isNullOrBlank()) {
@@ -102,7 +101,7 @@ class VkTurnVpnService : VpnService() {
                         WgTurnCore.setVKCookieAuth(true, cookie, linksJson)
                         config.useCookieAuth = true
                     } else {
-                        Log.w(TAG, "VK Cookie Auth enabled but no valid session cookie found; using anonymous")
+                        Log.w(TAG, "VK Cookie Auth enabled in config but no valid session cookie found; using anonymous")
                         WgTurnCore.setVKCookieAuth(false, "", "[]")
                         config.useCookieAuth = false
                     }

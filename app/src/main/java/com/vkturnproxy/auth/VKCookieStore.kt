@@ -88,8 +88,9 @@ object VKCookieStore {
     }
 
     /**
-     * Checks if a valid, non-expired VK login session exists with BOTH remixsid and p.
-     * Mirrors iOS VKCallCreationGate / VKCookieStore.
+     * Checks if a valid, non-expired VK login session exists.
+     * remixsid is the primary session cookie of VKontakte required for authentication and OAuth.
+     * p cookie from login.vk.ru is optional and preserved when present.
      */
     fun hasValidLogin(now: Long = System.currentTimeMillis()): Boolean {
         val stored = load() ?: return false
@@ -97,8 +98,7 @@ object VKCookieStore {
         val header = stored.cookieHeader
         if (header.contains("test_") || header.contains("dummy")) return false
         val remixsid = extractCookieValue(header, "remixsid")
-        val p = extractCookieValue(header, "p")
-        return !remixsid.isNullOrBlank() && !p.isNullOrBlank()
+        return !remixsid.isNullOrBlank()
     }
 
     fun isValid(now: Long = System.currentTimeMillis()): Boolean = hasValidLogin(now)

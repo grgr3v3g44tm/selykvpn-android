@@ -242,20 +242,22 @@ func GetVKCreds(linkID string, captchaSolver CaptchaSolver, solvedCaptchaSID, so
 		// Cookie (VKAuth) path. This entry (no slot) serves slot 0 — used by the
 		// pre-bootstrap probe to seed slot 0. The pool's per-slot fetches go
 		// through fetchFreshCreds -> cookieCredForSlot(slot) so each slot stably
-		// holds a distinct (call, relay) bucket. Single-relay creds; NO captcha;
-		// NO anonymous fallback.
+		// holds a distinct (call, relay) bucket. Single-relay creds; NO captcha.
+		// If cookie auth fails (e.g. cookie expired, session rejected, or foreign
+		// call link), we gracefully fall back to the anonymous VK Calls path below
+		// to guarantee connectivity instead of timing out.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		creds, err := cookieCredForSlot(ctx, 0)
 		cancel()
-		if err != nil {
-			if errors.Is(err, ErrCookieRejected) {
-				setCookieAuthFatal(err.Error())
-			}
-			return nil, fmt.Errorf("cookie auth: %w", err)
+		if err == nil {
+			clearCookieAuthFatal()
+			log.Printf("vk: success via cookie (logged-in) path (slot 0 seed)")
+			return creds, nil
 		}
-		clearCookieAuthFatal()
-		log.Printf("vk: success via cookie (logged-in) path (slot 0 seed)")
-		return creds, nil
+		log.Printf("vk: cookie auth slot 0 failed (%v), falling back to anonymous VK Calls path", err)
+		if errors.Is(err, ErrCookieRejected) {
+			setCookieAuthFatal(err.Error())
+		}
 	}
 
 	// VK Calls captcha-free path (added 2026-05-17 — see creds_vkcalls.go).

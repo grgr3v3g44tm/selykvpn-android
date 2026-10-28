@@ -389,9 +389,25 @@ class VKAuthActivity : ComponentActivity() {
                                                 }
 
                                                 // Handle deep link intents safely
+                                                if (url.startsWith("vk://")) {
+                                                    try {
+                                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                                        if (intent.resolveActivity(packageManager) != null) {
+                                                            startActivity(intent)
+                                                            return true
+                                                        }
+                                                    } catch (e: Exception) {
+                                                        Log.w(TAG, "Failed opening vk:// deep link", e)
+                                                    }
+                                                }
+
                                                 if (url.startsWith("intent:") || url.startsWith("android-app:")) {
                                                     try {
                                                         val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                                                        if (intent.resolveActivity(packageManager) != null) {
+                                                            startActivity(intent)
+                                                            return true
+                                                        }
                                                         val fallbackUrl = intent.getStringExtra("browser_fallback_url")
                                                             ?: intent.dataString
                                                         if (!fallbackUrl.isNullOrEmpty() && (fallbackUrl.startsWith("http://") || fallbackUrl.startsWith("https://"))) {
@@ -473,8 +489,8 @@ class VKAuthActivity : ComponentActivity() {
                                         ?: VKCookieStore.extractCookieValue(idCookies, "p")
                                         ?: VKCookieStore.extractCookieValue(vkCookies, "p")
 
-                                    if (!remixsid.isNullOrBlank() && !p.isNullOrBlank()) {
-                                        val header = "remixsid=$remixsid; p=$p"
+                                    if (!remixsid.isNullOrBlank()) {
+                                        val header = if (!p.isNullOrBlank()) "remixsid=$remixsid; p=$p" else "remixsid=$remixsid"
                                         val expiry = System.currentTimeMillis() + 365L * 24 * 3600 * 1000 // 1 year
                                         VKCookieStore.save(header, expiry)
                                         VKCookieStore.isEnabled = true
@@ -499,7 +515,7 @@ class VKAuthActivity : ComponentActivity() {
                                         }
                                     }
 
-                                    delay(1200)
+                                    delay(800)
                                 }
                             }
                         }
@@ -677,7 +693,7 @@ suspend fun createCallWithToken(
     token: String,
     callback: (link: String?, error: String?) -> Unit
 ) = withContext(Dispatchers.IO) {
-    val hosts = listOf("api.vk.ru", "api.vk.com")
+    val hosts = listOf("api.vk.ru", "api.vk.com", "api.vk.me")
     var lastError = "Не удалось связаться с серверами VK"
 
     for (host in hosts) {
