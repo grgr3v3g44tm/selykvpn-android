@@ -255,7 +255,7 @@ func getVKCredsViaCookies(ctx context.Context, linkID, cookieHeader string) (*TU
 	if cookieHeader == "" {
 		return nil, fmt.Errorf("empty cookie")
 	}
-	joinLink := strings.TrimSpace(linkID)
+	joinLink := cookieLinkID(linkID)
 	if joinLink == "" {
 		return nil, fmt.Errorf("empty join link")
 	}

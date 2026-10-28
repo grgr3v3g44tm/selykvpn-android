@@ -313,6 +313,8 @@ class VKAuthActivity : ComponentActivity() {
                                             javaScriptEnabled = true
                                             domStorageEnabled = true
                                             databaseEnabled = true
+                                            // Modern Mobile Chrome UA (prevents embedded webview blocks from VK ID)
+                                            userAgentString = "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
                                             // CRITICAL: Disable multiple windows to prevent window.opener crashes and infinite spinner
                                             setSupportMultipleWindows(false)
                                             javaScriptCanOpenWindowsAutomatically = false
@@ -441,9 +443,11 @@ class VKAuthActivity : ComponentActivity() {
                                         // Decide initial URL 1-to-1 with iOS TestFlight
                                         val hasValidLogin = VKCookieStore.hasValidLogin()
                                         if (mode == MODE_CREATE_CALL && hasValidLogin) {
-                                            // User has saved login -> plant cookies and load OAuth directly
+                                            // User has saved login -> plant cookies and load OAuth directly with slight delay to ensure cookie sync
                                             VKCookieStore.plantCookiesForOAuth(cm)
-                                            loadUrl(VK_OAUTH_URL)
+                                            postDelayed({
+                                                loadUrl(VK_OAUTH_URL)
+                                            }, 150)
                                         } else {
                                             // Clean login on https://vk.ru/
                                             loadUrl(VK_LOGIN_URL)

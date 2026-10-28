@@ -47,15 +47,37 @@ data class ServerConfig(
     var dnsServers: String = "1.1.1.1, 77.88.8.8, 10.77.77.1",
     var mtu: Int = 1280
 ) {
+    fun getParsedCookieLinks(): List<String> {
+        return vkLink.lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.contains("placeholder") }
+    }
+
+    fun cookieConnCap(callLinksCount: Int): Int {
+        return (callLinksCount * 20).coerceIn(2, 50)
+    }
+
+    val effectiveNumConnections: Int
+        get() {
+            if (!useCookieAuth) return numConnections.coerceIn(1, 60)
+            val links = getParsedCookieLinks()
+            val cap = cookieConnCap(links.size.coerceAtLeast(1))
+            return minOf(numConnections.coerceIn(1, 60), cap)
+        }
+
     fun toProxyConfigJson(): String {
         val map = mutableMapOf<String, Any>()
-        val cleanVkLink = vkLink.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") } ?: vkLink.trim()
+        val cookieLinks = getParsedCookieLinks()
+        val cleanVkLink = cookieLinks.firstOrNull { it.contains("call/join/") }
+            ?: cookieLinks.firstOrNull()
+            ?: vkLink.trim()
         map["vk_link"] = cleanVkLink
+        map["vk_cookie_links"] = cookieLinks
         map["peer_addr"] = peerAddress
         map["use_dtls"] = useDTLS
         map["use_udp"] = useUDP
         map["mtu"] = mtu.coerceIn(1200, 1280)
-        map["num_conns"] = numConnections.coerceIn(1, 60)
+        map["num_conns"] = effectiveNumConnections
         map["use_cookie_auth"] = useCookieAuth
         if (uplinkPaceKiB > 0) {
             map["uplink_pace_kib"] = uplinkPaceKiB

@@ -84,10 +84,12 @@ class VkTurnVpnService : VpnService() {
 
         serviceScope.launch {
             try {
-                // Sanitize VK call link (single trimmed URL)
-                val cleanLink = config.vkLink.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") } ?: config.vkLink.trim()
-                config.vkLink = cleanLink
-                Log.i(TAG, "Configured transport: useUDP=${config.useUDP}, link=$cleanLink")
+                // Parse and sanitize VK call links (multi-link support 1-to-1 with iOS TestFlight)
+                val cookieLinks = config.getParsedCookieLinks()
+                val primaryLink = cookieLinks.firstOrNull { it.contains("call/join/") }
+                    ?: cookieLinks.firstOrNull()
+                    ?: config.vkLink.trim()
+                Log.i(TAG, "Configured transport: useUDP=${config.useUDP}, linksCount=${cookieLinks.size}, primary=$primaryLink")
 
                 // 1. Setup VK Cookie Auth if enabled explicitly in config or if active login exists in VKCookieStore
                 val hasStoredLogin = com.vkturnproxy.auth.VKCookieStore.hasValidLogin()
@@ -95,18 +97,17 @@ class VkTurnVpnService : VpnService() {
                 if (isCookieAuth) {
                     val cookie = com.vkturnproxy.auth.VKCookieStore.getValidCookieHeader()
                     if (!cookie.isNullOrBlank()) {
-                        val links = listOf(cleanLink)
-                        val linksJson = Gson().toJson(links)
-                        Log.i(TAG, "Enabling VK Cookie Auth with ${links.size} call link(s)")
+                        val linksJson = Gson().toJson(cookieLinks)
+                        Log.i(TAG, "Enabling VK Cookie Auth with ${cookieLinks.size} call link(s)")
                         WgTurnCore.setVKCookieAuth(true, cookie, linksJson)
                         config.useCookieAuth = true
                     } else {
                         Log.w(TAG, "VK Cookie Auth enabled but no valid session cookie found; using anonymous")
-                        WgTurnCore.setVKCookieAuth(false, "", "")
+                        WgTurnCore.setVKCookieAuth(false, "", "[]")
                         config.useCookieAuth = false
                     }
                 } else {
-                    WgTurnCore.setVKCookieAuth(false, "", "")
+                    WgTurnCore.setVKCookieAuth(false, "", "[]")
                     config.useCookieAuth = false
                 }
 

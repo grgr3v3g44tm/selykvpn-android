@@ -121,7 +121,7 @@ object VKCookieStore {
      * Exact 1-to-1 parity with iOS VKOAuth.swift:
      * - remixsid is issued on .vk.ru and .vk.com
      * - p is issued on .login.vk.ru and .login.vk.com
-     * "Put both on one domain and the gate sees neither!"
+     * Also planted with SameSite=None and Secure for reliable cross-domain OAuth handshake.
      */
     fun plantCookiesForOAuth(cm: CookieManager, header: String? = getValidCookieHeader()) {
         if (header.isNullOrBlank()) return
@@ -129,20 +129,46 @@ object VKCookieStore {
         val p = extractCookieValue(header, "p")
 
         if (!remixsid.isNullOrBlank()) {
-            cm.setCookie("https://vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure")
-            cm.setCookie("https://vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure")
-            cm.setCookie("https://oauth.vk.ru/", "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure")
-            cm.setCookie("https://oauth.vk.com/", "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure")
+            val cookieVal = "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None"
+            cm.setCookie("https://vk.ru/", cookieVal)
+            cm.setCookie("https://oauth.vk.ru/", cookieVal)
+            cm.setCookie("https://login.vk.ru/", cookieVal)
+            cm.setCookie("https://id.vk.ru/", cookieVal)
+
+            val comVal = "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure; SameSite=None"
+            cm.setCookie("https://vk.com/", comVal)
+            cm.setCookie("https://oauth.vk.com/", comVal)
+            cm.setCookie("https://login.vk.com/", comVal)
+            cm.setCookie("https://id.vk.com/", comVal)
         }
 
         if (!p.isNullOrBlank()) {
-            cm.setCookie("https://login.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure")
-            cm.setCookie("https://login.vk.com/", "p=$p; Domain=.login.vk.com; Path=/; Secure")
-            cm.setCookie("https://id.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure")
-            cm.setCookie("https://id.vk.com/", "p=$p; Domain=.login.vk.com; Path=/; Secure")
+            // p must be on .login.vk.ru for the identity gate (?act=connect_internal)
+            val pLoginRu = "p=$p; Domain=.login.vk.ru; Path=/; Secure; SameSite=None"
+            cm.setCookie("https://login.vk.ru/", pLoginRu)
+            val pLoginCom = "p=$p; Domain=.login.vk.com; Path=/; Secure; SameSite=None"
+            cm.setCookie("https://login.vk.com/", pLoginCom)
+
+            // Also plant on .vk.ru root domain for id.vk.ru session detection
+            val pRootRu = "p=$p; Domain=.vk.ru; Path=/; Secure; SameSite=None"
+            cm.setCookie("https://id.vk.ru/", pRootRu)
+            cm.setCookie("https://vk.ru/", pRootRu)
+            val pRootCom = "p=$p; Domain=.vk.com; Path=/; Secure; SameSite=None"
+            cm.setCookie("https://id.vk.com/", pRootCom)
+            cm.setCookie("https://vk.com/", pRootCom)
         }
 
         cm.flush()
+    }
+
+    /**
+     * Asynchronously plants cookies and awaits CookieManager completion callbacks + flush.
+     * Prevents race conditions where WebView begins loading before cookies are written.
+     */
+    suspend fun plantCookiesAsync(cm: CookieManager, header: String? = getValidCookieHeader()) {
+        if (header.isNullOrBlank()) return
+        plantCookiesForOAuth(cm, header)
+        kotlinx.coroutines.delay(120) // Give WebKit cookie store time to sync
     }
 
     fun clearCookies() {
