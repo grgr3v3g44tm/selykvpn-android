@@ -155,18 +155,25 @@ class VkTurnVpnService : VpnService() {
                             tunnelAddr = map["address"] as? String ?: tunnelAddr
                             dnsServers = map["dns"] as? String ?: dnsServers
                             (map["mtu"] as? Number)?.toInt()?.let { provMtu ->
-                                if (provMtu in 1200..1500) mtu = provMtu
+                                if (provMtu in 1200..1280) mtu = provMtu
                             }
                         } catch (e: Exception) {
                             Log.w(TAG, "Error parsing WRAP-A provision", e)
                         }
+                    } else {
+                        Log.e(TAG, "WRAP-A provision failed (empty provision from server)")
+                        _statusFlow.value = VpnStatus.ERROR
+                        updateNotification("Ошибка авторизации устройства")
+                        stopTunnel()
+                        return@launch
                     }
                 }
 
                 // 4. Create Android TUN interface (non-blocking for epoll runtime)
+                // MTU 1280 is mandatory to prevent packet fragmentation & drops over VK TURN + SRTP on cellular networks
                 val builder = Builder()
                     .setSession("VK TURN Proxy")
-                    .setMtu(mtu.coerceIn(1280, 1500))
+                    .setMtu(mtu.coerceIn(1200, 1280))
                     .setBlocking(false)
 
                 val addrParts = tunnelAddr.split("/")
@@ -174,6 +181,14 @@ class VkTurnVpnService : VpnService() {
                 val prefix = addrParts.getOrNull(1)?.toIntOrNull() ?: 24
                 builder.addAddress(ip, prefix)
                 builder.addRoute("0.0.0.0", 0)
+
+                // Blackhole / trap IPv6 to prevent cellular IPv6 leak on mobile networks (MTS, Megafon, Beeline, Tele2)
+                try {
+                    builder.addAddress("fd00:77:77::2", 64)
+                    builder.addRoute("::", 0)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to configure IPv6 route: ${e.message}")
+                }
 
                 for (dns in dnsServers.split(",")) {
                     val trimmedDns = dns.trim()

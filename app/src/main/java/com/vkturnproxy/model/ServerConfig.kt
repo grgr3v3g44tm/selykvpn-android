@@ -45,7 +45,7 @@ data class ServerConfig(
     var presharedKey: String = "",
     var tunnelAddress: String = "10.77.77.2/24",
     var dnsServers: String = "1.1.1.1, 77.88.8.8, 10.77.77.1",
-    var mtu: Int = 1360
+    var mtu: Int = 1280
 ) {
     fun toProxyConfigJson(): String {
         val map = mutableMapOf<String, Any>()
@@ -54,7 +54,7 @@ data class ServerConfig(
         map["peer_addr"] = peerAddress
         map["use_dtls"] = useDTLS
         map["use_udp"] = useUDP
-        map["mtu"] = mtu
+        map["mtu"] = mtu.coerceIn(1200, 1280)
         map["num_conns"] = numConnections.coerceIn(1, 60)
         map["use_cookie_auth"] = useCookieAuth
         if (uplinkPaceKiB > 0) {
@@ -63,6 +63,16 @@ data class ServerConfig(
         }
         map["force_legacy_captcha"] = forceLegacyCaptcha
         map["memstats_fast_ticks"] = memstatsFastTicks
+
+        val stableDeviceId = if (deviceId.isNotBlank()) {
+            deviceId
+        } else {
+            try {
+                com.vkturnproxy.utils.DeviceIdentifier.getHwid(com.vkturnproxy.VkTurnApp.instance)
+            } catch (_: Exception) {
+                id.replace("-", "").take(16)
+            }
+        }
 
         when (mode) {
             ProxyMode.SRTP -> {
@@ -79,14 +89,14 @@ data class ServerConfig(
                 map["use_wrap"] = true
                 map["use_wrap_a"] = true
                 map["wrap_a_password"] = serverPassword
-                map["device_id"] = deviceId.ifEmpty { id.replace("-", "").take(16) }
+                map["device_id"] = stableDeviceId
             }
             ProxyMode.SRTP_WRAP_S -> {
                 map["use_srtp"] = true
                 map["use_wrap"] = true
                 map["wrap_key_hex"] = wrapKeyHex
                 map["obf_profile"] = wrapSProfile
-                map["client_id"] = deviceId.ifEmpty { id.replace("-", "").take(16) }
+                map["client_id"] = stableDeviceId
             }
             ProxyMode.LEGACY -> {
                 map["use_srtp"] = false

@@ -108,9 +108,14 @@ object ConfigParser {
             val serverPassword = settings.get("serverPassword")?.asString
                 ?: settings.get("server_password")?.asString
                 ?: ""
-            val deviceId = settings.get("deviceId")?.asString
+            var deviceId = settings.get("deviceId")?.asString
                 ?: settings.get("device_id")?.asString
                 ?: ""
+            if (deviceId.isBlank()) {
+                try {
+                    deviceId = com.vkturnproxy.utils.DeviceIdentifier.getHwid(com.vkturnproxy.VkTurnApp.instance)
+                } catch (_: Exception) {}
+            }
 
             // WireGuard
             val privateKey = settings.get("privateKey")?.asString
@@ -128,7 +133,7 @@ object ConfigParser {
             val dnsServers = settings.get("dnsServers")?.asString
                 ?: settings.get("dns_servers")?.asString
                 ?: "1.1.1.1, 77.88.8.8, 10.77.77.1"
-            val mtu = settings.get("mtu")?.asInt ?: if (useUDP) 1360 else 1280
+            val mtu = (settings.get("mtu")?.asInt ?: 1280).coerceIn(1200, 1280)
 
             val useCookieAuth = settings.get("useCookieAuth")?.asBoolean
                 ?: settings.get("use_cookie_auth")?.asBoolean
