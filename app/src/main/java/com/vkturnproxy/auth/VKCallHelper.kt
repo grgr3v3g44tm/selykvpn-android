@@ -73,7 +73,7 @@ object VKCallHelper {
             }
 
             if (!callLink.isNullOrBlank()) {
-                AppLog.i(TAG, "Звонок успешно создан: $callLink")
+                AppLog.i(TAG, "Звонок успешно создан: ${AppLog.maskLink(callLink)}")
                 return@withContext FastCallResult.Success(callLink!!)
             }
 

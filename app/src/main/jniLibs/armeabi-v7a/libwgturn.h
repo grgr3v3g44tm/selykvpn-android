@@ -25,12 +25,6 @@ extern const char *_GoStringPtr(_GoString_ s);
 
 #include "jni_bridge.h"
 
-// Set GODEBUG=asyncpreemptoff=1 BEFORE Go runtime initializes.
-__attribute__((constructor))
-static void disable_async_preempt(void) {
-	setenv("GODEBUG", "asyncpreemptoff=1", 1);
-}
-
 #line 1 "cgo-generated-wrapper"
 
 #line 22 "csqtt_bridge.go"

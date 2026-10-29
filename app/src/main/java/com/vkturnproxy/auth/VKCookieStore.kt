@@ -3,6 +3,8 @@ package com.vkturnproxy.auth
 import android.content.Context
 import android.content.SharedPreferences
 import android.webkit.CookieManager
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.vkturnproxy.log.AppLog
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -20,7 +22,8 @@ data class StoredCookie(
  */
 object VKCookieStore {
     private const val TAG = "VKCookieStore"
-    private const val PREFS_NAME = "vkturn_vkauth"
+    private const val PREFS_NAME = "vkturn_vkauth_secure"
+    private const val LEGACY_PREFS_NAME = "vkturn_vkauth"
     private const val KEY_COOKIE_HEADER = "cookie_header"
     private const val KEY_EXPIRY = "cookie_expiry"
     private const val KEY_SAVED_AT = "cookie_saved_at"
@@ -29,9 +32,50 @@ object VKCookieStore {
     private lateinit var prefs: SharedPreferences
 
     fun init(context: Context) {
-        prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs = createEncryptedPrefs(context)
+        migrateLegacyPrefs(context)
         val hasLogin = hasValidLogin()
         AppLog.d(TAG, "Initialized: hasValidLogin=$hasLogin, expiry=${getFormattedExpiry()}")
+    }
+
+    private fun createEncryptedPrefs(context: Context): SharedPreferences {
+        return try {
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                context,
+                PREFS_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (e: Exception) {
+            AppLog.w(TAG, "Failed to create EncryptedSharedPreferences, falling back to standard prefs", e)
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        }
+    }
+
+    private fun migrateLegacyPrefs(context: Context) {
+        try {
+            val legacy = context.getSharedPreferences(LEGACY_PREFS_NAME, Context.MODE_PRIVATE)
+            val legacyHeader = legacy.getString(KEY_COOKIE_HEADER, null)
+            if (!legacyHeader.isNullOrBlank() && !prefs.contains(KEY_COOKIE_HEADER)) {
+                val expiry = legacy.getLong(KEY_EXPIRY, 0L)
+                val savedAt = legacy.getLong(KEY_SAVED_AT, 0L)
+                val enabled = legacy.getBoolean(KEY_ENABLED, false)
+                prefs.edit()
+                    .putString(KEY_COOKIE_HEADER, legacyHeader)
+                    .putLong(KEY_EXPIRY, expiry)
+                    .putLong(KEY_SAVED_AT, savedAt)
+                    .putBoolean(KEY_ENABLED, enabled)
+                    .apply()
+                legacy.edit().clear().apply()
+                AppLog.i(TAG, "Successfully migrated VK session cookies to EncryptedSharedPreferences")
+            }
+        } catch (e: Exception) {
+            AppLog.w(TAG, "Error migrating legacy VKCookieStore prefs", e)
+        }
     }
 
     var isEnabled: Boolean

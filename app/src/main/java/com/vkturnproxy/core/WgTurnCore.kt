@@ -14,7 +14,7 @@ object WgTurnCore {
         }
     }
 
-    external fun registerSocketProtector(vpnService: Any)
+    external fun registerSocketProtector(vpnService: Any?)
 
     external fun startVKBootstrap(proxyConfigJson: String): Int
     external fun waitBootstrapReady(handle: Int, timeoutMs: Int): Int

@@ -130,6 +130,24 @@ object AppLog {
     }
 
     /**
+     * Masks VK call join link so transport secrets are not exposed in logs or UI.
+     * e.g. "https://vk.ru/call/join/abc123456789" -> "https://vk.ru/call/join/abc1…"
+     */
+    fun maskLink(url: String?): String {
+        if (url.isNullOrBlank()) return ""
+        val idx = url.indexOf("call/join/")
+        return if (idx != -1) {
+            val prefix = url.substring(0, idx + 10)
+            val secret = url.substring(idx + 10)
+            prefix + secret.take(4) + "…"
+        } else if (url.length > 20) {
+            url.take(16) + "…"
+        } else {
+            url
+        }
+    }
+
+    /**
      * Sanitizes tokens, remixsid, passwords, and private identifiers
      * so logs can be safely shared by users.
      */
@@ -154,6 +172,16 @@ object AppLog {
         // Mask PrivateKey=...
         text = text.replace(Regex("""PrivateKey\s*=\s*([a-zA-Z0-9+/=]{4})[a-zA-Z0-9+/=]+""")) { match ->
             "PrivateKey=" + match.groupValues[1] + "…"
+        }
+
+        // Mask call/join/ secrets
+        text = text.replace(Regex("""(call/join/)([a-zA-Z0-9_\-]{4})[a-zA-Z0-9_\-]+""")) { match ->
+            match.groupValues[1] + match.groupValues[2] + "…"
+        }
+
+        // Mask vk_join_link query parameters
+        text = text.replace(Regex("""(vk_join_link=)([^&\s]+)""")) { match ->
+            match.groupValues[1] + maskLink(match.groupValues[2])
         }
 
         return text

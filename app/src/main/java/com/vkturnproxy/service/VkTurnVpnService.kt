@@ -44,6 +44,7 @@ class VkTurnVpnService : VpnService() {
     private var tunPfd: ParcelFileDescriptor? = null
     private val serviceScope = CoroutineScope(Dispatchers.IO + Job())
     private var statsJob: Job? = null
+    private var startJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -57,6 +58,13 @@ class VkTurnVpnService : VpnService() {
         val action = intent?.action ?: return START_NOT_STICKY
         when (action) {
             ACTION_START -> {
+                if (_statusFlow.value == VpnStatus.CONNECTING ||
+                    _statusFlow.value == VpnStatus.WAITING_TURN ||
+                    _statusFlow.value == VpnStatus.CONNECTED
+                ) {
+                    Log.w(TAG, "Ignoring ACTION_START: tunnel already connecting or active (status=${_statusFlow.value})")
+                    return START_NOT_STICKY
+                }
                 val configJson = intent.getStringExtra(EXTRA_CONFIG_JSON)
                 if (configJson != null) {
                     val config = Gson().fromJson(configJson, ServerConfig::class.java)
@@ -83,14 +91,15 @@ class VkTurnVpnService : VpnService() {
         _statusFlow.value = VpnStatus.CONNECTING
         startForeground(NOTIFICATION_ID, buildNotification("Инициализация звонка VK…"))
 
-        serviceScope.launch {
+        startJob?.cancel()
+        startJob = serviceScope.launch {
             try {
                 // Parse and sanitize VK call links (multi-link support 1-to-1 with iOS TestFlight)
                 val cookieLinks = config.getParsedCookieLinks()
                 val primaryLink = cookieLinks.firstOrNull { it.contains("call/join/") }
                     ?: cookieLinks.firstOrNull()
                     ?: config.vkLink.trim()
-                Log.i(TAG, "Configured transport: useUDP=${config.useUDP}, linksCount=${cookieLinks.size}, primary=$primaryLink")
+                Log.i(TAG, "Configured transport: useUDP=${config.useUDP}, linksCount=${cookieLinks.size}, primary=${AppLog.maskLink(primaryLink)}")
 
                 // 1. Setup VK Cookie Auth ONLY if explicitly enabled in server config and valid cookie exists
                 val isCookieAuth = config.useCookieAuth && com.vkturnproxy.auth.VKCookieStore.hasValidCookie()
@@ -220,6 +229,13 @@ class VkTurnVpnService : VpnService() {
                 val splitTunnelManager = SplitTunnelManager(applicationContext)
                 splitTunnelManager.applyToBuilder(builder, packageName)
 
+                // Check cancellation before calling establish() to avoid hanging TUN interfaces
+                if (!coroutineContext.isActive) {
+                    Log.w(TAG, "Tunnel startup cancelled before establish()")
+                    stopTunnel()
+                    return@launch
+                }
+
                 val pfd = builder.establish()
                 if (pfd == null) {
                     AppLog.e(TAG, "VpnService.Builder.establish() returned null")
@@ -228,6 +244,14 @@ class VkTurnVpnService : VpnService() {
                     return@launch
                 }
                 tunPfd = pfd
+
+                // Check cancellation right after establish()
+                if (!coroutineContext.isActive) {
+                    Log.w(TAG, "Tunnel startup cancelled right after establish()")
+                    stopTunnel()
+                    return@launch
+                }
+
                 val tunFd = pfd.fd
                 AppLog.i(TAG, "TUN interface established, fd=$tunFd")
 
@@ -275,6 +299,7 @@ class VkTurnVpnService : VpnService() {
         statsJob?.cancel()
         lastRxBytes = 0
         lastTxBytes = 0
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
         statsJob = serviceScope.launch {
             var tickCount = 0
             while (isActive && tunnelHandle > 0) {
@@ -293,8 +318,10 @@ class VkTurnVpnService : VpnService() {
                             turnServer = turnIp
                         )
 
-                        // Update notification with live speed every 2 seconds
-                        if (++tickCount % 2 == 0 && _statusFlow.value == VpnStatus.CONNECTED) {
+                        // Update notification with live speed every 2 seconds, only if screen is on (interactive)
+                        // to prevent battery drain and CPU wakeups in Doze mode
+                        val isInteractive = powerManager?.isInteractive ?: true
+                        if (isInteractive && ++tickCount % 2 == 0 && _statusFlow.value == VpnStatus.CONNECTED) {
                             updateNotification("Подключено — $currentServerName | ↓ ${formatSpeedShort(speedRx)} ↑ ${formatSpeedShort(speedTx)}")
                         }
                     }
@@ -313,6 +340,8 @@ class VkTurnVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        startJob?.cancel()
+        startJob = null
         statsJob?.cancel()
         statsJob = null
 
@@ -352,7 +381,10 @@ class VkTurnVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        startJob?.cancel()
+        startJob = null
         stopTunnel()
+        WgTurnCore.registerSocketProtector(null)
         if (instance == this) {
             instance = null
         }

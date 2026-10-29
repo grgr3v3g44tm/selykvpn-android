@@ -21,13 +21,23 @@ android {
 
     signingConfigs {
         create("release") {
-            val keystorePath = System.getenv("KEYSTORE_PATH") ?: "keystore.jks"
-            val keystoreFile = file(keystorePath)
-            if (keystoreFile.exists()) {
-                storeFile = keystoreFile
-                storePassword = System.getenv("STORE_PASS") ?: "koalaclash"
-                keyAlias = System.getenv("KEY_ALIAS") ?: "koala"
-                keyPassword = System.getenv("KEY_PASS") ?: "koalaclash"
+            val keystorePath = System.getenv("KEYSTORE_PATH")
+            if (!keystorePath.isNullOrBlank()) {
+                val keystoreFile = file(keystorePath)
+                if (keystoreFile.exists()) {
+                    storeFile = keystoreFile
+                    storePassword = System.getenv("STORE_PASS") ?: ""
+                    keyAlias = System.getenv("KEY_ALIAS") ?: "key0"
+                    keyPassword = System.getenv("KEY_PASS") ?: System.getenv("STORE_PASS") ?: ""
+                }
+            } else {
+                val devKeystore = file("keystore.jks")
+                if (devKeystore.exists()) {
+                    storeFile = devKeystore
+                    storePassword = System.getenv("STORE_PASS") ?: "dev_fallback_password"
+                    keyAlias = System.getenv("KEY_ALIAS") ?: "dev_alias"
+                    keyPassword = System.getenv("KEY_PASS") ?: "dev_fallback_password"
+                }
             }
         }
     }
@@ -86,6 +96,7 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
     implementation("com.google.code.gson:gson:2.11.0")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

@@ -2,12 +2,6 @@ package main
 
 /*
 #include "jni_bridge.h"
-
-// Set GODEBUG=asyncpreemptoff=1 BEFORE Go runtime initializes.
-__attribute__((constructor))
-static void disable_async_preempt(void) {
-	setenv("GODEBUG", "asyncpreemptoff=1", 1);
-}
 */
 import "C"
 
@@ -21,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1353,86 +1346,12 @@ func init() {
 	proxy.SetSocketProtector(func(fd int) {
 		C.protect_socket_via_jni(C.int(fd))
 	})
-	// Belt-and-suspenders: also set via Go in case C constructor didn't run first
-	os.Setenv("GODEBUG", "asyncpreemptoff=1")
 	// Start async log file writer
 	startLogWriter()
 	// Route all Go logs to os_log so they show in Console.app
 	log.SetOutput(osLogWriter{})
 	// Use no flags — we add our own timestamp with local timezone in osLogWriter
 	log.SetFlags(0)
-
-	// Soft cap on Go runtime memory footprint to defend against the iOS
-	// NetworkExtension ~50 MB jetsam limit (Type E in
-	// failure_patterns_taxonomy.md).
-	//
-	// The limit covers everything Go has mapped from the OS except
-	// goroutine stacks: heap + MSpan/MCache/BuckHash + GC bookkeeping +
-	// the runtime's own scratch. As the live footprint approaches the
-	// limit, Go's GC runs more aggressively AND returns idle pages to
-	// the OS more eagerly — directly addressing the "sys gets stuck at
-	// the high-water mark" pattern observed in vpn.wifi.3 (after a
-	// transient allocation burst at 14:48 took sys from 37 → 46 MB,
-	// heap-alloc fell back to baseline within one GC cycle but sys
-	// stayed at 46 MB for the rest of the session — Go's lazy default
-	// release behaviour was leaving us 4 MB from jetsam after a single
-	// spike).
-	//
-	// 40 MB was the original choice for DTLS+WG path. Lowered to 35 MB
-	// in build 130 after sysdiagnose PowerLog (2026-05-24) confirmed that
-	// SRTP path was being killed by JETSAM_REASON_MEMORY_PERPROCESSLIMIT
-	// (ReasonCode=7, Namespace=1) — see open_problem_srtp_silent_extension_
-	// restarts.md. SRTP uses ~5 MB more than DTLS+WG (probe sender + NAT
-	// keepalive per conn, pion DTLS-SRTP state, scratch buffers), so the
-	// previous 40 MB limit + Go runtime overhead + spikes during heap
-	// pressure routinely pushed phys_footprint past iOS NE's ~50 MB
-	// ceiling. 35 MB = 70% of ceiling (Go community standard); below 60%
-	// (30 MB) risks GC death spiral on SRTP path where steady-state heap-
-	// inuse is already 11-14 MB + stacks ~4 MB + runtime ~5 MB = ~23 MB
-	// minimum floor.
-	//
-	// Empirical baseline at 35 MB cap is TBD — needs soak after build 130.
-	// Trade-offs vs 40 MB: ~2-3× more GC cycles, possibly +5-10% CPU
-	// during heavy traffic, possible throughput regression of a few % in
-	// speedtest. If those regress noticeably, bump back to 38 MB. If
-	// jetsam still fires at 35 MB, the next lever is reducing live
-	// working set (smaller per-conn buffers, fewer goroutines, lower
-	// NumConns) rather than dropping the limit further.
-	debug.SetMemoryLimit(35 << 20)
-	log.Printf("bridge: GOMEMLIMIT set to 35 MB (soft cap for jetsam defence — lowered from 40 MB in build 130)")
-
-	// Periodic debug.FreeOSMemory() — added in build 131 after build 130
-	// soak confirmed Fix A reduced but did not eliminate JETSAM_REASON_
-	// MEMORY_PERPROCESSLIMIT events. Root cause: SetMemoryLimit makes Go
-	// MARK idle pages as returnable (heap-released grows), but Go's default
-	// scavenger is lazy about actually unmapping them from the address
-	// space — pages stay mapped until kernel pressure forces release. iOS
-	// jetsam PERPROCESSLIMIT can count mapped pages (not just resident),
-	// so even with heap-released=22 MB the extension can be killed for
-	// "too much memory mapped" during a sleep cycle.
-	//
-	// Empirical episode (vpn.wifi.0.log 2026-05-24 16:39:54): rss=24.4 MB
-	// sys=45.8 MB heap-released=22.2 MB immediately before sleep → JETSAM
-	// fired during the ~6-minute deep-sleep window with no further
-	// allocations from our side. sys peak from a 16:18-16:19 speedtest
-	// burst stuck at 45.8 MB for 20+ minutes because Go's scavenger hadn't
-	// yet unmapped the released pages. FreeOSMemory() forces the unmap
-	// immediately.
-	//
-	// 60s interval = balance between responsiveness (catches high-water-
-	// mark spikes within a minute of the spike subsiding) and overhead
-	// (FreeOSMemory is heavier than a normal GC — ~10-50ms on phone-class
-	// CPU when there's a lot to scavenge, microseconds when there isn't).
-	// Net cost in idle: negligible. Net cost during traffic burst: small
-	// jitter once per minute, well below user-perceptible threshold.
-	go func() {
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			debug.FreeOSMemory()
-		}
-	}()
-	log.Printf("bridge: scheduled periodic debug.FreeOSMemory() every 60s (build 131)")
 
 	// Wire the proxy's memstats logger to read this process's
 	// task_vm_info breakdown via the Mach task_info bridge (see

@@ -370,22 +370,8 @@ class VKAuthActivity : ComponentActivity() {
                                                 error: SslError?
                                             ) {
                                                 val failingUrl = error?.url?.lowercase() ?: ""
-                                                val isVkDomain = failingUrl.isEmpty() ||
-                                                        failingUrl.contains("vk.ru") ||
-                                                        failingUrl.contains("vk.com") ||
-                                                        failingUrl.contains("mail.ru") ||
-                                                        failingUrl.contains("ok.ru") ||
-                                                        failingUrl.contains("okcdn.ru") ||
-                                                        failingUrl.contains("vk-portal.net") ||
-                                                        failingUrl.contains("userapi.com") ||
-                                                        failingUrl.contains("vkuserphoto.ru")
-                                                if (isVkDomain) {
-                                                    AppLog.d(TAG, "SSL Russian CA bypass for $failingUrl")
-                                                    handler?.proceed()
-                                                } else {
-                                                    AppLog.w(TAG, "SSL error for untrusted domain: $failingUrl")
-                                                    super.onReceivedSslError(view, handler, error)
-                                                }
+                                                AppLog.w(TAG, "SSL certificate validation error for $failingUrl: $error")
+                                                handler?.cancel()
                                             }
 
                                             override fun shouldOverrideUrlLoading(
@@ -767,7 +753,7 @@ suspend fun createCallWithToken(
             val respMap = map["response"] as? Map<*, *>
             val joinLink = respMap?.get("join_link") as? String
             if (!joinLink.isNullOrBlank()) {
-                AppLog.i(TAG, "Звонок успешно создан: $joinLink")
+                AppLog.i(TAG, "Звонок успешно создан: ${AppLog.maskLink(joinLink)}")
                 withContext(Dispatchers.Main) {
                     callback(joinLink.trim(), null)
                 }
