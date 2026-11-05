@@ -279,9 +279,9 @@ class VkTurnVpnService : VpnService() {
                     HttpProxyServer.start(8080, 1080)
                 }
 
-                _statusFlow.value = VpnStatus.CONNECTED
-                AppLog.i(TAG, "VPN туннель успешно запущен: ${config.name} ($handle)")
-                updateNotification("Подключено — ${config.name}")
+                _statusFlow.value = VpnStatus.CONNECTING
+                AppLog.i(TAG, "TUN интерфейс и WireGuard привязаны, проверка хендшейка: ${config.name} ($handle)")
+                updateNotification("Согласование ключей с сервером…")
                 startStatsPolling()
 
             } catch (e: Exception) {
@@ -302,11 +302,39 @@ class VkTurnVpnService : VpnService() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
         statsJob = serviceScope.launch {
             var tickCount = 0
+            var isHandshakeConfirmed = false
+            var handshakeWaitSeconds = 0
+
             while (isActive && tunnelHandle > 0) {
                 try {
                     val statsJson = WgTurnCore.getStats(tunnelHandle)
                     if (statsJson.isNotBlank() && statsJson != "{}") {
                         val parsed = Gson().fromJson(statsJson, TunnelStats::class.java)
+
+                        if (!isHandshakeConfirmed) {
+                            if (parsed.bytesRx > 0) {
+                                isHandshakeConfirmed = true
+                                _statusFlow.value = VpnStatus.CONNECTED
+                                updateNotification("Подключено — $currentServerName")
+                                AppLog.i(TAG, "WireGuard хендшейк подтвержден: bytesRx=${parsed.bytesRx}")
+                            } else {
+                                handshakeWaitSeconds++
+                                if (handshakeWaitSeconds >= 10) {
+                                    val authErrMsg = "Сервер отклонил ключ авторизации. Пожалуйста, обновите ключ в Telegram-боте."
+                                    AppLog.e(TAG, "Хендшейк WireGuard не получен за 10 секунд (bytesRx == 0)")
+                                    _statusFlow.value = VpnStatus.ERROR
+                                    updateNotification(authErrMsg)
+                                    try {
+                                        withContext(Dispatchers.Main) {
+                                            android.widget.Toast.makeText(applicationContext, authErrMsg, android.widget.Toast.LENGTH_LONG).show()
+                                        }
+                                    } catch (_: Exception) {}
+                                    stopTunnel()
+                                    return@launch
+                                }
+                            }
+                        }
+
                         val speedRx = if (lastRxBytes > 0) (parsed.bytesRx - lastRxBytes).coerceAtLeast(0) else 0
                         val speedTx = if (lastTxBytes > 0) (parsed.bytesTx - lastTxBytes).coerceAtLeast(0) else 0
                         lastRxBytes = parsed.bytesRx

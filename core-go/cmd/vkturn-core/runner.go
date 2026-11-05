@@ -384,7 +384,6 @@ func buildUAPIConfig(wg WireGuardConfig) string {
 	sb.WriteString(fmt.Sprintf("endpoint=%s\n", wg.Endpoint))
 	sb.WriteString("persistent_keepalive_interval=25\n")
 	sb.WriteString("allowed_ip=0.0.0.0/0\n")
-	sb.WriteString("allowed_ip=::/0\n")
 	if strings.TrimSpace(wg.PreSharedKey) != "" {
 		sb.WriteString(fmt.Sprintf("preshared_key=%s\n", keyToHex(wg.PreSharedKey)))
 	}

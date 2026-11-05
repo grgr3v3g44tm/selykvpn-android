@@ -140,7 +140,6 @@ data class ServerConfig(
         sb.append("endpoint=").append(peerAddress).append("\n")
         sb.append("persistent_keepalive_interval=25\n")
         sb.append("allowed_ip=0.0.0.0/0\n")
-        sb.append("allowed_ip=::/0\n")
         if (presharedKey.isNotBlank()) {
             sb.append("preshared_key=").append(keyToHex(presharedKey)).append("\n")
         }
