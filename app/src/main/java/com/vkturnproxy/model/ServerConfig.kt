@@ -22,8 +22,8 @@ data class ServerConfig(
     // туннель запускаться не должен — сначала нужно создать звонок.
     var needsCallLink: Boolean = false,
     var peerAddress: String = "",
-    var numConnections: Int = 30,
-    var useUDP: Boolean = false,
+    var numConnections: Int = 8,
+    var useUDP: Boolean = true,
     var useDTLS: Boolean = true,
     var useSrtp: Boolean = true,
     var useWrap: Boolean = false,
