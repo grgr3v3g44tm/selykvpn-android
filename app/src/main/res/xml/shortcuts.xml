@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long press on the icon, Samsung Modes and Routines ("open an app or do an app action"), the
+     Infinix action button: ShortcutActivity connects or disconnects without opening the app. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_toggle"
+        android:shortcutId="toggle"
+        android:shortcutLongLabel="@string/shortcut_toggle_long"
+        android:shortcutShortLabel="@string/shortcut_toggle_short">
+        <intent
+            android:action="xyz.selykvpn.app.action.TOGGLE"
+            android:targetClass="xyz.selykvpn.app.ShortcutActivity"
+            android:targetPackage="xyz.selykvpn.app" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_connect"
+        android:shortcutId="connect"
+        android:shortcutLongLabel="@string/shortcut_connect_long"
+        android:shortcutShortLabel="@string/shortcut_connect_short">
+        <intent
+            android:action="xyz.selykvpn.app.action.CONNECT"
+            android:targetClass="xyz.selykvpn.app.ShortcutActivity"
+            android:targetPackage="xyz.selykvpn.app" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_disconnect"
+        android:shortcutId="disconnect"
+        android:shortcutLongLabel="@string/shortcut_disconnect_long"
+        android:shortcutShortLabel="@string/shortcut_disconnect_short">
+        <intent
+            android:action="xyz.selykvpn.app.action.DISCONNECT"
+            android:targetClass="xyz.selykvpn.app.ShortcutActivity"
+            android:targetPackage="xyz.selykvpn.app" />
+    </shortcut>
+</shortcuts>
