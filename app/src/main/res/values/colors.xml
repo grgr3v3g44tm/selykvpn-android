@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#0F172A</color>
+    <color name="brand_background">#FF121214</color>
+    <color name="brand_accent">#FFB91226</color>
+    <color name="ic_launcher_background">#FFB91226</color>
 </resources>

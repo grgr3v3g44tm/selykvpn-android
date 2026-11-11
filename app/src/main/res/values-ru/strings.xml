@@ -1,0 +1,390 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Onboarding -->
+    <string name="onboarding_title">Добро пожаловать</string>
+    <string name="onboarding_subtitle">Добавьте ключ Селюк VPN, чтобы подключиться</string>
+    <string name="onboarding_telegram">Войти через Telegram</string>
+    <string name="onboarding_paste">Вставить ключ</string>
+    <string name="onboarding_scan">Сканировать QR-код</string>
+    <string name="onboarding_manual">Ввести ключ вручную</string>
+    <string name="onboarding_telegram_hint">Бот пришлёт ссылку — просто нажмите на неё</string>
+    <string name="manual_title">Введите ключ</string>
+    <string name="manual_label">Ссылка или ключ подписки</string>
+    <string name="manual_placeholder">https://sub.selykvpn.xyz/… или vless://…</string>
+    <string name="action_add">Добавить</string>
+    <string name="action_cancel">Отмена</string>
+    <string name="action_close">Закрыть</string>
+    <string name="action_replace">Заменить</string>
+    <string name="action_retry">Повторить</string>
+    <string name="action_open_bot">Открыть бота</string>
+    <string name="importing">Загружаем подписку…</string>
+
+    <!-- Key errors -->
+    <string name="error_empty_clipboard">В буфере обмена пусто. Скопируйте ключ и попробуйте снова.</string>
+    <string name="error_not_a_key">Это не похоже на ключ. Скопируйте ссылку целиком (https://... или vless://...)</string>
+    <string name="error_foreign_key">Это не ключ Селюк VPN. В приложение можно добавить только ключ Селюк VPN.</string>
+    <string name="error_download">Не удалось загрузить подписку. Проверьте интернет и попробуйте ещё раз.</string>
+    <string name="error_not_found">Ключ не найден. Получите новый в боте.</string>
+    <string name="error_bad_format">Не удалось прочитать подписку. Напишите в поддержку.</string>
+    <string name="error_no_servers">В подписке нет активных серверов.</string>
+    <string name="error_device_limit">Превышен лимит устройств. Отвяжите неиспользуемое устройство в Telegram-боте.</string>
+    <string name="error_subscription_expired">Срок действия вашей подписки истёк. Продлите тариф в Telegram-боте.</string>
+    <string name="error_subscription_unsupported">Данный формат подписки не поддерживается. Обновите приложение.</string>
+    <string name="replace_key_title">Заменить ключ?</string>
+    <string name="replace_key_text">Текущий ключ будет заменён новым.</string>
+    <string name="key_added">Ключ добавлен</string>
+    <string name="free_access_imported">Ключ свободного доступа добавлен</string>
+    <string name="free_access_call_linked">Звонок успешно привязан</string>
+
+    <!-- Home -->
+    <string name="status_disconnected">Не подключено</string>
+    <string name="status_connecting">Подключение…</string>
+    <string name="status_connected">Подключено</string>
+    <string name="status_disconnecting">Отключение…</string>
+    <string name="action_connect">Подключиться</string>
+    <string name="action_disconnect">Отключиться</string>
+    <string name="server_label">Сервер</string>
+    <string name="server_auto">авто</string>
+    <string name="settings">Настройки</string>
+    <string name="plan_title">Тариф «%1$s»</string>
+    <string name="plan_free">Бесплатный тариф</string>
+    <string name="plan_until">Действует до %1$s</string>
+    <string name="plan_days_left">Осталось %1$s</string>
+    <string name="plan_expired">Подписка закончилась</string>
+    <string name="plan_unlimited">Без срока окончания</string>
+    <string name="traffic_used">Использовано %1$s из %2$s</string>
+    <string name="action_renew">Продлить</string>
+    <string name="action_buy_plan">Купить тариф</string>
+    <string name="update_available">Доступно обновление %1$s</string>
+    <string name="update_skip">Пропустить</string>
+    <string name="update_install">Установить</string>
+    <string name="update_downloading">Скачиваем обновление…</string>
+    <string name="update_failed">Не удалось скачать обновление</string>
+    <string name="vpn_permission_denied">Разрешите Селюк VPN создать VPN-подключение, чтобы подключиться</string>
+    <string name="vpn_error">Ошибка подключения: %1$s</string>
+
+    <!-- Servers -->
+    <string name="servers_title">Серверы</string>
+    <string name="servers_filter_all">Все</string>
+    <string name="servers_test">Проверить пинг</string>
+    <string name="servers_update">Обновить подписку</string>
+    <string name="servers_updated">Подписка обновлена</string>
+    <string name="ping_failed">—</string>
+    <string name="ping_ms">%1$d мс</string>
+
+    <!-- Settings -->
+    <string name="settings_subscription">Подписка</string>
+    <string name="settings_update_subscription">Обновить подписку</string>
+    <string name="settings_updated_at">Обновлено %1$s</string>
+    <string name="settings_change_key">Сменить ключ</string>
+    <string name="settings_logout">Удалить ключ</string>
+    <string name="settings_logout_text">Ключ будет удалён с этого устройства. Его можно добавить снова в любой момент.</string>
+    <string name="settings_vpn">VPN</string>
+    <string name="settings_split">Приложения без VPN</string>
+    <string name="settings_split_none">Все приложения через VPN</string>
+    <string name="settings_split_count">Исключено: %1$d</string>
+    <string name="settings_system_vpn">Системные настройки VPN</string>
+    <string name="settings_system_vpn_hint">Постоянный VPN и блокировка соединений без VPN</string>
+    <string name="settings_support">Поддержка</string>
+    <string name="settings_about">О приложении</string>
+    <string name="settings_version">Версия %1$s</string>
+    <string name="settings_check_update">Проверить обновления</string>
+    <string name="settings_up_to_date">У вас последняя версия</string>
+
+    <!-- Split tunneling -->
+    <string name="split_title">Приложения без VPN</string>
+    <string name="split_hint">Выбранные приложения будут работать напрямую, без VPN. Например, банки или местные сервисы.</string>
+    <string name="split_search">Поиск приложений</string>
+    <string name="split_show_system">Системные приложения</string>
+    <string name="split_reconnect">Изменения применятся после переподключения</string>
+
+    <!-- Scanner -->
+    <string name="scan_title">Сканирование QR-кода</string>
+    <string name="scan_hint">Наведите камеру на QR-код с ключом</string>
+    <string name="scan_gallery">Выбрать из галереи</string>
+    <string name="scan_no_code">На изображении не найден QR-код</string>
+    <string name="scan_camera_denied">Чтобы отсканировать QR-код, нужен доступ к камере</string>
+    <string name="scan_grant">Разрешить доступ</string>
+
+    <!-- Support -->
+    <string name="support_title">Поддержка</string>
+    <string name="tg_proxies_title">Прокси для Telegram</string>
+    <string name="tg_proxies_subtitle">Telegram без VPN</string>
+    <string name="tg_proxies_hint">Telegram заработает без VPN. Подключите все: Telegram сам выберет самый быстрый.</string>
+    <string name="tg_proxies_add">Подключить</string>
+    <string name="support_hint">Обычно отвечаем в течение нескольких часов</string>
+
+    <!-- Notification / tile -->
+    <string name="notification_channel">Статус VPN</string>
+    <string name="notification_connecting">Подключение…</string>
+    <string name="notification_connected">Подключено · %1$s</string>
+    <string name="tile_label">Селюк VPN</string>
+
+    <!-- Relative time -->
+    <string name="time_just_now">только что</string>
+
+    <string name="speed_format">%1$s/с</string>
+    <plurals name="days">
+        <item quantity="one">%d день</item>
+        <item quantity="few">%d дня</item>
+        <item quantity="many">%d дней</item>
+        <item quantity="other">%d дня</item>
+    </plurals>
+    <string name="your_subscription">Ваша подписка</string>
+    <string name="link_subscription">Подписка</string>
+    <string name="link_website">Наш сайт</string>
+    <string name="link_bot">Наш бот</string>
+    <string name="subscription_sheet_title">Ваша подписка</string>
+    <string name="subscription_copy_link">Скопировать ссылку</string>
+    <string name="subscription_link_copied">Ссылка на подписку скопирована</string>
+    <string name="subscription_open_browser">Открыть в браузере</string>
+    <string name="subscription_renew_bot">Управление в боте</string>
+    <string name="subscription_no_sub">У вас пока нет активной подписки</string>
+    <string name="subscription_get_bot">Купить в Telegram боте</string>
+    <string name="subscription_scan_hint">Отсканируйте QR-код телевизором или другим устройством</string>
+
+    <!-- Recommended exclusions and internet sharing -->
+    <string name="settings_recommended">Рекомендуемые исключения</string>
+    <string name="settings_recommended_hint">Приложения, которые не работают через VPN (например, госсервисы), подключаются напрямую. Список обновляется автоматически.</string>
+    <string name="split_recommended">Рекомендовано Селюк VPN</string>
+    <string name="settings_share">Раздача интернета</string>
+    <string name="share_off">Выключена</string>
+    <string name="share_on">Включена</string>
+    <string name="share_notification">раздача включена</string>
+    <string name="share_title">Раздача интернета</string>
+    <string name="share_switch">Раздавать VPN другим устройствам</string>
+    <string name="share_switch_hint">Ноутбук, телевизор или другой телефон смогут выходить в интернет через VPN этого телефона.</string>
+    <string name="share_waiting">Подключите VPN — раздача начнётся автоматически.</string>
+    <string name="share_no_network">Подключите телефон к Wi-Fi или включите на нём точку доступа.</string>
+    <string name="share_http_port">Порт HTTP-прокси</string>
+    <string name="share_socks_port">Порт SOCKS5</string>
+    <string name="share_copied">Скопировано</string>
+    <string name="share_if_wifi">Wi-Fi</string>
+    <string name="share_if_hotspot">Точка доступа</string>
+    <string name="share_if_usb">USB</string>
+    <string name="share_if_bluetooth">Bluetooth</string>
+    <string name="share_if_ethernet">Ethernet</string>
+    <string name="share_step1_title">1. Подключите устройство к той же сети</string>
+    <string name="share_step1_text">Подключите его к тому же Wi-Fi, что и телефон, или включите на телефоне точку доступа и подключитесь к ней. Устройства в точке доступа не получают VPN сами — на них нужно настроить прокси.</string>
+    <string name="share_hotspot_settings">Настройки точки доступа</string>
+    <string name="share_step2_title">2. Настройте прокси на устройстве</string>
+    <string name="share_step2_text">Укажите адрес и порт, которые показаны выше. Выберите устройство:</string>
+    <string name="share_step3_title">3. Проверьте</string>
+    <string name="share_step3_text">Откройте на устройстве сайт 2ip.ru — должен показаться адрес сервера VPN, а не ваш.</string>
+    <string name="share_warning">Прокси доступен только устройствам в вашей локальной сети, пароль не нужен. Выключайте раздачу, когда она не нужна.</string>
+    <string name="guide_windows">Windows</string>
+    <string name="guide_windows_text">Параметры → Сеть и Интернет → Прокси-сервер → Настройка прокси вручную → Настроить. Включите «Использовать прокси-сервер», укажите адрес %1$s и порт %2$s, нажмите «Сохранить».</string>
+    <string name="guide_macos">macOS</string>
+    <string name="guide_macos_text">Системные настройки → Сеть → Wi-Fi → Подробнее → Прокси. Включите «Веб-прокси (HTTP)» и «Защищённый веб-прокси (HTTPS)», в обоих укажите %1$s и порт %2$s, нажмите «ОК».</string>
+    <string name="guide_ios">iPhone и iPad</string>
+    <string name="guide_ios_text">Настройки → Wi-Fi → ⓘ рядом с сетью → Настройка прокси → Вручную. Сервер %1$s, порт %2$s, нажмите «Сохранить».</string>
+    <string name="guide_android">Android</string>
+    <string name="guide_android_text">Настройки → Wi-Fi → нажмите на сеть (или ⚙) → Изменить → Дополнительно → Прокси → Вручную. Имя хоста %1$s, порт %2$s, нажмите «Сохранить».</string>
+    <string name="guide_tv">Телевизоры и приставки</string>
+    <string name="guide_tv_text">В настройках сети телевизора найдите «Прокси» (иногда он в дополнительных настройках Wi-Fi), выберите ручную настройку и укажите %1$s и порт %2$s. Прокси поддерживают не все телевизоры.</string>
+    <string name="guide_apps">Telegram и другие приложения</string>
+    <string name="guide_apps_text">Telegram: Настройки → Данные и память → Прокси → Добавить прокси → SOCKS5. Сервер %1$s, порт %3$s. Браузеры и другие программы с поддержкой SOCKS5 настраиваются так же.</string>
+    <string name="share_phone_ip">IP телефона</string>
+
+    <!-- Two-pane layout -->
+    <string name="servers_swap_side">Поменять местами</string>
+    <string name="settings_interface">Интерфейс</string>
+    <string name="settings_servers_left">Список серверов слева</string>
+    <string name="settings_servers_left_hint">Удобно левшам — на планшетах и раскладушках в раскрытом виде</string>
+
+    <!-- 1.1: auto update, routing, white lists, sharing settings -->
+    <string name="session_traffic">За сессию: ↓ %1$s · ↑ %2$s</string>
+    <string name="whitelist_title">Белые списки</string>
+    <string name="whitelist_all_ok">Сейчас у вас работают все сервисы</string>
+    <string name="whitelist_on">Сейчас работают только сервисы из белого списка</string>
+    <string name="whitelist_none">Сейчас у вас ничего не работает</string>
+    <string name="whitelist_checking">Проверяем…</string>
+    <string name="whitelist_switched_on">Включены белые списки — переключили на %1$s</string>
+    <string name="whitelist_switched_off">Белые списки выключены — вернули %1$s</string>
+    <string name="traffic_used_only">Использовано %1$s</string>
+    <string name="traffic_left">осталось %1$s</string>
+    <string name="settings_auto_update">Автообновление подписки</string>
+    <string name="update_interval_subscription">Как в подписке (%1$d ч)</string>
+    <string name="update_interval_manual">Только вручную</string>
+    <string name="settings_routing">Маршрутизация</string>
+    <string name="settings_routing_hint">Свои правила: напрямую, через VPN, блокировать</string>
+    <string name="settings_whitelist">Определять белые списки</string>
+    <string name="settings_whitelist_hint">Проверяем сайты при смене сети и, если оператор включил белые списки, переключаем на «Автовыбор LTE»</string>
+    <string name="routing_title">Маршрутизация</string>
+    <string name="routing_enabled">Использовать свои правила</string>
+    <string name="routing_enabled_hint">Они важнее правил сервера</string>
+    <string name="routing_presets">Быстрые настройки</string>
+    <string name="routing_lan">Локальная сеть напрямую</string>
+    <string name="routing_lan_hint">Роутер, принтеры, телевизоры и другие устройства дома</string>
+    <string name="routing_ru">Сайты .ru, .рф и .su напрямую</string>
+    <string name="routing_ru_hint">Эти сайты будут видеть ваш настоящий адрес</string>
+    <string name="routing_direct">Напрямую</string>
+    <string name="routing_direct_hint">Без VPN</string>
+    <string name="routing_proxy">Через VPN</string>
+    <string name="routing_proxy_hint">Даже если сервер отправил бы их напрямую</string>
+    <string name="routing_block">Блокировать</string>
+    <string name="routing_block_hint">Эти сайты не будут открываться</string>
+    <string name="routing_add">Добавить</string>
+    <string name="routing_add_title">Добавить в «%1$s»</string>
+    <string name="routing_add_label">Сайты или IP-адреса</string>
+    <string name="routing_add_hint">По одному в строке или через запятую: youtube.com, .ru, 1.2.3.4, 10.0.0.0/8. Сайт включает все поддомены. keyword:yandex — все адреса со словом yandex.</string>
+    <string name="routing_invalid">Не распознано: %1$s</string>
+    <string name="routing_empty">Пока пусто</string>
+    <string name="routing_remove">Удалить</string>
+    <string name="share_ports">Порты</string>
+    <string name="share_port_http">HTTP-прокси</string>
+    <string name="share_port_socks">SOCKS5</string>
+    <string name="share_ports_hint">От 1024 до 65535. Если порт занят, будет выбран следующий свободный.</string>
+    <string name="share_ports_invalid">Укажите два разных числа от 1024 до 65535</string>
+    <string name="share_save">Сохранить</string>
+    <string name="share_auth">Авторизация</string>
+    <string name="share_auth_hint">Для подключения понадобятся логин и пароль. Системные настройки прокси Android и многих телевизоров пароль не поддерживают.</string>
+    <string name="share_login">Логин</string>
+    <string name="share_password">Пароль</string>
+    <string name="share_reset">Сбросить логин/пароль</string>
+    <string name="share_guide_auth">Включена авторизация: когда спросят, укажите логин %1$s и пароль %2$s (его можно показать и скопировать выше).</string>
+    <plurals name="update_every_hours">
+        <item quantity="one">Каждый %d час</item>
+        <item quantity="few">Каждые %d часа</item>
+        <item quantity="many">Каждые %d часов</item>
+        <item quantity="other">Каждые %d часа</item>
+    </plurals>
+
+    <!-- 1.2.0: white-list details, folded routing lists, settings files, connection log -->
+    <string name="whitelist_details">Подробнее</string>
+    <string name="whitelist_last_check">Последняя проверка: %1$s (%2$s)</string>
+    <string name="whitelist_never_checked">Проверки ещё не было</string>
+    <string name="whitelist_network">Сеть: %1$s</string>
+    <string name="network_wifi">Wi-Fi</string>
+    <string name="network_mobile">мобильная</string>
+    <string name="network_ethernet">Ethernet</string>
+    <string name="network_other">другая</string>
+    <string name="network_none">нет сети</string>
+    <string name="whitelist_probes_blocked">Закрываются белыми списками</string>
+    <string name="whitelist_probes_allowed">Открыты и при белых списках</string>
+    <string name="probe_ok">отвечает · %1$d мс</string>
+    <string name="probe_timeout">нет ответа</string>
+    <string name="probe_dns">адрес не найден</string>
+    <string name="probe_connect">не подключается</string>
+    <string name="probe_tls">ошибка TLS</string>
+    <string name="probe_error">недоступен</string>
+    <string name="whitelist_direct_note">Проверка выполняется без VPN — напрямую через вашего оператора, поэтому видно, что он блокирует на самом деле.</string>
+    <string name="whitelist_how">Если Google не отвечает, а VK и Яндекс открываются, значит, оператор включил белые списки.</string>
+    <string name="whitelist_check_again">Проверить снова</string>
+
+    <string name="routing_show_all">Показать все · %1$d</string>
+    <string name="routing_fold">Свернуть</string>
+    <string name="routing_search">Найти в списке</string>
+    <string name="routing_clear">Удалить все</string>
+    <string name="routing_clear_title">Очистить список «%1$s»?</string>
+    <string name="routing_clear_text">Будут удалены все записи: %1$d.</string>
+    <string name="routing_nothing_found">Ничего не найдено</string>
+
+    <string name="transfer_menu">Импорт и экспорт</string>
+    <string name="transfer_share">Отправить файлом</string>
+    <string name="transfer_save">Сохранить в файл</string>
+    <string name="transfer_load">Загрузить из файла</string>
+    <string name="export_saved">Файл сохранён</string>
+    <string name="export_failed">Не удалось сохранить файл</string>
+    <string name="import_routing_title">Настройки маршрутизации</string>
+    <string name="import_routing_text">Правил в файле: %1$d (напрямую — %2$d, через VPN — %3$d, блокировать — %4$d).</string>
+    <string name="import_apps_title">Приложения без VPN</string>
+    <string name="import_apps_text">Приложений в файле: %1$d.</string>
+    <string name="import_skipped">Неверных записей пропущено: %1$d.</string>
+    <string name="import_question">Заменить ваши настройки или добавить к ним?</string>
+    <string name="import_replace">Заменить</string>
+    <string name="import_merge">Добавить</string>
+    <string name="import_done_routing">Маршрутизация загружена</string>
+    <string name="import_done_apps">Список приложений загружен</string>
+    <string name="import_error_format">Это не файл настроек Селюк VPN</string>
+    <string name="import_error_read">Не удалось прочитать файл</string>
+
+    <string name="settings_diagnostics">Диагностика</string>
+    <string name="settings_connection_log">Журнал подключений</string>
+    <string name="settings_connection_log_on">Включён</string>
+    <string name="settings_connection_log_off">Выключен — нужен для отладки</string>
+    <string name="connlog_title">Журнал подключений</string>
+    <string name="connlog_enable">Вести журнал</string>
+    <string name="connlog_enable_hint">Показывает, к каким адресам обращаются приложения и идёт ли подключение через VPN. Нужен для отладки, поэтому выключен по умолчанию. Хранится только в памяти телефона до следующего подключения.</string>
+    <string name="connlog_empty">Подключений пока нет</string>
+    <string name="connlog_empty_disconnected">Подключите VPN — здесь появятся подключения приложений</string>
+    <string name="connlog_excluded_note">Приложения без VPN сюда не попадают: их трафик идёт мимо VPN.</string>
+    <string name="connlog_search">Приложение или адрес</string>
+    <string name="connlog_clear">Очистить журнал</string>
+    <string name="connlog_filter_all">Все</string>
+    <string name="connlog_filter_vpn">Через VPN</string>
+    <string name="connlog_filter_direct">Напрямую</string>
+    <string name="connlog_filter_blocked">Заблокировано</string>
+    <string name="connlog_route_vpn">VPN</string>
+    <string name="connlog_route_direct">Напрямую</string>
+    <string name="connlog_route_blocked">Блок</string>
+    <string name="connlog_count_vpn">через VPN %1$d</string>
+    <string name="connlog_count_direct">напрямую %1$d</string>
+    <string name="connlog_count_blocked">блок %1$d</string>
+    <string name="connlog_entry_details">%1$s %2$d · ×%3$d · %4$s</string>
+    <string name="connlog_unknown_app">Неизвестное приложение</string>
+    <string name="connlog_system">Система Android</string>
+    <string name="connlog_share_device">Устройство %1$s (раздача)</string>
+    <plurals name="connlog_addresses">
+        <item quantity="one">%d адрес</item>
+        <item quantity="few">%d адреса</item>
+        <item quantity="many">%d адресов</item>
+        <item quantity="other">%d адреса</item>
+    </plurals>
+
+    <!-- 1.3.0: single server ping, auto-select servers, editing routing entries -->
+    <string name="servers_hold_hint">Удерживайте сервер, чтобы проверить только его</string>
+
+    <string name="routing_edit_title">Изменить запись в «%1$s»</string>
+    <string name="routing_save">Сохранить</string>
+    <string name="routing_kind_keyword">слово</string>
+    <string name="routing_kind_full">точно</string>
+    <string name="routing_kind_regexp">regexp</string>
+
+    <!-- 1.4.0 -->
+    <string name="servers_whitelist_ping">Включены белые списки — пинг проверяет только серверы для обхода</string>
+
+    <!-- Android TV -->
+    <string name="tv_title">Подключите телевизор с телефона</string>
+    <string name="tv_step_scan">Наведите камеру телефона на QR-код</string>
+    <string name="tv_step_send">Если на телефоне есть Селюк VPN — он сам предложит отправить ключ. Если нет — вставьте ключ из бота @Селюк VPNbot на открывшейся странице</string>
+    <string name="tv_or_code">Или откройте tgapp.selykvpn.xyz/tv и введите код</string>
+    <string name="tv_manual_hint">Набирать ключ удобнее с телефона: приложение Google TV → пульт → клавиатура</string>
+    <string name="tv_received">Ключ получен</string>
+    <string name="tv_offline">Нет связи с tgapp.selykvpn.xyz</string>
+    <string name="tv_send_title">Отправить ключ на телевизор?</string>
+    <string name="tv_send_text">Телевизор с кодом %1$s подключится к вашей подписке Селюк VPN.</string>
+    <string name="tv_send_action">Отправить</string>
+    <string name="tv_sent">Ключ отправлен — телевизор подключится сам</string>
+    <string name="tv_send_no_code">Код устарел. Отсканируйте новый QR-код с экрана телевизора</string>
+    <string name="tv_send_too_many">Слишком много попыток. Подождите минуту</string>
+    <string name="tv_send_failed">Не удалось отправить ключ. Проверьте интернет</string>
+    <string name="tv_send_need_key">Это QR-код телевизора. Сначала добавьте ключ на этом телефоне, а потом отсканируйте код ещё раз</string>
+    <string name="settings_connect_tv">Подключить телевизор</string>
+    <string name="settings_connect_tv_hint">Отсканируйте QR-код с экрана Селюк VPN на телевизоре</string>
+    <string name="qr_link_title">Откройте на телефоне</string>
+    <string name="qr_link_hint">Отсканируйте камерой телефона или откройте ссылку</string>
+    <string name="renew_qr_title">Продление подписки</string>
+
+    <!-- App shortcuts (Samsung routines, Infinix action button) -->
+    <string name="shortcut_toggle_short">Вкл/выкл VPN</string>
+    <string name="shortcut_toggle_long">Включить или выключить VPN</string>
+    <string name="shortcut_connect_short">Подключить</string>
+    <string name="shortcut_connect_long">Подключить VPN</string>
+    <string name="shortcut_disconnect_short">Отключить</string>
+    <string name="shortcut_disconnect_long">Отключить VPN</string>
+    <string name="shortcut_connecting">Селюк VPN подключается…</string>
+    <string name="shortcut_disconnected">Селюк VPN отключён</string>
+
+    <!-- Dual Mode & Themes -->
+    <string name="mode_regular">Основной</string>
+    <string name="mode_free_access">Свободный доступ</string>
+    <string name="free_access_active">Свободный доступ активен</string>
+    <string name="free_access_hint">Прямое защищённое соединение в условиях ограничений</string>
+    <string name="free_access_status">Прямой защищённый шлюз</string>
+    <string name="free_access_connected">Шлюз свободного доступа подключен</string>
+    <string name="theme_palette_title">Цветовая тема</string>
+    <string name="theme_selyk_premium">Селюк Премиум</string>
+    <string name="theme_graphite_cool">Холодный графит</string>
+
+</resources>

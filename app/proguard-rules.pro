@@ -1,18 +1,19 @@
-# ProGuard / R8 configuration for VK TURN Proxy Android
+# gomobile bindings (Xray core): classes are looked up from native code by name.
+-keep class go.** { *; }
+-keep class xyz.selykvpn.libxray.** { *; }
 
-# Keep all classes and native methods in the core package (Go bridge JNI)
--keep class com.vkturnproxy.core.** { *; }
-
-# Keep all VPN service and helper classes (AIDL, lifecycle, background service)
--keep class com.vkturnproxy.service.** { *; }
-
-# Keep data models used with Gson serialization
--keep class com.vkturnproxy.model.** { *; }
--keepclassmembers class * {
-    @com.google.gson.annotations.SerializedName <fields>;
+# kotlinx.serialization
+-keepattributes *Annotation*, InnerClasses
+-dontnote kotlinx.serialization.AnnotationsKt
+-keepclassmembers @kotlinx.serialization.Serializable class xyz.selykvpn.app.** {
+    *** Companion;
+    kotlinx.serialization.KSerializer serializer(...);
+}
+-keepclasseswithmembers class xyz.selykvpn.app.** {
+    kotlinx.serialization.KSerializer serializer(...);
 }
 
-# Preserve all native method signatures across the app
--keepclasseswithmembernames class * {
-    native <methods>;
-}
+# OkHttp optional platform integrations
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**

@@ -4,89 +4,168 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Split tunneling lists and excludes every app, system ones without a launcher icon too
+         (Android Auto). VPN apps may declare it in Play Console for per-app VPN. -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
 
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+    <!-- Android TV: the same app with a remote (no touchscreen) and the leanback launcher. -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+
+    <!-- Covered by QUERY_ALL_PACKAGES; kept in case the permission is ever taken out. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- No launcher icon, but busy in the connection log. -->
+        <package android:name="com.google.android.gms" />
+        <package android:name="com.android.vending" />
+        <!-- Android Auto: excluded from the VPN by default, no launcher icon on Android 10+. -->
+        <package android:name="com.google.android.projection.gearhead" />
+    </queries>
+
     <application
-        android:name=".VkTurnApp"
+        android:name=".SelykApp"
         android:allowBackup="false"
-        android:fullBackupContent="false"
+        android:banner="@drawable/tv_banner"
+        android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:localeConfig="@xml/locales_config"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.VkTurnProxy"
-        tools:targetApi="35">
+        android:theme="@style/Theme.SelykVPN"
+        tools:targetApi="36">
 
         <activity
-            android:name=".ui.MainActivity"
+            android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
-            android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.VkTurnProxy">
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.SelykVPN.Starting"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+            <!-- Connect / disconnect shortcuts (Samsung routines, Infinix action button). -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+
+            <!-- Key import links sent by @selykvpn_bot: https://tgapp.selykvpn.xyz/import?url=...
+                 and a TV's QR code https://tgapp.selykvpn.xyz/tv/<code>: the phone sends its key to the TV. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="tgapp.selykvpn.xyz"
+                    android:pathPrefix="/import"
+                    android:scheme="https" />
+                <data android:pathPrefix="/tv/" />
             </intent-filter>
 
-            <!-- Support for vkturnproxy:// links -->
+            <!-- Fallback used by the web page when a link was opened in a browser: selykvpn://import?url=... and vkturnproxy://... -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="selykvpn" />
                 <data android:scheme="vkturnproxy" />
+                <data android:scheme="vless" />
+            </intent-filter>
+
+            <!-- "Share" a key from Telegram or any other app. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+
+            <!-- Settings files (routing, apps without VPN) opened or shared from a messenger. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/json" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/json" />
             </intent-filter>
         </activity>
 
+        <!-- Runs a shortcut and closes: no window, not in recents, never on top of the app's task. -->
         <activity
-            android:name=".auth.VKAuthActivity"
+            android:name=".ShortcutActivity"
+            android:excludeFromRecents="true"
             android:exported="false"
-            android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize"
-            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
-            android:theme="@style/Theme.VkTurnProxy" />
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
-        <service
-            android:name=".service.VkTurnVpnService"
-            android:permission="android.permission.BIND_VPN_SERVICE"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <intent-filter>
-                <action android:name="android.net.VpnService" />
-            </intent-filter>
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Anti-censorship and secure network routing client" />
-        </service>
-
-        <!-- Quick Settings Tile for Notification Shade -->
-        <service
-            android:name=".service.VkTurnTileService"
-            android:icon="@drawable/ic_qs_vpn"
-            android:label="@string/qs_tile_label"
-            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.service.quicksettings.action.QS_TILE" />
-            </intent-filter>
-        </service>
-
-        <!-- FileProvider for In-App Auto Updates -->
         <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
+            android:name=".data.ExportsProvider"
+            android:authorities="${applicationId}.exports"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
+                android:resource="@xml/export_paths" />
         </provider>
 
+        <service
+            android:name=".vpn.SelykVpnService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
+                android:value="true" />
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn" />
+        </service>
+
+        <service
+            android:name=".vpn.VpnTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
+        <activity
+            android:name=".auth.VKAuthActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:theme="@style/Theme.SelykVPN"
+            android:windowSoftInputMode="adjustResize" />
     </application>
 
 </manifest>
