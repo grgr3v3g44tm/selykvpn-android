@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -108,6 +109,7 @@ import xyz.selykvpn.app.data.ServerKind
 import xyz.selykvpn.app.data.SubscriptionInfo
 import xyz.selykvpn.app.data.UpdateInfo
 import xyz.selykvpn.app.model.FreeAccessConfig
+import xyz.selykvpn.app.model.TunnelMode
 import xyz.selykvpn.app.ui.AppViewModel
 import xyz.selykvpn.app.ui.Ping
 import xyz.selykvpn.app.ui.common.FlagAvatar
@@ -402,7 +404,11 @@ private fun StatusHeader(state: VpnController.State) {
         VpnController.State.Idle -> R.string.status_disconnected
     }
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(stringResource(title), style = MaterialTheme.typography.titleLarge)
+        Text(
+            text = stringResource(title),
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onBackground,
+        )
         val since = (state as? VpnController.State.Connected)?.since
         if (since != null) {
             var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -951,7 +957,8 @@ fun ModeSegmentedSwitch(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier = modifier
             .fillMaxWidth()
-            .height(36.dp),
+            .defaultMinSize(minHeight = 36.dp)
+            .height(IntrinsicSize.Min),
     ) {
         Row(
             modifier = Modifier
@@ -970,11 +977,16 @@ fun ModeSegmentedSwitch(
                     .weight(1f)
                     .fillMaxHeight(),
             ) {
-                Box(contentAlignment = Alignment.Center) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                ) {
                     Text(
                         text = stringResource(R.string.mode_regular),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = if (isRegular) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -989,11 +1001,16 @@ fun ModeSegmentedSwitch(
                     .weight(1f)
                     .fillMaxHeight(),
             ) {
-                Box(contentAlignment = Alignment.Center) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                ) {
                     Text(
                         text = stringResource(R.string.mode_free_access),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = if (!isRegular) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -1035,7 +1052,9 @@ fun FreeAccessCard(
                 val hint = when {
                     connected -> stringResource(R.string.free_access_connected)
                     config == null -> stringResource(R.string.free_access_hint)
-                    config.stealthLink.isBlank() || !config.stealthLink.contains("call/join/") -> "Требуется ссылка на звонок (нажмите для настройки)"
+                    !config.hasRealVKCallLink() -> "Требуется ссылка на звонок (нажмите для настройки)"
+                    config.mode == TunnelMode.SRTP_WRAP_A && config.serverPassword.isBlank() ->
+                        "Нет пароля шлюза (обновите подписку или ключ)"
                     else -> "Шлюз настроен · Нажмите для параметров"
                 }
                 Text(
@@ -1053,60 +1072,65 @@ fun HomeMockView(
     activeMode: String = "regular",
     state: VpnController.State = VpnController.State.Idle,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(horizontal = 20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+    Surface(
+        color = MaterialTheme.colorScheme.background,
+        modifier = Modifier.fillMaxSize(),
     ) {
-        Spacer(Modifier.height(16.dp))
-        ModeSegmentedSwitch(
-            activeMode = activeMode,
-            onModeChange = {},
-            enabled = true,
-        )
-        Spacer(Modifier.height(20.dp))
-        StatusHeader(state)
-        Spacer(Modifier.height(20.dp))
-        ConnectButton(
-            state = state,
-            onClick = {},
-        )
-        Spacer(Modifier.height(24.dp))
-        if (activeMode == "regular") {
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Row(
-                    Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Финляндия (Хельсинки)", style = MaterialTheme.typography.titleMedium)
-                        Text("Автовыбор самого быстрого", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Text("14 мс", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.tertiary)
-                }
-            }
-        } else {
-            FreeAccessCard(
-                connected = state is VpnController.State.Connected,
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Spacer(Modifier.height(16.dp))
+            ModeSegmentedSwitch(
+                activeMode = activeMode,
+                onModeChange = {},
+                enabled = true,
+            )
+            Spacer(Modifier.height(20.dp))
+            StatusHeader(state)
+            Spacer(Modifier.height(20.dp))
+            ConnectButton(
+                state = state,
                 onClick = {},
             )
-        }
-        Spacer(Modifier.height(12.dp))
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
-                Text("Тариф «Селюк Премиум»", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(4.dp))
-                Text("Срок действия: 28 дней · Безлимитный трафик", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(24.dp))
+            if (activeMode == "regular") {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Финляндия (Хельсинки)", style = MaterialTheme.typography.titleMedium)
+                            Text("Автовыбор самого быстрого", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text("14 мс", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.tertiary)
+                    }
+                }
+            } else {
+                FreeAccessCard(
+                    connected = state is VpnController.State.Connected,
+                    onClick = {},
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+                    Text("Тариф «Селюк Премиум»", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Срок действия: 28 дней · Безлимитный трафик", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
     }
@@ -1155,5 +1179,44 @@ fun HomeScreenFreeAccessPreview() {
             activeMode = "free_access",
             state = VpnController.State.Connected(System.currentTimeMillis() - 45_000, "free_access")
         )
+    }
+}
+
+@Preview(name = "Compact 320dp FontScale 1.3", widthDp = 320, heightDp = 640, fontScale = 1.3f, showBackground = true)
+@Composable
+fun HomeScreenCompactLargeFontPreview() {
+    SelykVpnTheme(palette = "selyk", darkTheme = true) {
+        HomeMockView(activeMode = "free_access", state = VpnController.State.Idle)
+    }
+}
+
+@Preview(name = "Tablet 840dp", widthDp = 840, heightDp = 600, showBackground = true)
+@Composable
+fun HomeScreenTabletPreview() {
+    SelykVpnTheme(palette = "selyk", darkTheme = true) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Box(Modifier.weight(1f)) {
+                HomeMockView(activeMode = "regular", state = VpnController.State.Idle)
+            }
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                modifier = Modifier
+                    .width(340.dp)
+                    .fillMaxHeight(),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Серверы", style = MaterialTheme.typography.titleMedium)
+                    Text("🇫🇮 Финляндия · 14 мс", style = MaterialTheme.typography.bodyMedium)
+                    Text("⚡ Автовыбор (Все операторы)", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
     }
 }

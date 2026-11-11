@@ -19,6 +19,7 @@ import xyz.selykvpn.app.BuildConfig
 import xyz.selykvpn.app.SelykApp
 import xyz.selykvpn.app.MainActivity
 import xyz.selykvpn.app.R
+import xyz.selykvpn.app.data.AppJson
 import xyz.selykvpn.app.data.RoutingSettings
 import xyz.selykvpn.app.data.ServerEntry
 import xyz.selykvpn.app.data.ShareSettings
@@ -27,7 +28,6 @@ import xyz.selykvpn.app.data.UPDATE_MANUAL
 import xyz.selykvpn.app.data.UnderlyingNetwork
 import xyz.selykvpn.app.data.exclusionSettings
 import xyz.selykvpn.app.model.FreeAccessConfig
-import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -58,6 +58,13 @@ class SelykVpnService : VpnService() {
     private val lock = Mutex()
     private val freeAccessEngine by lazy { FreeAccessEngine(this) }
     private var tun: ParcelFileDescriptor? = null
+
+    @Volatile
+    private var freeAccessRunning: Boolean = false
+
+    private val isTunnelActive: Boolean
+        get() = tun != null || freeAccessRunning
+
     private var statsJob: Job? = null
     private var watchJob: Job? = null
 
@@ -100,21 +107,25 @@ class SelykVpnService : VpnService() {
     private val healthLock = Mutex()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        if (intent == null) {
+            // Do not blindly restart on sticky null intents after failure/kill.
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        when (intent.action) {
             ACTION_STOP -> {
                 scope.launch { lock.withLock { stopInternal() } }
-                return START_NOT_STICKY
             }
             ACTION_RECONNECT -> scope.launch {
-                lock.withLock { if (tun != null) startInternal(reconnect = true) }
+                lock.withLock { if (isTunnelActive) startInternal(reconnect = true) }
             }
             else -> {
-                // ACTION_START from the app, SERVICE_INTERFACE for always-on VPN, or a restart after the process died.
+                // ACTION_START from the app or SERVICE_INTERFACE for always-on VPN.
                 enterForeground(getString(R.string.notification_connecting), connected = false)
-                scope.launch { lock.withLock { if (tun == null) startInternal(reconnect = false) } }
+                scope.launch { lock.withLock { if (!isTunnelActive) startInternal(reconnect = false) } }
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     /** Must be called with [lock] held. */
@@ -130,22 +141,23 @@ class SelykVpnService : VpnService() {
                 statsJob?.cancel()
                 Xray.stop()
                 freeAccessEngine.stop()
+                runCatching { tun?.close() }
+                tun = null
 
                 val freeAccessCfgStr = graph.settings.freeAccessConfig.first()
                 val cfg = if (!freeAccessCfgStr.isNullOrBlank()) {
-                    try {
-                        Json.decodeFromString<FreeAccessConfig>(freeAccessCfgStr)
-                    } catch (_: Exception) {
-                        FreeAccessConfig()
-                    }
+                    runCatching { AppJson.decodeFromString<FreeAccessConfig>(freeAccessCfgStr) }
+                        .getOrDefault(FreeAccessConfig())
                 } else {
                     FreeAccessConfig()
                 }
 
+                freeAccessRunning = true
                 freeAccessEngine.start(
                     config = cfg,
                     excludedApps = excluded,
                     onReady = {
+                        if (!freeAccessRunning) return@start
                         VpnController.state.value = VpnController.State.Connected(
                             since = previous?.since ?: System.currentTimeMillis(),
                             serverKey = "free_access",
@@ -154,6 +166,7 @@ class SelykVpnService : VpnService() {
                     },
                     onError = { msg ->
                         Log.e(TAG, "Free access error: $msg")
+                        freeAccessRunning = false
                         VpnController.reportError(msg)
                         scope.launch { lock.withLock { stopInternal() } }
                     }
@@ -169,6 +182,7 @@ class SelykVpnService : VpnService() {
             // Stop the old core first: it holds the share proxy ports. Keep what it has counted.
             statsJob?.cancel()
             if (reconnect) sampleTraffic(withSpeed = false)
+            freeAccessRunning = false
             freeAccessEngine.stop()
             Xray.stop()
 
@@ -367,6 +381,7 @@ class SelykVpnService : VpnService() {
 
     private suspend fun checkAutoSelectLocked(afterSleep: Boolean) {
         val serverKey = (VpnController.state.value as? VpnController.State.Connected)?.serverKey ?: return
+        if (serverKey == "free_access") return
         if (afterSleep) Xray.recheckServers()
         var checks = Xray.observatory() ?: return
         if (checks.isEmpty()) return
@@ -440,6 +455,7 @@ class SelykVpnService : VpnService() {
         VpnController.state.value = VpnController.State.Stopping
         statsJob?.cancel()
         statsJob = null
+        freeAccessRunning = false
         freeAccessEngine.stop()
         Xray.stop()
         Xray.setConnectionListener(null)
@@ -494,6 +510,8 @@ class SelykVpnService : VpnService() {
 
     override fun onDestroy() {
         unregisterScreenReceiver()
+        freeAccessRunning = false
+        freeAccessEngine.stop()
         Xray.stop()
         runCatching { tun?.close() }
         tun = null

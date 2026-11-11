@@ -2,11 +2,15 @@ package xyz.selykvpn.app.ui.onboarding
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -46,6 +50,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import xyz.selykvpn.app.R
@@ -53,14 +58,44 @@ import xyz.selykvpn.app.ui.AppViewModel
 import xyz.selykvpn.app.ui.common.centeredMaxWidth
 import xyz.selykvpn.app.ui.common.openUrl
 import xyz.selykvpn.app.ui.common.readClipboard
+import xyz.selykvpn.app.ui.theme.SelykVpnTheme
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OnboardingScreen(viewModel: AppViewModel, onScan: () -> Unit, onBack: (() -> Unit)?) {
     val context = LocalContext.current
     val config by viewModel.config.collectAsStateWithLifecycle()
     var showManual by rememberSaveable { mutableStateOf(false) }
 
+    OnboardingContent(
+        telegramBotUrl = config.telegramBotUrl,
+        onOpenTelegram = { context.openUrl(it) },
+        onPaste = { viewModel.submitKey(context.readClipboard()) },
+        onScan = onScan,
+        onManual = { showManual = true },
+        onBack = onBack,
+    )
+
+    if (showManual) {
+        ManualKeyDialog(
+            onDismiss = { showManual = false },
+            onSubmit = { text ->
+                showManual = false
+                viewModel.submitKey(text)
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun OnboardingContent(
+    telegramBotUrl: String,
+    onOpenTelegram: (String) -> Unit,
+    onPaste: () -> Unit,
+    onScan: () -> Unit,
+    onManual: () -> Unit,
+    onBack: (() -> Unit)?,
+) {
     Scaffold(
         topBar = {
             if (onBack != null) {
@@ -73,100 +108,136 @@ fun OnboardingScreen(viewModel: AppViewModel, onScan: () -> Unit, onBack: (() ->
                 )
             }
         },
-        bottomBar = {
-            Column(
-                modifier = Modifier
-                    .centeredMaxWidth(480.dp)
-                    .navigationBarsPadding()
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Button(
-                    onClick = { context.openUrl(config.telegramBotUrl) },
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                ) {
-                    Icon(painterResource(R.drawable.ic_telegram), null, Modifier.size(22.dp))
-                    Spacer(Modifier.size(ButtonDefaults.IconSpacing))
-                    Text(stringResource(R.string.onboarding_telegram), style = MaterialTheme.typography.titleMedium)
-                }
-                Text(
-                    text = stringResource(R.string.onboarding_telegram_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 8.dp, bottom = 20.dp),
-                )
-                FilledTonalButton(
-                    onClick = { viewModel.submitKey(context.readClipboard()) },
-                    modifier = Modifier.fillMaxWidth().height(52.dp),
-                ) {
-                    Icon(Icons.Rounded.ContentPaste, null)
-                    Spacer(Modifier.size(ButtonDefaults.IconSpacing))
-                    Text(stringResource(R.string.onboarding_paste))
-                }
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = onScan,
-                    modifier = Modifier.fillMaxWidth().height(52.dp),
-                ) {
-                    Icon(Icons.Rounded.QrCodeScanner, null)
-                    Spacer(Modifier.size(ButtonDefaults.IconSpacing))
-                    Text(stringResource(R.string.onboarding_scan))
-                }
-                TextButton(onClick = { showManual = true }, modifier = Modifier.padding(top = 4.dp)) {
-                    Text(stringResource(R.string.onboarding_manual))
-                }
-            }
-        },
     ) { padding ->
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .centeredMaxWidth(560.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+                .padding(padding),
         ) {
-            Spacer(Modifier.height(32.dp))
-            Image(
-                painter = painterResource(R.drawable.ic_selyk_logo),
-                contentDescription = stringResource(R.string.app_name),
-                modifier = Modifier.size(80.dp),
-            )
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = stringResource(R.string.app_name),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-            )
-            Spacer(Modifier.height(36.dp))
-            Text(
-                text = stringResource(R.string.onboarding_title),
-                style = MaterialTheme.typography.headlineMedium,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = stringResource(R.string.onboarding_subtitle),
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(24.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = maxHeight)
+                    .verticalScroll(rememberScrollState())
+                    .navigationBarsPadding(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .centeredMaxWidth(560.dp)
+                        .padding(horizontal = 24.dp, vertical = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Spacer(Modifier.height(12.dp))
+                    Image(
+                        painter = painterResource(R.drawable.ic_selyk_logo),
+                        contentDescription = stringResource(R.string.app_name),
+                        modifier = Modifier.size(76.dp),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = stringResource(R.string.app_name),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    )
+                    Spacer(Modifier.height(24.dp))
+                    Text(
+                        text = stringResource(R.string.onboarding_title),
+                        style = MaterialTheme.typography.headlineMedium,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = stringResource(R.string.onboarding_subtitle),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .centeredMaxWidth(480.dp)
+                        .padding(horizontal = 24.dp)
+                        .padding(top = 8.dp, bottom = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Button(
+                        onClick = { onOpenTelegram(telegramBotUrl) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 56.dp),
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                    ) {
+                        Icon(painterResource(R.drawable.ic_telegram), null, Modifier.size(22.dp))
+                        Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                        Text(
+                            text = stringResource(R.string.onboarding_telegram),
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                    Text(
+                        text = stringResource(R.string.onboarding_telegram_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
+                    )
+                    FilledTonalButton(
+                        onClick = onPaste,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 52.dp),
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                    ) {
+                        Icon(Icons.Rounded.ContentPaste, null)
+                        Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                        Text(stringResource(R.string.onboarding_paste), textAlign = TextAlign.Center)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = onScan,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 52.dp),
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                    ) {
+                        Icon(Icons.Rounded.QrCodeScanner, null)
+                        Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                        Text(stringResource(R.string.onboarding_scan), textAlign = TextAlign.Center)
+                    }
+                    TextButton(onClick = onManual, modifier = Modifier.padding(top = 4.dp)) {
+                        Text(stringResource(R.string.onboarding_manual), textAlign = TextAlign.Center)
+                    }
+                }
+            }
         }
     }
+}
 
-    if (showManual) {
-        ManualKeyDialog(
-            onDismiss = { showManual = false },
-            onSubmit = { text ->
-                showManual = false
-                viewModel.submitKey(text)
-            },
-        )
+@Preview(name = "Onboarding Compact 320dp Font 1.3", widthDp = 320, heightDp = 640, fontScale = 1.3f, showBackground = true)
+@Composable
+fun OnboardingCompactPreview() {
+    SelykVpnTheme(palette = "selyk", darkTheme = true) {
+        OnboardingContent("https://t.me/selykvpn_bot", {}, {}, {}, {}, null)
+    }
+}
+
+@Preview(name = "Onboarding Phone 411dp", widthDp = 411, heightDp = 891, showBackground = true)
+@Composable
+fun OnboardingPhonePreview() {
+    SelykVpnTheme(palette = "selyk", darkTheme = true) {
+        OnboardingContent("https://t.me/selykvpn_bot", {}, {}, {}, {}, null)
+    }
+}
+
+@Preview(name = "Onboarding Tablet 840dp Light", widthDp = 840, heightDp = 600, showBackground = true)
+@Composable
+fun OnboardingTabletPreview() {
+    SelykVpnTheme(palette = "selyk", darkTheme = false) {
+        OnboardingContent("https://t.me/selykvpn_bot", {}, {}, {}, {}, {})
     }
 }
 

@@ -1,6 +1,7 @@
 package xyz.selykvpn.app
 
 import android.app.Application
+import xyz.selykvpn.app.auth.VKCookieStore
 import xyz.selykvpn.app.data.AccountRepository
 import xyz.selykvpn.app.data.Http
 import xyz.selykvpn.app.data.RemoteConfigRepository
@@ -22,6 +23,7 @@ class SelykApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        VKCookieStore.init(this)
         graph = AppGraph(this)
         Notifications.createChannels(this)
         graph.whitelist.start()

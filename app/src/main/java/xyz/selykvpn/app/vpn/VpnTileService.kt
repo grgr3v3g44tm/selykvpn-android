@@ -10,10 +10,14 @@ import android.service.quicksettings.TileService
 import xyz.selykvpn.app.SelykApp
 import xyz.selykvpn.app.MainActivity
 import xyz.selykvpn.app.R
+import xyz.selykvpn.app.data.AppJson
+import xyz.selykvpn.app.model.FreeAccessConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Quick Settings tile: one tap to connect or disconnect. */
 class VpnTileService : TileService() {
@@ -35,16 +39,34 @@ class VpnTileService : TileService() {
             VpnController.stop(this)
             return
         }
-        val needsApp = SelykApp.graph.subscriptions.state.value == null || VpnService.prepare(this) != null
-        if (needsApp) {
+        if (VpnService.prepare(this) != null) {
             openApp()
             return
         }
-        try {
-            VpnController.start(this)
-        } catch (_: Exception) {
-            // Background start restrictions: let the activity start it.
-            openApp()
+        CoroutineScope(Dispatchers.IO).launch {
+            val graph = SelykApp.graph
+            val mode = runCatching { graph.settings.activeMode.first() }.getOrDefault("regular")
+            val ready = if (mode == "free_access") {
+                val cfgStr = runCatching { graph.settings.freeAccessConfig.first() }.getOrNull()
+                val cfg = cfgStr?.takeIf { it.isNotBlank() }?.let {
+                    runCatching { AppJson.decodeFromString<FreeAccessConfig>(it) }.getOrNull()
+                }
+                cfg?.hasRealVKCallLink() == true
+            } else {
+                graph.subscriptions.state.value != null
+            }
+            withContext(Dispatchers.Main) {
+                if (!ready) {
+                    openApp()
+                } else {
+                    try {
+                        VpnController.start(this@VpnTileService)
+                    } catch (_: Exception) {
+                        // Background start restrictions: let the activity start it.
+                        openApp()
+                    }
+                }
+            }
         }
     }
 

@@ -23,6 +23,8 @@ data class RemoteConfig(
         "sub.selykvpn.xyz",
         "core.selykvpn.xyz",
         "panel.selykvpn.xyz",
+        "*.xamudhabibi.qzz.io",
+        "xamudhabibi.qzz.io",
         "panel.xamudhabibi.qzz.io",
     ),
     val subscriptionMirrors: List<String> = emptyList(),

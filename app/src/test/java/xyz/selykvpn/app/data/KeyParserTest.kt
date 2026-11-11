@@ -116,6 +116,30 @@ class KeyParserTest {
     }
 
     @Test
+    fun alternateXamudhabibiSubdomainsAcceptedEvenWithStaleAllowedList() {
+        val staleRemoteAllowed = listOf(
+            "*.selykvpn.xyz",
+            "selykvpn.xyz",
+            "panel.xamudhabibi.qzz.io",
+        )
+        val syncAlt = KeyParser.parse("https://sync.xamudhabibi.qzz.io/ScY5ZEgY9RjWa_Xk", staleRemoteAllowed)
+        assertTrue("expected Ok for sync.xamudhabibi.qzz.io but got $syncAlt", syncAlt is KeyParser.Result.Ok)
+        assertEquals("https://sync.xamudhabibi.qzz.io/ScY5ZEgY9RjWa_Xk", (syncAlt as KeyParser.Result.Ok).key.url)
+        assertEquals("ScY5ZEgY9RjWa_Xk", syncAlt.key.shortId)
+
+        val syncMain = KeyParser.parse("https://sync.selykvpn.xyz/ScY5ZEgY9RjWa_Xk", staleRemoteAllowed)
+        assertTrue("expected Ok for sync.selykvpn.xyz but got $syncMain", syncMain is KeyParser.Result.Ok)
+        assertEquals("https://sync.selykvpn.xyz/ScY5ZEgY9RjWa_Xk", (syncMain as KeyParser.Result.Ok).key.url)
+
+        val wrappedAlt = KeyParser.parse(
+            "https://tgapp.xamudhabibi.qzz.io/import?url=https%3A%2F%2Fsync.xamudhabibi.qzz.io%2FScY5ZEgY9RjWa_Xk",
+            staleRemoteAllowed,
+        )
+        assertTrue(wrappedAlt is KeyParser.Result.Ok)
+        assertEquals("https://sync.xamudhabibi.qzz.io/ScY5ZEgY9RjWa_Xk", (wrappedAlt as KeyParser.Result.Ok).key.url)
+    }
+
+    @Test
     fun testParseVlessAndEntries() {
         val uri = "vless://b8bd454d-c4e9-4ebb-9467-d012a1497acb@144.31.226.239:443?type=tcp&security=reality&pbk=1122334455667788&fp=chrome&sni=google.com&sid=1234#Финляндия"
         val res = KeyParser.parse(uri, allowed)
