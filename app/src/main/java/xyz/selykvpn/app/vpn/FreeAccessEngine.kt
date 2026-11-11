@@ -57,7 +57,13 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                 var mtu = config.mtu
 
                 if (config.mode == TunnelMode.SRTP_WRAP_A) {
-                    val provJson = WgTurnCore.waitWrapAProvision(handle, 30_000)
+                    if (config.serverPassword.isBlank()) {
+                        Log.e(TAG, "WRAP-A mode requires serverPassword")
+                        stop()
+                        onError("В ключе отсутствует пароль сервера WRAP-A. Обновите ключ в Telegram-боте.")
+                        return@launch
+                    }
+                    val provJson = WgTurnCore.waitWrapAProvision(handle, 15_000)
                     if (provJson.isNotBlank()) {
                         try {
                             val element = Json.parseToJsonElement(provJson).jsonObject

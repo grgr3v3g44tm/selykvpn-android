@@ -64,6 +64,7 @@ import kotlinx.serialization.Serializable
 fun AppRoot(viewModel: AppViewModel, onConnect: () -> Unit) {
     val context = LocalContext.current
     val subscription by viewModel.subscription.collectAsStateWithLifecycle()
+    val freeAccessConfig by viewModel.freeAccessConfig.collectAsStateWithLifecycle()
     val importState by viewModel.importState.collectAsStateWithLifecycle()
     val keyError by viewModel.keyError.collectAsStateWithLifecycle()
     val config by viewModel.config.collectAsStateWithLifecycle()
@@ -73,11 +74,11 @@ fun AppRoot(viewModel: AppViewModel, onConnect: () -> Unit) {
     val snackbar = remember { SnackbarHostState() }
     val tv = remember { context.isTv() }
 
-    val hasKey = subscription != null
+    val hasKey = subscription != null || freeAccessConfig.stealthLink.isNotBlank() || freeAccessConfig.serverPassword.isNotBlank() || freeAccessConfig.wrapKeyHex.isNotBlank()
     val backStack = rememberNavBackStack(if (hasKey) HomeKey else OnboardingKey)
 
     // Adding or removing the key switches between onboarding and the main screen.
-    LaunchedEffect(hasKey, subscription?.url) {
+    LaunchedEffect(hasKey, subscription?.url, freeAccessConfig.id) {
         val root = if (hasKey) HomeKey else OnboardingKey
         val onKeyScreens = backStack.lastOrNull() == ChangeKeyKey || backStack.lastOrNull() == ScanKey
         if (backStack.firstOrNull() != root || (hasKey && onKeyScreens)) {

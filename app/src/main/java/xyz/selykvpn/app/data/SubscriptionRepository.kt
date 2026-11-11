@@ -27,6 +27,9 @@ sealed class SubscriptionError(message: String) : Exception(message) {
     class NotFound : SubscriptionError("subscription not found")
     class BadFormat : SubscriptionError("unsupported subscription format")
     class NoServers : SubscriptionError("subscription has no servers")
+    class DeviceLimit : SubscriptionError("device limit reached")
+    class Expired : SubscriptionError("subscription expired")
+    class Unsupported : SubscriptionError("client or protocol unsupported")
     class Network(cause: Throwable) : SubscriptionError(cause.message ?: "network error")
 }
 
@@ -54,19 +57,37 @@ class SubscriptionRepository(
 
     /** Downloads and stores the subscription for a new key. */
     suspend fun import(key: KeyParser.Key): SubscriptionInfo = mutex.withLock {
-        val downloaded = download(key)
-        save(key, downloaded).also { settings.setSelectedServer(it.selectable.first().key) }
+        android.util.Log.i("SubscriptionRepository", "importing key.url=${key.url}, directConfigs count=${key.directConfigs?.size}")
+        val downloaded = if (!key.directConfigs.isNullOrEmpty()) {
+            Downloaded(
+                configs = key.directConfigs,
+                headers = Headers.Builder()
+                    .add("profile-title", "Selyk VPN")
+                    .build()
+            )
+        } else {
+            download(key)
+        }
+        save(key, downloaded).also { saved ->
+            saved.selectable.firstOrNull()?.key?.let { settings.setSelectedServer(it) }
+        }
     }
 
     /** Re-downloads the current subscription; keeps the old copy on failure. */
     suspend fun refresh(): SubscriptionInfo? {
         val current = _state.value ?: return null
+        if (current.url.startsWith("vless://")) return current
         val key = (KeyParser.parse(current.url, remoteConfig.state.value.allowedSubscriptionHosts) as? KeyParser.Result.Ok)?.key
             ?: return null
         return mutex.withLock {
             _refreshing.value = true
             try {
-                save(key, download(key))
+                val downloaded = if (!key.directConfigs.isNullOrEmpty()) {
+                    Downloaded(configs = key.directConfigs, headers = Headers.Builder().add("profile-title", "Selyk VPN").build())
+                } else {
+                    download(key)
+                }
+                save(key, downloaded)
             } finally {
                 _refreshing.value = false
             }
@@ -118,7 +139,19 @@ class SubscriptionRepository(
 
     private suspend fun save(key: KeyParser.Key, downloaded: Downloaded): SubscriptionInfo = withContext(Dispatchers.IO) {
         val entries = SubscriptionParser.entries(downloaded.configs)
-        if (entries.none { it.kind != ServerKind.SEPARATOR }) throw SubscriptionError.NoServers()
+        if (entries.none { it.kind != ServerKind.SEPARATOR }) {
+            val allRemarks = entries.map { it.remarks.lowercase() }
+            val dummyText = allRemarks.joinToString(" ")
+            when {
+                dummyText.contains("лимит") || dummyText.contains("устройств") || dummyText.contains("limit") ->
+                    throw SubscriptionError.DeviceLimit()
+                dummyText.contains("закончилась") || dummyText.contains("истекла") || dummyText.contains("expired") ->
+                    throw SubscriptionError.Expired()
+                dummyText.contains("не поддерживается") || dummyText.contains("unsupported") ->
+                    throw SubscriptionError.Unsupported()
+                else -> throw SubscriptionError.NoServers()
+            }
+        }
         val headers = downloaded.headers
         val userInfo = SubscriptionParser.parseUserInfo(headers["subscription-userinfo"])
         val info = SubscriptionInfo(
@@ -159,11 +192,13 @@ class SubscriptionRepository(
         val allowed = config.allowedSubscriptionHosts
         val candidates = buildList {
             add(key.url + "/json")
+            add(key.url)
             config.subscriptionMirrors.forEach { mirror ->
                 val base = mirror.trim().trimEnd('/')
                 val host = base.substringAfter("://").substringBefore('/').substringBefore(':')
                 if (host.isNotEmpty() && host != key.host && KeyParser.hostAllowed(host, allowed)) {
                     add(base + key.path + "/json")
+                    add(base + key.path)
                 }
             }
         }.distinct()
@@ -175,7 +210,7 @@ class SubscriptionRepository(
         http.withClient { client ->
             val request = Request.Builder()
                 .url(url)
-                .header("Accept", "application/json")
+                .header("Accept", "application/json, text/plain, */*")
                 .header("x-hwid", hwid)
                 .header("x-device-os", "Android")
                 .header("x-ver-os", Build.VERSION.RELEASE.orEmpty())
@@ -188,6 +223,8 @@ class SubscriptionRepository(
                 if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
                 val body = response.body.string()
                 val parsed = runCatching { SubscriptionParser.parseConfigs(body) }.getOrNull()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: runCatching { SubscriptionParser.parseVlessList(body) }.getOrNull()
                 if (parsed.isNullOrEmpty()) throw SubscriptionError.BadFormat()
                 Downloaded(parsed, response.headers)
             }
@@ -231,8 +268,12 @@ suspend fun <T> raceStaggered(tasks: List<suspend () -> T>, staggerMs: Long): T 
 }
 
 private fun pickError(errors: List<Throwable>): Throwable =
-    errors.firstOrNull { it is SubscriptionError.NotFound }
+    errors.firstOrNull { it is SubscriptionError.DeviceLimit }
+        ?: errors.firstOrNull { it is SubscriptionError.Expired }
+        ?: errors.firstOrNull { it is SubscriptionError.Unsupported }
+        ?: errors.firstOrNull { it is SubscriptionError.NotFound }
         ?: errors.firstOrNull { it is SubscriptionError.Foreign }
         ?: errors.firstOrNull { it is SubscriptionError.BadFormat }
+        ?: errors.firstOrNull { it is SubscriptionError.NoServers }
         ?: errors.firstOrNull { it is SubscriptionError }
         ?: SubscriptionError.Network(errors.last())

@@ -16,7 +16,15 @@ import java.net.URLEncoder
 /** Settings served by https://tgapp.selykvpn.xyz/api/v1/config. Built-in defaults are used offline. */
 @Serializable
 data class RemoteConfig(
-    val allowedSubscriptionHosts: List<String> = listOf("*", "*.selykvpn.xyz", "selykvpn.xyz", "tgapp.selykvpn.xyz", "sub.selykvpn.xyz"),
+    val allowedSubscriptionHosts: List<String> = listOf(
+        "*.selykvpn.xyz",
+        "selykvpn.xyz",
+        "tgapp.selykvpn.xyz",
+        "sub.selykvpn.xyz",
+        "core.selykvpn.xyz",
+        "panel.selykvpn.xyz",
+        "panel.xamudhabibi.qzz.io",
+    ),
     val subscriptionMirrors: List<String> = emptyList(),
     val telegramBotUrl: String = "https://t.me/selykvpn_bot?start=app",
     val renewUrl: String = "https://t.me/selykvpn_bot",

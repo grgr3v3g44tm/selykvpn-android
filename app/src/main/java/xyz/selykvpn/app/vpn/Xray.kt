@@ -1,13 +1,17 @@
 package xyz.selykvpn.app.vpn
 
 import android.content.Context
+import android.util.Log
 import xyz.selykvpn.app.data.AppJson
 import xyz.selykvpn.libxray.ConnectionListener
 import xyz.selykvpn.libxray.Libxray
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** One server of auto-select as its last check saw it; [delay] is in milliseconds. */
@@ -16,13 +20,78 @@ data class ServerCheck(val tag: String, val alive: Boolean = false, val delay: L
 
 /** Kotlin facade over the gomobile-generated Xray-core binding (core/libxray). */
 object Xray {
+    private const val TAG = "Xray"
     private val initialized = AtomicBoolean(false)
+
+    /**
+     * Extracts bundled geoip.dat and geosite.dat from assets into the app's files/xray directory
+     * so Xray routing rules (geoip:private, geosite:category-ads-all, etc.) resolve properly.
+     */
+    fun ensureGeoFiles(context: Context, xrayDir: File) {
+        val geoFiles = listOf("geoip.dat", "geosite.dat")
+        for (fileName in geoFiles) {
+            val target = File(xrayDir, fileName)
+            if (!target.exists() || target.length() == 0L) {
+                try {
+                    val assetPath = "xray/$fileName"
+                    context.assets.open(assetPath).use { input ->
+                        val tempFile = File(xrayDir, "$fileName.tmp")
+                        FileOutputStream(tempFile).use { output ->
+                            input.copyTo(output)
+                        }
+                        if (tempFile.exists() && tempFile.length() > 0) {
+                            if (target.exists()) target.delete()
+                            tempFile.renameTo(target)
+                            Log.i(TAG, "Extracted geodata asset $fileName (${target.length()} bytes)")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not extract asset $fileName: ${e.message}")
+                }
+            }
+        }
+    }
 
     private fun init(context: Context) {
         if (initialized.compareAndSet(false, true)) {
             val assets = File(context.filesDir, "xray").apply { mkdirs() }
+            ensureGeoFiles(context, assets)
             Libxray.initEnv(assets.absolutePath)
         }
+    }
+
+    /** Downloads updated geoip/geosite files if newer versions are available on CDN. */
+    suspend fun updateGeoData(context: Context, client: OkHttpClient): Boolean = withContext(Dispatchers.IO) {
+        val xrayDir = File(context.filesDir, "xray").apply { mkdirs() }
+        val targets = listOf(
+            "geoip.dat" to "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+            "geosite.dat" to "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+        )
+        var anyUpdated = false
+        for ((fileName, url) in targets) {
+            try {
+                val req = Request.Builder().url(url).build()
+                client.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body ?: return@use
+                        val temp = File(xrayDir, "$fileName.download")
+                        temp.outputStream().use { out -> body.byteStream().copyTo(out) }
+                        if (temp.length() > 100_000L) {
+                            val target = File(xrayDir, fileName)
+                            if (target.exists()) target.delete()
+                            temp.renameTo(target)
+                            anyUpdated = true
+                            Log.i(TAG, "Successfully updated $fileName to ${target.length()} bytes")
+                        } else {
+                            temp.delete()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to update $fileName: ${e.message}")
+            }
+        }
+        anyUpdated
     }
 
     val version: String by lazy { runCatching { Libxray.xrayVersion() }.getOrDefault("") }

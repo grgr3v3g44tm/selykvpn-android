@@ -1,5 +1,6 @@
 package xyz.selykvpn.app.data
 
+import kotlinx.serialization.json.JsonObject
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.net.URLDecoder
@@ -19,7 +20,40 @@ object KeyParser {
     private val BARE_HOST_REGEX = Regex("""(?i)\b(?:[a-z0-9-]+\.)+[a-z]{2,}/[^\s"'<>«»]+""")
     private val URL_PARAM_REGEX = Regex("""[?&]url=([^&#]+)""")
 
-    data class Key(val url: String, val host: String, val path: String) {
+    /** Known server IPs belonging exclusively to our VPN infrastructure. */
+    val OUR_SERVER_IPS = setOf(
+        "144.31.226.239",
+        "144.31.79.239",
+        "144.31.75.2",
+        "144.31.75.80",
+        "157.228.139.62",
+    )
+
+    /** Official domains of our service. */
+    val OUR_DEFAULT_DOMAINS = listOf(
+        "*.selykvpn.xyz",
+        "selykvpn.xyz",
+        "*.xamudhabibi.qzz.io",
+        "xamudhabibi.qzz.io",
+        "*.selykvpn.com",
+        "selykvpn.com",
+        "selykconnection.net",
+    )
+
+    fun isOurServerHostOrIp(hostOrIp: String, allowedHosts: List<String>): Boolean {
+        val clean = hostOrIp.trim().lowercase().trimEnd('.').substringBefore(':').trim('[', ']')
+        if (clean in OUR_SERVER_IPS) return true
+        if (hostAllowed(clean, allowedHosts)) return true
+        if (hostAllowed(clean, OUR_DEFAULT_DOMAINS)) return true
+        return false
+    }
+
+    data class Key(
+        val url: String,
+        val host: String,
+        val path: String,
+        val directConfigs: List<JsonObject>? = null,
+    ) {
         /** Remnawave short UUID: the last path segment. */
         val shortId: String get() = path.substringAfterLast('/')
     }
@@ -36,9 +70,40 @@ object KeyParser {
         val text = input?.trim().orEmpty()
         if (text.isEmpty()) return Result.Empty
 
-        // Check if it is a Free Access / VK TURN key or link
-        xyz.selykvpn.app.model.FreeAccessConfig.parse(text)?.let {
-            return Result.FreeAccess(it)
+        // Check if it is a Free Access / VK TURN key or link (must point to our trusted gateways)
+        xyz.selykvpn.app.model.FreeAccessConfig.parse(text)?.let { cfg ->
+            val peerHost = cfg.peerAddress.substringBefore(':')
+            return if (isOurServerHostOrIp(peerHost, allowedHosts)) {
+                Result.FreeAccess(cfg)
+            } else {
+                Result.Foreign
+            }
+        }
+
+        // Check if it is a direct vless:// key or base64 vless list (must point to our servers)
+        if (text.contains("vless://", ignoreCase = true) || (!text.startsWith("http", ignoreCase = true) && text.length > 50)) {
+            val vlessConfigs = SubscriptionParser.parseVlessList(text)
+            if (vlessConfigs.isNotEmpty()) {
+                val allOurs = vlessConfigs.all { cfg ->
+                    val proxies = (cfg["outbounds"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull { it as? JsonObject }
+                        ?.filter { (it["protocol"] as? kotlinx.serialization.json.JsonPrimitive)?.content == "vless" }
+                    val first = proxies?.firstOrNull() ?: return@all false
+                    val addr = SubscriptionParser.addressOf(first) ?: return@all false
+                    isOurServerHostOrIp(addr, allowedHosts)
+                }
+                return if (allOurs) {
+                    Result.Ok(
+                        Key(
+                            url = "vless://import",
+                            host = "local",
+                            path = "/vless",
+                            directConfigs = vlessConfigs,
+                        )
+                    )
+                } else {
+                    Result.Foreign
+                }
+            }
         }
 
         var candidate = findUrl(text) ?: return Result.NotALink
@@ -51,13 +116,11 @@ object KeyParser {
     }
 
     fun hostAllowed(host: String, patterns: List<String>): Boolean {
-        if (patterns.isEmpty() || patterns.contains("*")) return true
+        val cleanPatterns = patterns.map { it.trim().lowercase().trimEnd('.') }.filter { it.isNotEmpty() && it != "*" }
+        if (cleanPatterns.isEmpty()) return false
         val h = host.lowercase().trimEnd('.')
-        return patterns.any { raw ->
-            val p = raw.trim().lowercase().trimEnd('.')
+        return cleanPatterns.any { p ->
             when {
-                p.isEmpty() -> false
-                p == "*" -> true
                 p.startsWith("*.") -> {
                     val suffix = p.substring(1)
                     h.endsWith(suffix) && h.length > suffix.length

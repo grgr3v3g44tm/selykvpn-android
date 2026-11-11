@@ -10,15 +10,9 @@
     <string name="onboarding_scan">Scan QR code</string>
     <string name="onboarding_manual">Enter the key manually</string>
     <string name="onboarding_telegram_hint">The bot will send you a link — just tap it</string>
-    <string name="onboarding_site">Sign in via website</string>
-    <string name="site_login_hint">Choose how to sign in to your account</string>
-    <string name="site_login_browser">Sign in with a browser</string>
-    <string name="site_login_browser_hint">Opens %1$s</string>
-    <string name="site_login_email">Sign in with email</string>
-    <string name="in_development">In development</string>
     <string name="manual_title">Enter key</string>
-    <string name="manual_label">Subscription link</string>
-    <string name="manual_placeholder">https://sub.selykvpn.xyz/…</string>
+    <string name="manual_label">Subscription link or key</string>
+    <string name="manual_placeholder">https://sub.selykvpn.xyz/… or vless://…</string>
     <string name="action_add">Add</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_close">Close</string>
@@ -29,12 +23,15 @@
 
     <!-- Key errors -->
     <string name="error_empty_clipboard">The clipboard is empty. Copy the key and try again.</string>
-    <string name="error_not_a_key">This doesn\'t look like a key. Copy the whole link that starts with https://</string>
+    <string name="error_not_a_key">This doesn\'t look like a key. Copy the whole link (https://... or vless://...)</string>
     <string name="error_foreign_key">This key is not from Селюк VPN. Only Селюк VPN keys can be added.</string>
     <string name="error_download">Couldn\'t load the subscription. Check your internet connection and try again.</string>
     <string name="error_not_found">This key was not found. Get a new one in the bot.</string>
     <string name="error_bad_format">The subscription could not be read. Please contact support.</string>
-    <string name="error_no_servers">The subscription has no servers.</string>
+    <string name="error_no_servers">The subscription has no active servers.</string>
+    <string name="error_device_limit">Device limit reached. Disconnect unused devices in the Telegram bot.</string>
+    <string name="error_subscription_expired">Your subscription has expired. Renew your plan in the Telegram bot.</string>
+    <string name="error_subscription_unsupported">This subscription format is not supported. Please update the app.</string>
     <string name="replace_key_title">Replace the key?</string>
     <string name="replace_key_text">The current key will be replaced by the new one.</string>
     <string name="key_added">Key added</string>

@@ -87,6 +87,7 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="selykvpn" />
                 <data android:scheme="vkturnproxy" />
+                <data android:scheme="vless" />
             </intent-filter>
 
             <!-- "Share" a key from Telegram or any other app. -->

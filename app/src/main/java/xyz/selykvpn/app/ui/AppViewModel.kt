@@ -320,6 +320,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
                 val current = subscription.value
                 when {
                     current == null -> import(result.key)
+                    !result.key.directConfigs.isNullOrEmpty() -> import(result.key)
                     current.url == result.key.url -> refreshSubscription(showMessage = true)
                     else -> _importState.value = ImportState.ConfirmReplace(result.key)
                 }
@@ -377,6 +378,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            android.util.Log.e("AppViewModel", "Import failed with exception", e)
             _keyError.value = e.messageRes()
         } finally {
             _importState.value = ImportState.Idle
@@ -552,5 +554,8 @@ fun Throwable.messageRes(): Int = when (this) {
     is SubscriptionError.NotFound -> R.string.error_not_found
     is SubscriptionError.BadFormat -> R.string.error_bad_format
     is SubscriptionError.NoServers -> R.string.error_no_servers
+    is SubscriptionError.DeviceLimit -> R.string.error_device_limit
+    is SubscriptionError.Expired -> R.string.error_subscription_expired
+    is SubscriptionError.Unsupported -> R.string.error_subscription_unsupported
     else -> R.string.error_download
 }

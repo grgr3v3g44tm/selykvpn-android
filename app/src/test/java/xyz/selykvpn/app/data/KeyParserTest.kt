@@ -52,7 +52,25 @@ class KeyParserTest {
         assertEquals(KeyParser.Result.Foreign, KeyParser.parse("https://sub.fgnconnection.com/abcDEF123456", allowed))
         assertEquals(KeyParser.Result.Foreign, KeyParser.parse("https://selykvpn.com.evil.net/abcDEF123456", allowed))
         assertEquals(KeyParser.Result.Foreign, KeyParser.parse("https://evilselykconnection.net/abcDEF123456", allowed))
-        assertEquals(KeyParser.Result.NotALink, KeyParser.parse("vless://uuid@1.2.3.4:443?security=reality#x", allowed))
+        // Foreign VLESS server IP is rejected
+        assertEquals(KeyParser.Result.Foreign, KeyParser.parse("vless://uuid@1.2.3.4:443?security=reality#x", allowed))
+        // Our VLESS server IP is accepted
+        val vlessRes = KeyParser.parse("vless://uuid@144.31.226.239:443?security=reality#x", allowed)
+        assertTrue(vlessRes is KeyParser.Result.Ok)
+        assertEquals("vless://import", (vlessRes as KeyParser.Result.Ok).key.url)
+        assertEquals(1, vlessRes.key.directConfigs?.size)
+        // Foreign FreeAccess peerAddress is rejected
+        val foreignFreeAccess = """
+            {
+              "type": "connection",
+              "version": 1,
+              "settings": {
+                "serverName": "Foreign Free",
+                "peerAddress": "foreign-host.com:56000"
+              }
+            }
+        """.trimIndent()
+        assertEquals(KeyParser.Result.Foreign, KeyParser.parse(foreignFreeAccess, allowed))
         assertEquals(KeyParser.Result.NotALink, KeyParser.parse("просто текст", allowed))
         assertEquals(KeyParser.Result.NotALink, KeyParser.parse("https://sub.selykvpn.com/", allowed))
         assertEquals(KeyParser.Result.Empty, KeyParser.parse("   ", allowed))
@@ -66,5 +84,45 @@ class KeyParserTest {
         assertFalse(KeyParser.hostAllowed("selykvpn.com", allowed))
         assertFalse(KeyParser.hostAllowed("sub.selykconnection.net", allowed))
         assertTrue(KeyParser.hostAllowed("selykconnection.net", allowed))
+    }
+
+    @Test
+    fun freeAccessWrapAParsing() {
+        val jsonKey = """
+            {
+              "type": "connection",
+              "version": 1,
+              "settings": {
+                "serverName": "Свободный доступ 1",
+                "useWrapA": true,
+                "serverPassword": "test-secret-password",
+                "deviceId": "device-12345",
+                "vkLink": "https://vk.com/call/join/abcdef123456",
+                "peerAddress": "media-stream.xamudhabibi.qzz.io:56000"
+              }
+            }
+        """.trimIndent()
+        val res = KeyParser.parse(jsonKey, allowed)
+        assertTrue(res is KeyParser.Result.FreeAccess)
+        val cfg = (res as KeyParser.Result.FreeAccess).config
+        assertEquals(xyz.selykvpn.app.model.TunnelMode.SRTP_WRAP_A, cfg.mode)
+        assertEquals("test-secret-password", cfg.serverPassword)
+        assertEquals("device-12345", cfg.deviceId)
+        val proxyJson = cfg.toProxyConfigJson()
+        assertTrue(proxyJson.contains(""""use_wrap_a":true"""))
+        assertTrue(proxyJson.contains(""""use_wrap":true"""))
+        assertTrue(proxyJson.contains(""""wrap_a_password":"test-secret-password""""))
+        assertTrue(proxyJson.contains(""""device_id":"device-12345""""))
+    }
+
+    @Test
+    fun testParseVlessAndEntries() {
+        val uri = "vless://b8bd454d-c4e9-4ebb-9467-d012a1497acb@144.31.226.239:443?type=tcp&security=reality&pbk=1122334455667788&fp=chrome&sni=google.com&sid=1234#Финляндия"
+        val res = KeyParser.parse(uri, allowed)
+        assertTrue(res is KeyParser.Result.Ok)
+        val key = (res as KeyParser.Result.Ok).key
+        val entries = SubscriptionParser.entries(key.directConfigs!!)
+        println("Entries: $entries")
+        assertFalse(entries.none { it.kind != ServerKind.SEPARATOR })
     }
 }

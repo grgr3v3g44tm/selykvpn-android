@@ -5,8 +5,12 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.add
 import okio.ByteString.Companion.decodeBase64
 
 @Serializable
@@ -50,13 +54,149 @@ object SubscriptionParser {
     )
 
     fun parseConfigs(body: String): List<JsonObject> {
-        val root = AppJson.parseToJsonElement(body.trim())
+        val root = runCatching { AppJson.parseToJsonElement(body.trim()) }.getOrNull() ?: return emptyList()
         val items: List<JsonElement> = when (root) {
             is JsonArray -> root
             is JsonObject -> listOf(root)
             else -> emptyList()
         }
         return items.mapNotNull { it as? JsonObject }.filter { it["outbounds"] is JsonArray }
+    }
+
+    /**
+     * Parses standard v2ray / base64 subscription lists or individual vless:// links into Xray configs.
+     */
+    fun parseVlessList(body: String): List<JsonObject> {
+        val text = body.trim()
+        val decoded = if (!text.startsWith("vless://") && !text.startsWith("[") && !text.startsWith("{")) {
+            text.decodeBase64()?.utf8() ?: text
+        } else text
+
+        return decoded.lines()
+            .map { it.trim() }
+            .filter { it.startsWith("vless://", ignoreCase = true) }
+            .mapNotNull { parseVlessUri(it) }
+    }
+
+    fun parseVlessUri(uriString: String): JsonObject? {
+        return runCatching {
+            val withoutScheme = uriString.substringAfter("://")
+            val mainAndFragment = withoutScheme.split('#', limit = 2)
+            val main = mainAndFragment[0]
+            val remarks = if (mainAndFragment.size > 1) {
+                runCatching { java.net.URLDecoder.decode(mainAndFragment[1], "UTF-8") }.getOrDefault(mainAndFragment[1])
+            } else "Server"
+
+            val atSplit = main.split('@', limit = 2)
+            if (atSplit.size < 2) return null
+            val uuid = atSplit[0]
+
+            val hostAndQuery = atSplit[1].split('?', limit = 2)
+            val hostAndPort = hostAndQuery[0].split(':', limit = 2)
+            val address = hostAndPort[0].trim('[', ']')
+            val port = hostAndPort.getOrNull(1)?.toIntOrNull() ?: 443
+
+            val queryParams = mutableMapOf<String, String>()
+            if (hostAndQuery.size > 1) {
+                for (param in hostAndQuery[1].split('&')) {
+                    val kv = param.split('=', limit = 2)
+                    if (kv.isNotEmpty()) {
+                        val k = kv[0]
+                        val v = if (kv.size > 1) runCatching { java.net.URLDecoder.decode(kv[1], "UTF-8") }.getOrDefault(kv[1]) else ""
+                        queryParams[k] = v
+                    }
+                }
+            }
+
+            val type = queryParams["type"] ?: "tcp"
+            val security = queryParams["security"] ?: "none"
+            val encryption = queryParams["encryption"] ?: "none"
+            val sni = queryParams["sni"] ?: queryParams["serverName"] ?: address
+            val flow = queryParams["flow"]
+
+            val clientObj = buildJsonObject {
+                put("id", uuid)
+                put("encryption", encryption)
+                if (!flow.isNullOrBlank()) put("flow", flow)
+            }
+            val vnextObj = buildJsonObject {
+                put("address", address)
+                put("port", port)
+                put("users", buildJsonArray { add(clientObj) })
+            }
+            val settingsObj = buildJsonObject {
+                put("vnext", buildJsonArray { add(vnextObj) })
+            }
+
+            val streamObj = buildJsonObject {
+                put("network", type)
+                put("security", security)
+                if (security == "reality") {
+                    val realityObj = buildJsonObject {
+                        put("serverName", sni)
+                        queryParams["fp"]?.let { put("fingerprint", it) }
+                        queryParams["pbk"]?.let { put("publicKey", it) }
+                        queryParams["sid"]?.let { put("shortId", it) }
+                        queryParams["spx"]?.let { put("spiderX", it) }
+                    }
+                    put("realitySettings", realityObj)
+                } else if (security == "tls") {
+                    val tlsObj = buildJsonObject {
+                        put("serverName", sni)
+                        queryParams["fp"]?.let { put("fingerprint", it) }
+                        queryParams["alpn"]?.let { alpn ->
+                            put("alpn", buildJsonArray { alpn.split(',').forEach { add(it.trim()) } })
+                        }
+                    }
+                    put("tlsSettings", tlsObj)
+                }
+                if (type == "ws") {
+                    val wsObj = buildJsonObject {
+                        put("path", queryParams["path"] ?: "/")
+                        queryParams["host"]?.let { put("headers", buildJsonObject { put("Host", it) }) }
+                    }
+                    put("wsSettings", wsObj)
+                } else if (type == "xhttp" || type == "splithttp") {
+                    val xhttpObj = buildJsonObject {
+                        put("path", queryParams["path"] ?: "/")
+                        put("mode", queryParams["mode"] ?: "stream-one")
+                        queryParams["extra"]?.let { extra ->
+                            runCatching { AppJson.parseToJsonElement(extra) }.getOrNull()?.let { put("extra", it) }
+                        }
+                    }
+                    put("xhttpSettings", xhttpObj)
+                } else if (type == "grpc") {
+                    val grpcObj = buildJsonObject {
+                        put("serviceName", queryParams["serviceName"] ?: "")
+                    }
+                    put("grpcSettings", grpcObj)
+                }
+            }
+
+            val proxyOutbound = buildJsonObject {
+                put("tag", "proxy")
+                put("protocol", "vless")
+                put("settings", settingsObj)
+                put("streamSettings", streamObj)
+            }
+            val directOutbound = buildJsonObject {
+                put("tag", "direct")
+                put("protocol", "freedom")
+            }
+            val blockOutbound = buildJsonObject {
+                put("tag", "block")
+                put("protocol", "blackhole")
+            }
+
+            buildJsonObject {
+                put("remarks", remarks)
+                put("outbounds", buildJsonArray {
+                    add(proxyOutbound)
+                    add(directOutbound)
+                    add(blockOutbound)
+                })
+            }
+        }.getOrNull()
     }
 
     fun entries(configs: List<JsonObject>): List<ServerEntry> {
@@ -155,5 +295,5 @@ object SubscriptionParser {
             v.trim().toDoubleOrNull()?.let { k.trim().lowercase() to it.toLong() }
         }.toMap()
 
-    private fun JsonObject.string(name: String): String? = (this[name] as? JsonPrimitive)?.content
+    fun JsonObject.string(name: String): String? = (this[name] as? JsonPrimitive)?.content
 }

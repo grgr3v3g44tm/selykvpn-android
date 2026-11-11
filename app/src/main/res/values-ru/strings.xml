@@ -8,15 +8,9 @@
     <string name="onboarding_scan">Сканировать QR-код</string>
     <string name="onboarding_manual">Ввести ключ вручную</string>
     <string name="onboarding_telegram_hint">Бот пришлёт ссылку — просто нажмите на неё</string>
-    <string name="onboarding_site">Войти через сайт</string>
-    <string name="site_login_hint">Выберите, как войти в личный кабинет</string>
-    <string name="site_login_browser">Войти через браузер</string>
-    <string name="site_login_browser_hint">Откроется %1$s</string>
-    <string name="site_login_email">Войти по почте</string>
-    <string name="in_development">В разработке</string>
     <string name="manual_title">Введите ключ</string>
-    <string name="manual_label">Ссылка подписки</string>
-    <string name="manual_placeholder">https://sub.selykvpn.xyz/…</string>
+    <string name="manual_label">Ссылка или ключ подписки</string>
+    <string name="manual_placeholder">https://sub.selykvpn.xyz/… или vless://…</string>
     <string name="action_add">Добавить</string>
     <string name="action_cancel">Отмена</string>
     <string name="action_close">Закрыть</string>
@@ -27,12 +21,15 @@
 
     <!-- Key errors -->
     <string name="error_empty_clipboard">В буфере обмена пусто. Скопируйте ключ и попробуйте снова.</string>
-    <string name="error_not_a_key">Это не похоже на ключ. Скопируйте ссылку целиком — она начинается с https://</string>
+    <string name="error_not_a_key">Это не похоже на ключ. Скопируйте ссылку целиком (https://... или vless://...)</string>
     <string name="error_foreign_key">Это не ключ Селюк VPN. В приложение можно добавить только ключ Селюк VPN.</string>
     <string name="error_download">Не удалось загрузить подписку. Проверьте интернет и попробуйте ещё раз.</string>
     <string name="error_not_found">Ключ не найден. Получите новый в боте.</string>
     <string name="error_bad_format">Не удалось прочитать подписку. Напишите в поддержку.</string>
-    <string name="error_no_servers">В подписке нет серверов.</string>
+    <string name="error_no_servers">В подписке нет активных серверов.</string>
+    <string name="error_device_limit">Превышен лимит устройств. Отвяжите неиспользуемое устройство в Telegram-боте.</string>
+    <string name="error_subscription_expired">Срок действия вашей подписки истёк. Продлите тариф в Telegram-боте.</string>
+    <string name="error_subscription_unsupported">Данный формат подписки не поддерживается. Обновите приложение.</string>
     <string name="replace_key_title">Заменить ключ?</string>
     <string name="replace_key_text">Текущий ключ будет заменён новым.</string>
     <string name="key_added">Ключ добавлен</string>

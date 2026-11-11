@@ -12,6 +12,7 @@ import xyz.selykvpn.app.vpn.Notifications
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class SelykApp : Application() {
 
@@ -24,6 +25,10 @@ class SelykApp : Application() {
         graph = AppGraph(this)
         Notifications.createChannels(this)
         graph.whitelist.start()
+        graph.scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val xrayDir = java.io.File(filesDir, "xray").apply { mkdirs() }
+            xyz.selykvpn.app.vpn.Xray.ensureGeoFiles(this@SelykApp, xrayDir)
+        }
     }
 
     companion object {

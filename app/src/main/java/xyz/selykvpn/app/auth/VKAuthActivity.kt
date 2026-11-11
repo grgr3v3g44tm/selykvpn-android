@@ -259,6 +259,17 @@ class VKAuthActivity : ComponentActivity() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 onProgressChange(newProgress, view?.canGoBack() == true)
             }
+
+            override fun onJsBeforeUnload(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                result: JsResult?
+            ): Boolean {
+                // Auto-confirm beforeunload dialog so Android doesn't prompt "Leave or stay"
+                result?.confirm()
+                return true
+            }
         }
 
         webView.webViewClient = object : WebViewClient() {

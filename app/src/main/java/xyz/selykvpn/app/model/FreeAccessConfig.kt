@@ -31,6 +31,7 @@ data class FreeAccessConfig(
     var useSrtp: Boolean = true,
     var useWrapA: Boolean = true,
     var wrapKeyHex: String = "",
+    var serverPassword: String = "",
     var deviceId: String = "",
     var useSessionAuth: Boolean = false,
     var uplinkPaceKiB: Int = 0,
@@ -59,6 +60,27 @@ data class FreeAccessConfig(
             ?: links.firstOrNull()
             ?: stealthLink.trim()
 
+        val stableDeviceId = if (deviceId.isNotBlank()) {
+            deviceId
+        } else {
+            try {
+                val app = xyz.selykvpn.app.SelykApp.instance
+                val prefs = app.getSharedPreferences("vkturn_device_prefs", android.content.Context.MODE_PRIVATE)
+                var hwid = prefs.getString("device_hwid", null)
+                if (hwid.isNullOrBlank()) {
+                    val androidId = android.provider.Settings.Secure.getString(
+                        app.contentResolver,
+                        android.provider.Settings.Secure.ANDROID_ID
+                    )
+                    hwid = androidId?.takeIf { it.isNotBlank() && it != "9774d56d682e549c" } ?: UUID.randomUUID().toString()
+                    prefs.edit().putString("device_hwid", hwid).apply()
+                }
+                hwid
+            } catch (_: Exception) {
+                id.replace("-", "").take(16)
+            }
+        }
+
         val json = buildJsonObject {
             put("vk_link", primary)
             putJsonArray("vk_cookie_links") {
@@ -84,16 +106,19 @@ data class FreeAccessConfig(
                 }
                 TunnelMode.SRTP_WRAP_A -> {
                     put("use_srtp", true)
-                    put("use_wrap", false)
+                    put("use_wrap", true)
                     put("use_wrap_a", true)
+                    put("wrap_a_password", serverPassword)
+                    put("device_id", stableDeviceId)
                     if (wrapKeyHex.isNotBlank()) {
                         put("wrap_key_hex", wrapKeyHex)
                     }
                 }
                 TunnelMode.SRTP_WRAP_S -> {
                     put("use_srtp", true)
-                    put("use_wrap", false)
+                    put("use_wrap", true)
                     put("use_wrap_s", true)
+                    put("client_id", stableDeviceId)
                     if (wrapKeyHex.isNotBlank()) {
                         put("wrap_key_hex", wrapKeyHex)
                     }
@@ -192,6 +217,9 @@ data class FreeAccessConfig(
                 val wrapKeyHex = settings.get("wrapKeyHex")?.asString
                     ?: settings.get("wrap_key_hex")?.asString
                     ?: ""
+                val serverPassword = settings.get("serverPassword")?.asString
+                    ?: settings.get("server_password")?.asString
+                    ?: ""
                 val deviceId = settings.get("deviceId")?.asString
                     ?: settings.get("device_id")?.asString
                     ?: ""
@@ -235,6 +263,7 @@ data class FreeAccessConfig(
                     useSrtp = useSrtp,
                     useWrapA = useWrapA || mode == TunnelMode.SRTP_WRAP_A,
                     wrapKeyHex = wrapKeyHex,
+                    serverPassword = serverPassword,
                     deviceId = deviceId,
                     privateKey = privateKey,
                     peerPublicKey = peerPublicKey,
