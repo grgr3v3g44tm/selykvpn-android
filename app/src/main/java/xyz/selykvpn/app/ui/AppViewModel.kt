@@ -118,7 +118,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     fun updateFreeAccessConfig(cfg: xyz.selykvpn.app.model.FreeAccessConfig) = viewModelScope.launch {
         graph.settings.setFreeAccessConfig(AppJson.encodeToString(cfg))
         if (activeMode.value == "free_access" && vpnState.value is VpnController.State.Connected) {
-            VpnController.reconnect(app)
+            VpnController.startFreeAccess(app, cfg, exclusions.value.effective, reconnect = true)
         }
     }
 
@@ -142,7 +142,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     fun setMode(mode: String) = viewModelScope.launch {
         graph.settings.setActiveMode(mode)
         if (vpnState.value is VpnController.State.Connected) {
-            VpnController.reconnect(app)
+            VpnController.switchMode(app, mode)
         }
     }
 
@@ -501,15 +501,16 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun connect() {
         if (activeMode.value == "free_access") {
-            if (!freeAccessConfig.value.hasRealVKCallLink()) {
+            val cfg = freeAccessConfig.value
+            if (!cfg.hasRealVKCallLink()) {
                 _messages.tryEmit(UiMessage(R.string.free_access_need_call_link))
                 return
             }
-            VpnController.start(app)
+            VpnController.startFreeAccess(app, cfg, exclusions.value.effective)
             return
         }
         if (subscription.value == null) return
-        VpnController.start(app)
+        VpnController.startRegular(app)
     }
 
     fun disconnect() = VpnController.stop(app)

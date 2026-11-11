@@ -9,22 +9,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import xyz.selykvpn.app.auth.VKCookieStore
+import kotlinx.serialization.json.longOrNull
 import xyz.selykvpn.app.data.AppJson
 import xyz.selykvpn.app.model.FreeAccessConfig
 import xyz.selykvpn.app.model.TunnelMode
-
-@Serializable
-private data class FreeAccessStatsDto(
-    @SerialName("rx_bytes") val rxBytes: Long = 0,
-    @SerialName("tx_bytes") val txBytes: Long = 0,
-)
 
 class FreeAccessEngine(private val vpnService: VpnService) {
 
@@ -57,8 +49,10 @@ class FreeAccessEngine(private val vpnService: VpnService) {
 
     fun start(
         config: FreeAccessConfig,
+        validCookie: String?,
         excludedApps: Set<String>,
         onReady: () -> Unit,
+        onTraffic: (VpnController.Traffic) -> Unit,
         onError: (String) -> Unit,
     ) {
         val prevJob = startJob
@@ -77,8 +71,6 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                 fun isAborted(): Boolean = stopRequested || startGen != myGen || !coroutineContext.isActive
 
                 try {
-                    VKCookieStore.init(vpnService.applicationContext)
-
                     // Pre-flight validation before starting TURN bootstrap
                     if (!config.hasRealVKCallLink()) {
                         Log.e(TAG, "Missing valid VK call link")
@@ -102,15 +94,11 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                     WgTurnCore.registerSocketProtector(vpnService)
 
                     val cookieLinks = config.getParsedStealthLinks()
-                    val validCookie = if (config.useSessionAuth && VKCookieStore.hasValidLogin()) {
-                        VKCookieStore.getValidCookieHeader()?.takeIf { it.isNotBlank() }
-                    } else {
-                        null
-                    }
-                    val effectiveCookieAuth = validCookie != null
-                    if (validCookie != null) {
+                    val cookieToUse = validCookie?.takeIf { config.useSessionAuth && it.isNotBlank() }
+                    val effectiveCookieAuth = cookieToUse != null
+                    if (cookieToUse != null) {
                         val linksJson = AppJson.encodeToString(cookieLinks)
-                        WgTurnCore.setVKCookieAuth(true, validCookie, linksJson)
+                        WgTurnCore.setVKCookieAuth(true, cookieToUse, linksJson)
                     } else {
                         WgTurnCore.setVKCookieAuth(false, "", "[]")
                     }
@@ -148,7 +136,7 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                                 "Ссылка на звонок устарела. Создайте новый звонок VK."
                             authError.contains("cookie rejected", ignoreCase = true) ||
                                 authError.contains("re-login required", ignoreCase = true) ->
-                                "Сессия VK истекла. Войдите заново или выключите «Использовать аккаунт VK»."
+                                "Сессия VK истекла. Войдите через VK заново или вставьте ссылку вручную."
                             authError.isNotBlank() -> authError
                             ready == 0 -> "Таймаут подключения к прямому шлюзу"
                             else -> "Ошибка подключения к серверам VK ($ready)"
@@ -252,7 +240,7 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                     }
 
                     Log.i(TAG, "TUN and WireGuard attached, waiting for handshake...")
-                    startStatsAndHandshake(handle, myGen, onReady, onError)
+                    startStatsAndHandshake(handle, myGen, onReady, onTraffic, onError)
                 } catch (_: CancellationException) {
                     tearDownNative()
                 } catch (e: Exception) {
@@ -268,10 +256,11 @@ class FreeAccessEngine(private val vpnService: VpnService) {
         handle: Int,
         expectedGen: Long,
         onReady: () -> Unit,
+        onTraffic: (VpnController.Traffic) -> Unit,
         onError: (String) -> Unit,
     ) {
         statsJob?.cancel()
-        VpnController.traffic.value = VpnController.Traffic.ZERO
+        onTraffic(VpnController.Traffic.ZERO)
         statsJob = scope.launch {
             var lastDown = 0L
             var lastUp = 0L
@@ -282,9 +271,9 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                 try {
                     val statsJson = WgTurnCore.getStats(handle)
                     if (statsJson.isNotBlank() && statsJson != "{}") {
-                        val parsed = AppJson.decodeFromString<FreeAccessStatsDto>(statsJson)
-                        val downTotal = parsed.rxBytes
-                        val upTotal = parsed.txBytes
+                        val obj = Json.parseToJsonElement(statsJson).jsonObject
+                        val downTotal = obj["rx_bytes"]?.jsonPrimitive?.longOrNull ?: 0L
+                        val upTotal = obj["tx_bytes"]?.jsonPrimitive?.longOrNull ?: 0L
 
                         if (!handshakeConfirmed) {
                             if (downTotal > 0) {
@@ -309,11 +298,13 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                         val upSpeed = if (lastUp > 0) (upTotal - lastUp).coerceAtLeast(0) else 0L
                         lastDown = downTotal
                         lastUp = upTotal
-                        VpnController.traffic.value = VpnController.Traffic(
-                            up = upSpeed,
-                            down = downSpeed,
-                            totalUp = upTotal,
-                            totalDown = downTotal
+                        onTraffic(
+                            VpnController.Traffic(
+                                up = upSpeed,
+                                down = downSpeed,
+                                totalUp = upTotal,
+                                totalDown = downTotal,
+                            )
                         )
                     } else if (!handshakeConfirmed) {
                         handshakeWaitSec++
@@ -350,7 +341,6 @@ class FreeAccessEngine(private val vpnService: VpnService) {
 
         runCatching { tunPfd?.close() }
         tunPfd = null
-        runCatching { WgTurnCore.registerSocketProtector(null) }
     }
 
     fun stop() {
@@ -361,6 +351,5 @@ class FreeAccessEngine(private val vpnService: VpnService) {
         startJob?.cancel()
         startJob = null
         tearDownNative()
-        VpnController.traffic.value = VpnController.Traffic.ZERO
     }
 }

@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -266,6 +267,7 @@ class WhitelistMonitor(
     }
 
     private suspend fun autoSwitch(old: WhitelistStatus, new: WhitelistStatus, config: WhitelistConfig) {
+        if (settings.activeMode.first() != "regular") return
         val info = subscriptions.state.value ?: return
         val current = subscriptions.selectedServer() ?: return
         val target = WhitelistRules.target(old, new, current, info.selectable, config, settings.whitelistAutoSwitchedNow())

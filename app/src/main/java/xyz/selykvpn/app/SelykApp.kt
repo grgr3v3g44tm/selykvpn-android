@@ -1,6 +1,9 @@
 package xyz.selykvpn.app
 
+import android.app.ActivityManager
 import android.app.Application
+import android.os.Build
+import android.os.Process
 import xyz.selykvpn.app.auth.VKCookieStore
 import xyz.selykvpn.app.data.AccountRepository
 import xyz.selykvpn.app.data.Http
@@ -10,6 +13,7 @@ import xyz.selykvpn.app.data.SubscriptionRepository
 import xyz.selykvpn.app.data.TvPairing
 import xyz.selykvpn.app.data.WhitelistMonitor
 import xyz.selykvpn.app.vpn.Notifications
+import xyz.selykvpn.app.vpn.VpnController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -23,14 +27,33 @@ class SelykApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        VKCookieStore.init(this)
-        graph = AppGraph(this)
         Notifications.createChannels(this)
+        if (isVkTurnProcess()) {
+            // Isolated :vkturn process hosts FreeAccessVpnService + libwgturn.so only.
+            // Skip DataStore/AppGraph/Xray initialization to avoid multi-process conflicts and dual Go runtimes.
+            return
+        }
+        VKCookieStore.init(this)
+        VpnController.init(this)
+        graph = AppGraph(this)
         graph.whitelist.start()
-        graph.scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        graph.scope.launch(Dispatchers.IO) {
             val xrayDir = java.io.File(filesDir, "xray").apply { mkdirs() }
             xyz.selykvpn.app.vpn.Xray.ensureGeoFiles(this@SelykApp, xrayDir)
         }
+    }
+
+    private fun isVkTurnProcess(): Boolean {
+        val processName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            getProcessName()
+        } else {
+            val pid = Process.myPid()
+            (getSystemService(ACTIVITY_SERVICE) as? ActivityManager)
+                ?.runningAppProcesses
+                ?.firstOrNull { it.pid == pid }
+                ?.processName
+        }
+        return processName?.endsWith(":vkturn") == true
     }
 
     companion object {

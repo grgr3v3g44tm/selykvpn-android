@@ -68,7 +68,7 @@ data class FreeAccessConfig(
 
     fun withCallLink(newLink: String): FreeAccessConfig {
         val clean = newLink.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") } ?: newLink.trim()
-        return copy(stealthLink = clean, needsStealthLink = false)
+        return copy(stealthLink = clean, needsStealthLink = false, useSessionAuth = false)
     }
 
     /**

@@ -4,18 +4,52 @@ import android.app.Activity
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ContentPaste
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.VideoCall
+import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -32,7 +66,6 @@ import xyz.selykvpn.app.auth.VKCookieStore
 import xyz.selykvpn.app.model.FreeAccessConfig
 import xyz.selykvpn.app.model.TunnelMode
 import xyz.selykvpn.app.ui.AppViewModel
-import xyz.selykvpn.app.ui.common.openUrl
 import xyz.selykvpn.app.ui.theme.SelykVpnTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,14 +85,10 @@ fun FreeAccessSetupSheet(
 
     var isCreatingCall by remember { mutableStateOf(false) }
     var showManualLinkDialog by remember { mutableStateOf(false) }
-    var hasVkSession by remember(currentConfig.useSessionAuth) {
-        mutableStateOf(VKCookieStore.hasStoredSession())
-    }
 
     val vkAuthLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        hasVkSession = VKCookieStore.hasStoredSession()
         if (result.resultCode == Activity.RESULT_OK) {
             val callLink = result.data?.getStringExtra(VKAuthActivity.EXTRA_CALL_LINK).orEmpty()
             VKCookieStore.setEnabled(true)
@@ -86,17 +115,7 @@ fun FreeAccessSetupSheet(
     ) {
         FreeAccessSetupSheetContent(
             config = currentConfig,
-            hasVkSession = hasVkSession,
             isCreatingCall = isCreatingCall,
-            onToggleUseVkAccount = { enabled ->
-                VKCookieStore.setEnabled(enabled)
-                hasVkSession = VKCookieStore.hasStoredSession()
-                viewModel.updateFreeAccessConfig(currentConfig.copy(useSessionAuth = enabled))
-            },
-            onSignOutVk = {
-                VKCookieStore.clearSession()
-                hasVkSession = false
-            },
             onCreateCallViaVk = {
                 if (VKCookieStore.hasValidLogin()) {
                     isCreatingCall = true
@@ -105,6 +124,7 @@ fun FreeAccessSetupSheet(
                         isCreatingCall = false
                         when (res) {
                             is FastCallResult.Success -> {
+                                VKCookieStore.setEnabled(true)
                                 val updated = currentConfig.copy(
                                     stealthLink = res.joinLink,
                                     needsStealthLink = false,
@@ -116,7 +136,6 @@ fun FreeAccessSetupSheet(
                             is FastCallResult.Error -> {
                                 if (res.isAccountBanned) {
                                     VKCookieStore.clearSession()
-                                    hasVkSession = false
                                     Toast.makeText(context, res.message, Toast.LENGTH_LONG).show()
                                 } else {
                                     vkAuthLauncher.launch(VKAuthActivity.createCallIntent(context))
@@ -128,17 +147,12 @@ fun FreeAccessSetupSheet(
                     vkAuthLauncher.launch(VKAuthActivity.createCallIntent(context))
                 }
             },
-            onOpenVkCallsBrowser = {
-                context.openUrl("https://vk.ru/calls")
-            },
             onManualLinkClick = { showManualLinkDialog = true },
-            onToggleUdp = { useUdp ->
-                viewModel.updateFreeAccessConfig(currentConfig.copy(useUDP = useUdp))
-            },
             onUnlinkCall = {
                 val updated = currentConfig.copy(
                     stealthLink = "",
                     needsStealthLink = true,
+                    useSessionAuth = false,
                 )
                 viewModel.updateFreeAccessConfig(updated)
             },
@@ -206,20 +220,15 @@ fun FreeAccessSetupSheet(
 @Composable
 internal fun FreeAccessSetupSheetContent(
     config: FreeAccessConfig,
-    hasVkSession: Boolean,
     isCreatingCall: Boolean,
-    onToggleUseVkAccount: (Boolean) -> Unit,
-    onSignOutVk: () -> Unit,
     onCreateCallViaVk: () -> Unit,
-    onOpenVkCallsBrowser: () -> Unit,
     onManualLinkClick: () -> Unit,
-    onToggleUdp: (Boolean) -> Unit,
     onUnlinkCall: () -> Unit,
     onDone: () -> Unit,
 ) {
     val hasCallLink = config.hasRealVKCallLink()
     val missingWrapAPass = config.mode == TunnelMode.SRTP_WRAP_A && config.serverPassword.isBlank()
-    val useVkAccount = config.useSessionAuth
+    val ready = hasCallLink && !missingWrapAPass
 
     Column(
         modifier = Modifier
@@ -227,9 +236,9 @@ internal fun FreeAccessSetupSheetContent(
             .navigationBarsPadding()
             .imePadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp)
-            .padding(bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+            .padding(horizontal = 24.dp)
+            .padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         // Header
         Column {
@@ -247,7 +256,6 @@ internal fun FreeAccessSetupSheetContent(
         }
 
         // Call & gateway status card
-        val ready = hasCallLink && !missingWrapAPass
         val statusBg = when {
             ready -> MaterialTheme.colorScheme.tertiaryContainer
             hasCallLink && missingWrapAPass -> MaterialTheme.colorScheme.errorContainer
@@ -301,11 +309,9 @@ internal fun FreeAccessSetupSheetContent(
                         missingWrapAPass ->
                             "Пароль WRAP-A не получен. Обновите подписку (Потянуть / Настройки -> Обновить) или импортируйте ключ из Telegram-бота."
                         hasCallLink ->
-                            "Защищённый звонок привязан. Трафик автоматически направляется через прямой шлюз."
-                        useVkAccount ->
-                            "Войдите через VK ID и создайте звонок или вставьте готовую ссылку вручную."
+                            "Защищённый звонок привязан. Трафик автоматически направляется через доверенный шлюз."
                         else ->
-                            "Создайте звонок через браузер VK и вставьте ссылку вида vk.ru/call/join/..."
+                            "Для работы шлюза войдите через VK ID или вставьте ссылку звонка вручную."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = statusTextColor,
@@ -313,132 +319,34 @@ internal fun FreeAccessSetupSheetContent(
             }
         }
 
-        // Toggle: Use VK Account
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(end = 12.dp),
-                    ) {
-                        Text(
-                            text = stringResource(R.string.free_access_use_vk_account),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = stringResource(
-                                if (useVkAccount) R.string.free_access_use_vk_account_on
-                                else R.string.free_access_use_vk_account_off
-                            ),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked = useVkAccount,
-                        onCheckedChange = onToggleUseVkAccount,
-                    )
-                }
-
-                if (useVkAccount) {
-                    Spacer(Modifier.height(8.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    Spacer(Modifier.height(8.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Icon(
-                                imageVector = if (hasVkSession) Icons.Rounded.VerifiedUser else Icons.Rounded.PersonOutline,
-                                contentDescription = null,
-                                tint = if (hasVkSession) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Text(
-                                text = stringResource(
-                                    if (hasVkSession) R.string.free_access_vk_session_active
-                                    else R.string.free_access_vk_session_none
-                                ),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (hasVkSession) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        if (hasVkSession) {
-                            TextButton(
-                                onClick = onSignOutVk,
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                            ) {
-                                Text(
-                                    text = stringResource(R.string.free_access_vk_logout),
-                                    color = MaterialTheme.colorScheme.error,
-                                    style = MaterialTheme.typography.labelMedium,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Action buttons for VK Call
+        // Action buttons for VK Call (single VK button + manual paste + unlink)
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (useVkAccount) {
-                Button(
-                    onClick = onCreateCallViaVk,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    enabled = !isCreatingCall,
-                ) {
-                    if (isCreatingCall) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Создание звонка…")
-                    } else {
-                        Icon(Icons.Rounded.VideoCall, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = stringResource(
-                                if (hasCallLink) R.string.free_access_create_call_new
-                                else R.string.free_access_create_call_auth
-                            ),
-                        )
-                    }
-                }
-            } else {
-                Button(
-                    onClick = onOpenVkCallsBrowser,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                    shape = RoundedCornerShape(12.dp),
-                ) {
-                    Icon(Icons.Rounded.OpenInBrowser, contentDescription = null)
+            Button(
+                onClick = onCreateCallViaVk,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 48.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                shape = RoundedCornerShape(12.dp),
+                enabled = !isCreatingCall,
+            ) {
+                if (isCreatingCall) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
                     Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.free_access_create_call_browser))
+                    Text("Создание звонка…")
+                } else {
+                    Icon(Icons.Rounded.VideoCall, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(
+                            if (hasCallLink) R.string.free_access_create_call_new
+                            else R.string.free_access_create_call_auth
+                        ),
+                    )
                 }
             }
 
@@ -453,41 +361,6 @@ internal fun FreeAccessSetupSheetContent(
                 Icon(Icons.Rounded.Link, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text(stringResource(R.string.free_access_paste_call))
-            }
-
-            // Transport mode toggle (TCP 3478 default vs UDP)
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(end = 12.dp),
-                    ) {
-                        Text(
-                            text = stringResource(R.string.free_access_transport_udp),
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Text(
-                            text = stringResource(R.string.free_access_transport_udp_desc),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked = config.useUDP,
-                        onCheckedChange = onToggleUdp,
-                    )
-                }
             }
 
             if (hasCallLink) {
@@ -513,26 +386,20 @@ internal fun FreeAccessSetupSheetContent(
     }
 }
 
-@Preview(name = "Phone 360dp - VK Auth ON", widthDp = 360, showBackground = true)
+@Preview(name = "Phone 360dp - Ready", widthDp = 360, showBackground = true)
 @Composable
-fun FreeAccessSetupSheetVkOnPreview() {
+fun FreeAccessSetupSheetReadyPreview() {
     SelykVpnTheme(palette = "selyk", darkTheme = true) {
         Surface(color = MaterialTheme.colorScheme.surface) {
             FreeAccessSetupSheetContent(
                 config = FreeAccessConfig(
                     stealthLink = "https://vk.ru/call/join/abc123",
                     serverPassword = "p_secret",
-                    useSessionAuth = true,
                     useUDP = false,
                 ),
-                hasVkSession = true,
                 isCreatingCall = false,
-                onToggleUseVkAccount = {},
-                onSignOutVk = {},
                 onCreateCallViaVk = {},
-                onOpenVkCallsBrowser = {},
                 onManualLinkClick = {},
-                onToggleUdp = {},
                 onUnlinkCall = {},
                 onDone = {},
             )
@@ -540,7 +407,7 @@ fun FreeAccessSetupSheetVkOnPreview() {
     }
 }
 
-@Preview(name = "Small 320dp FontScale 1.3 - VK Auth OFF", widthDp = 320, fontScale = 1.3f, showBackground = true)
+@Preview(name = "Small 320dp FontScale 1.3 - Need Call", widthDp = 320, fontScale = 1.3f, showBackground = true)
 @Composable
 fun FreeAccessSetupSheetCompactLargeFontPreview() {
     SelykVpnTheme(palette = "selyk", darkTheme = true) {
@@ -548,18 +415,12 @@ fun FreeAccessSetupSheetCompactLargeFontPreview() {
             FreeAccessSetupSheetContent(
                 config = FreeAccessConfig(
                     stealthLink = "",
-                    serverPassword = "",
-                    useSessionAuth = false,
+                    serverPassword = "p_secret",
                     useUDP = false,
                 ),
-                hasVkSession = false,
                 isCreatingCall = false,
-                onToggleUseVkAccount = {},
-                onSignOutVk = {},
                 onCreateCallViaVk = {},
-                onOpenVkCallsBrowser = {},
                 onManualLinkClick = {},
-                onToggleUdp = {},
                 onUnlinkCall = {},
                 onDone = {},
             )
@@ -567,7 +428,7 @@ fun FreeAccessSetupSheetCompactLargeFontPreview() {
     }
 }
 
-@Preview(name = "Tablet 600dp Light - VK Auth ON", widthDp = 600, showBackground = true)
+@Preview(name = "Tablet 600dp Light", widthDp = 600, showBackground = true)
 @Composable
 fun FreeAccessSetupSheetTabletLightPreview() {
     SelykVpnTheme(palette = "selyk", darkTheme = false) {
@@ -576,17 +437,11 @@ fun FreeAccessSetupSheetTabletLightPreview() {
                 config = FreeAccessConfig(
                     stealthLink = "",
                     serverPassword = "p_secret",
-                    useSessionAuth = true,
                     useUDP = false,
                 ),
-                hasVkSession = false,
                 isCreatingCall = false,
-                onToggleUseVkAccount = {},
-                onSignOutVk = {},
                 onCreateCallViaVk = {},
-                onOpenVkCallsBrowser = {},
                 onManualLinkClick = {},
-                onToggleUdp = {},
                 onUnlinkCall = {},
                 onDone = {},
             )

@@ -27,7 +27,13 @@ object Notifications {
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    fun vpn(context: Context, text: String, connected: Boolean): Notification {
+    fun vpn(
+        context: Context,
+        text: String,
+        connected: Boolean,
+        stopServiceClass: Class<*> = SelykVpnService::class.java,
+        stopAction: String = SelykVpnService.ACTION_STOP,
+    ): Notification {
         val open = PendingIntent.getActivity(
             context,
             0,
@@ -49,7 +55,7 @@ object Notifications {
             val stop = PendingIntent.getService(
                 context,
                 1,
-                Intent(context, SelykVpnService::class.java).setAction(SelykVpnService.ACTION_STOP),
+                Intent(context, stopServiceClass).setAction(stopAction),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             builder.addAction(0, context.getString(R.string.action_disconnect), stop)

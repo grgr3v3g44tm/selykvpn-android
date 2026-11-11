@@ -5,6 +5,13 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
 import android.widget.Toast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.decodeFromString
+import xyz.selykvpn.app.data.AppJson
+import xyz.selykvpn.app.model.FreeAccessConfig
 import xyz.selykvpn.app.vpn.VpnController
 
 /**
@@ -25,17 +32,38 @@ class ShortcutActivity : Activity() {
     }
 
     private fun connect() {
-        // No key yet or no VPN permission: the app asks for it and connects.
-        val needsApp = SelykApp.graph.subscriptions.state.value == null || VpnService.prepare(this) != null
-        if (!needsApp) {
-            try {
-                VpnController.start(this)
-                Toast.makeText(this, R.string.shortcut_connecting, Toast.LENGTH_SHORT).show()
-                return
-            } catch (_: Exception) {
-                // Background start restrictions: the app starts it.
+        if (VpnService.prepare(this) != null) {
+            openAppForConnect()
+            return
+        }
+        val graph = SelykApp.graph
+        graph.scope.launch(Dispatchers.IO) {
+            val mode = runCatching { graph.settings.activeMode.first() }.getOrDefault("regular")
+            val ready = if (mode == "free_access") {
+                val cfgStr = runCatching { graph.settings.freeAccessConfig.first() }.getOrNull()
+                val cfg = cfgStr?.takeIf { it.isNotBlank() }?.let {
+                    runCatching { AppJson.decodeFromString<FreeAccessConfig>(it) }.getOrNull()
+                }
+                cfg?.hasRealVKCallLink() == true
+            } else {
+                graph.subscriptions.state.value != null
+            }
+            withContext(Dispatchers.Main) {
+                if (!ready) {
+                    openAppForConnect()
+                } else {
+                    try {
+                        VpnController.start(applicationContext, forceMode = mode)
+                        Toast.makeText(applicationContext, R.string.shortcut_connecting, Toast.LENGTH_SHORT).show()
+                    } catch (_: Exception) {
+                        openAppForConnect()
+                    }
+                }
             }
         }
+    }
+
+    private fun openAppForConnect() {
         startActivity(
             Intent(this, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
