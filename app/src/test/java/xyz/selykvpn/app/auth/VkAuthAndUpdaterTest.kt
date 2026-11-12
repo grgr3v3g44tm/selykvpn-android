@@ -60,4 +60,36 @@ class VkAuthAndUpdaterTest {
         assertEquals(UpdateCheckOutcome.FAILED, evaluateUpdateCheck(refreshOk = false, hasUpdate = false))
         assertEquals(UpdateCheckOutcome.UP_TO_DATE, evaluateUpdateCheck(refreshOk = true, hasUpdate = false))
     }
+
+    @Test
+    fun oauthAndLoggedInLandingClassifiersSeparateLoginProfileAndOAuth() {
+        assertTrue(
+            VKAuthActivity.isOAuthFlowUrl(
+                "https://oauth.vk.com/authorize?client_id=6287487&display=mobile&redirect_uri=https%3A%2F%2Foauth.vk.com%2Fblank.html&response_type=token"
+            )
+        )
+        assertTrue(
+            VKAuthActivity.isOAuthFlowUrl(
+                "https://id.vk.com/auth?app_id=6287487&redirect_uri=https%3A%2F%2Foauth.vk.com%2Fblank.html"
+            )
+        )
+        assertTrue(VKAuthActivity.isOAuthFlowUrl("https://login.vk.com/?act=grant_access&hash=123"))
+
+        // Plain VK ID login and account pages must NOT be treated as OAuth flow.
+        assertFalse(VKAuthActivity.isOAuthFlowUrl("https://id.vk.ru/auth?redirect_uri=https%3A%2F%2Fm.vk.ru%2F"))
+        assertFalse(VKAuthActivity.isOAuthFlowUrl("https://id.vk.ru/account"))
+        assertFalse(VKAuthActivity.isOAuthFlowUrl("https://m.vk.ru/feed"))
+
+        assertTrue(VKAuthActivity.isVkLoggedInLandingUrl("https://m.vk.ru/id12345678"))
+        assertTrue(VKAuthActivity.isVkLoggedInLandingUrl("https://m.vk.ru/feed"))
+        assertTrue(VKAuthActivity.isVkLoggedInLandingUrl("https://vk.ru/"))
+        assertTrue(VKAuthActivity.isVkLoggedInLandingUrl("https://id.vk.ru/account"))
+        assertTrue(VKAuthActivity.isVkLoggedInLandingUrl("https://vk.ru/calls"))
+
+        assertFalse(VKAuthActivity.isVkLoggedInLandingUrl("https://m.vk.ru/login"))
+        assertFalse(VKAuthActivity.isVkLoggedInLandingUrl("https://id.vk.ru/auth?redirect_uri=https%3A%2F%2Fm.vk.ru%2F"))
+        assertFalse(VKAuthActivity.isVkLoggedInLandingUrl("https://oauth.vk.com/authorize?client_id=6287487"))
+        assertFalse(VKAuthActivity.isVkLoggedInLandingUrl("https://oauth.vk.com/blank.html#access_token=abc"))
+        assertFalse(VKAuthActivity.isVkLoggedInLandingUrl("https://vk.com/call/join/abc123"))
+    }
 }

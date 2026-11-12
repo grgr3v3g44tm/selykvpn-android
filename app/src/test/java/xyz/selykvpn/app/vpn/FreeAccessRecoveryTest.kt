@@ -106,4 +106,31 @@ class FreeAccessRecoveryTest {
         assertEquals(VpnController.Traffic.ZERO, VpnController.traffic.value)
         assertEquals(listOf("Служба Свободного доступа остановлена системой"), errors)
     }
+
+    @Test
+    fun mapBootstrapErrorHidesInternalPollTimeoutAndPreservesRealDiagnostics() {
+        assertEquals(
+            "Таймаут подключения к прямому шлюзу",
+            FreeAccessEngine.mapBootstrapError(readyCode = 0, authError = "bootstrap timeout after 1s"),
+        )
+        assertEquals(
+            "Таймаут подключения к прямому шлюзу",
+            FreeAccessEngine.mapBootstrapError(readyCode = 0, authError = ""),
+        )
+        assertEquals(
+            "WRAP-A DTLS: handshake error: context deadline exceeded",
+            FreeAccessEngine.mapBootstrapError(
+                readyCode = 0,
+                authError = "WRAP-A DTLS: handshake error: context deadline exceeded",
+            ),
+        )
+        assertEquals(
+            "Ссылка на звонок устарела. Создайте новый звонок VK.",
+            FreeAccessEngine.mapBootstrapError(readyCode = -1, authError = "Invalid join link (954)"),
+        )
+        assertEquals(
+            "Сессия VK истекла. Войдите через VK заново или вставьте ссылку вручную.",
+            FreeAccessEngine.mapBootstrapError(readyCode = -1, authError = "cookie rejected by VK"),
+        )
+    }
 }

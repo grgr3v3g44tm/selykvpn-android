@@ -110,7 +110,7 @@ object VKCallHelper {
         return if (token.isNotEmpty()) token else null
     }
 
-    private fun obtainAccessTokenViaHttp(context: Context, cookieHeader: String): String? {
+    internal fun obtainAccessTokenViaHttp(context: Context, cookieHeader: String): String? {
         if (cookieHeader.isBlank()) return null
         val userAgent = try {
             WebSettings.getDefaultUserAgent(context)
@@ -120,6 +120,15 @@ object VKCallHelper {
 
         // 1. Direct headless web_token POST
         requestWebToken(cookieHeader, userAgent)?.let { return it }
+
+        val cookieJar = linkedMapOf<String, String>()
+        cookieHeader.split(";").forEach { part ->
+            val trimmed = part.trim()
+            val eqIdx = trimmed.indexOf('=')
+            if (eqIdx > 0) {
+                cookieJar[trimmed.substring(0, eqIdx).trim()] = trimmed.substring(eqIdx + 1).trim()
+            }
+        }
 
         // 2. Fallback: HTTP OAuth redirect chain
         val redirect = URLEncoder.encode(REDIRECT_URI, "UTF-8")
@@ -140,10 +149,22 @@ object VKCallHelper {
                 conn.connectTimeout = HTTP_TIMEOUT_MS
                 conn.readTimeout = HTTP_TIMEOUT_MS
                 conn.setRequestProperty("User-Agent", userAgent)
-                conn.setRequestProperty("Cookie", cookieHeader)
+                val mergedCookie = cookieJar.entries.joinToString("; ") { "${it.key}=${it.value}" }
+                conn.setRequestProperty("Cookie", mergedCookie)
                 conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
                 val code = conn.responseCode
+                conn.headerFields["Set-Cookie"]?.forEach { rawCookie ->
+                    val nv = rawCookie.substringBefore(";").trim()
+                    val eq = nv.indexOf('=')
+                    if (eq > 0) {
+                        val k = nv.substring(0, eq).trim()
+                        val v = nv.substring(eq + 1).trim()
+                        if (v.isNotEmpty() && v != "DELETED") {
+                            cookieJar[k] = v
+                        }
+                    }
+                }
                 val location = conn.getHeaderField("Location") ?: ""
 
                 extractAccessToken(location)?.let { return it }

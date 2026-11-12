@@ -24,11 +24,31 @@ class FreeAccessEngine(private val vpnService: VpnService) {
 
     companion object {
         private const val TAG = "FreeAccessEngine"
-        private const val BOOTSTRAP_TIMEOUT_MS = 45_000L
+        private const val BOOTSTRAP_TIMEOUT_MS = 75_000L
         private const val CAPTCHA_TIMEOUT_MS = 180_000L
         private const val WRAP_A_TIMEOUT_MS = 25_000L
         private const val POLL_STEP_MS = 1_000
         private const val HANDSHAKE_TIMEOUT_SEC = 15
+
+        internal fun mapBootstrapError(readyCode: Int, authError: String): String {
+            val cleanedError = if (authError.startsWith("bootstrap timeout after", ignoreCase = true)) {
+                ""
+            } else {
+                authError
+            }
+            return when {
+                cleanedError.contains("Invalid join link", ignoreCase = true) ||
+                    cleanedError.contains("954") ||
+                    cleanedError.contains("951") ->
+                    "Ссылка на звонок устарела. Создайте новый звонок VK."
+                cleanedError.contains("cookie rejected", ignoreCase = true) ||
+                    cleanedError.contains("re-login required", ignoreCase = true) ->
+                    "Сессия VK истекла. Войдите через VK заново или вставьте ссылку вручную."
+                cleanedError.isNotBlank() -> cleanedError
+                readyCode == 0 -> "Таймаут подключения к прямому шлюзу"
+                else -> "Ошибка подключения к серверам VK ($readyCode)"
+            }
+        }
     }
 
     private data class NativeStats(
@@ -417,18 +437,8 @@ class FreeAccessEngine(private val vpnService: VpnService) {
         return pollStatsSnapshot(handle).authError
     }
 
-    private fun mapBootstrapError(readyCode: Int, authError: String): String = when {
-        authError.contains("Invalid join link", ignoreCase = true) ||
-            authError.contains("954") ||
-            authError.contains("951") ->
-            "Ссылка на звонок устарела. Создайте новый звонок VK."
-        authError.contains("cookie rejected", ignoreCase = true) ||
-            authError.contains("re-login required", ignoreCase = true) ->
-            "Сессия VK истекла. Войдите через VK заново или вставьте ссылку вручную."
-        authError.isNotBlank() -> authError
-        readyCode == 0 -> "Таймаут подключения к прямому шлюзу"
-        else -> "Ошибка подключения к серверам VK ($readyCode)"
-    }
+    private fun mapBootstrapError(readyCode: Int, authError: String): String =
+        Companion.mapBootstrapError(readyCode, authError)
 
     private fun startStatsAndHandshake(
         handle: Int,

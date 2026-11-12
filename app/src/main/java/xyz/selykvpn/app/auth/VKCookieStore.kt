@@ -143,7 +143,28 @@ object VKCookieStore {
         return null
     }
 
+    data class VkSessionCookies(
+        val remixsid: String? = null,
+        val p: String? = null,
+        val remixstid: String? = null,
+        val remixstlid: String? = null
+    ) {
+        fun toCookieHeader(): String {
+            val parts = mutableListOf<String>()
+            if (!remixsid.isNullOrBlank()) parts.add("remixsid=$remixsid")
+            if (!p.isNullOrBlank()) parts.add("p=$p")
+            if (!remixstid.isNullOrBlank()) parts.add("remixstid=$remixstid")
+            if (!remixstlid.isNullOrBlank()) parts.add("remixstlid=$remixstlid")
+            return parts.joinToString("; ")
+        }
+    }
+
     fun extractCookiesFromManager(cm: CookieManager): Pair<String?, String?> {
+        val full = extractFullCookiesFromManager(cm)
+        return Pair(full.remixsid, full.p)
+    }
+
+    fun extractFullCookiesFromManager(cm: CookieManager): VkSessionCookies {
         val domains = listOf(
             "https://vk.ru/",
             "https://m.vk.ru/",
@@ -159,6 +180,8 @@ object VKCookieStore {
 
         var remixsid: String? = null
         var p: String? = null
+        var remixstid: String? = null
+        var remixstlid: String? = null
 
         for (domain in domains) {
             val c = cm.getCookie(domain) ?: continue
@@ -168,9 +191,20 @@ object VKCookieStore {
             if (p == null) {
                 p = extractCookieValue(c, "p")
             }
-            if (remixsid != null && p != null) break
+            if (remixstid == null) {
+                remixstid = extractCookieValue(c, "remixstid")
+            }
+            if (remixstlid == null) {
+                remixstlid = extractCookieValue(c, "remixstlid")
+            }
+            if (remixsid != null && p != null && remixstid != null && remixstlid != null) break
         }
-        return Pair(remixsid, p)
+        return VkSessionCookies(
+            remixsid = remixsid,
+            p = p,
+            remixstid = remixstid,
+            remixstlid = remixstlid
+        )
     }
 
     fun plantCookiesIntoWebView(overrideHeader: String? = null) {
@@ -181,29 +215,38 @@ object VKCookieStore {
 
             val remixsid = extractCookieValue(header, "remixsid")
             val p = extractCookieValue(header, "p")
-            if (!remixsid.isNullOrBlank()) {
-                val ruVal = "remixsid=$remixsid; Domain=.vk.ru; Path=/; Secure; SameSite=None"
+            val remixstid = extractCookieValue(header, "remixstid")
+            val remixstlid = extractCookieValue(header, "remixstlid")
+
+            fun plantAcrossSubdomains(name: String, value: String) {
+                val ruVal = "$name=$value; Domain=.vk.ru; Path=/; Secure; SameSite=None"
                 cm.setCookie("https://vk.ru/", ruVal)
+                cm.setCookie("https://m.vk.ru/", ruVal)
                 cm.setCookie("https://oauth.vk.ru/", ruVal)
                 cm.setCookie("https://login.vk.ru/", ruVal)
                 cm.setCookie("https://id.vk.ru/", ruVal)
 
-                val comVal = "remixsid=$remixsid; Domain=.vk.com; Path=/; Secure; SameSite=None"
+                val comVal = "$name=$value; Domain=.vk.com; Path=/; Secure; SameSite=None"
                 cm.setCookie("https://vk.com/", comVal)
+                cm.setCookie("https://m.vk.com/", comVal)
                 cm.setCookie("https://oauth.vk.com/", comVal)
                 cm.setCookie("https://login.vk.com/", comVal)
                 cm.setCookie("https://id.vk.com/", comVal)
             }
+
+            if (!remixsid.isNullOrBlank()) {
+                plantAcrossSubdomains("remixsid", remixsid)
+            }
             if (!p.isNullOrBlank()) {
                 cm.setCookie("https://login.vk.ru/", "p=$p; Domain=.login.vk.ru; Path=/; Secure; SameSite=None")
                 cm.setCookie("https://login.vk.com/", "p=$p; Domain=.login.vk.com; Path=/; Secure; SameSite=None")
-
-                val pRootRu = "p=$p; Domain=.vk.ru; Path=/; Secure; SameSite=None"
-                cm.setCookie("https://id.vk.ru/", pRootRu)
-                cm.setCookie("https://vk.ru/", pRootRu)
-                val pRootCom = "p=$p; Domain=.vk.com; Path=/; Secure; SameSite=None"
-                cm.setCookie("https://id.vk.com/", pRootCom)
-                cm.setCookie("https://vk.com/", pRootCom)
+                plantAcrossSubdomains("p", p)
+            }
+            if (!remixstid.isNullOrBlank()) {
+                plantAcrossSubdomains("remixstid", remixstid)
+            }
+            if (!remixstlid.isNullOrBlank()) {
+                plantAcrossSubdomains("remixstlid", remixstlid)
             }
             cm.flush()
             Log.i(TAG, "Planted VK cookies for OAuth: remixsid=${remixsid != null}, p=${p != null}")
