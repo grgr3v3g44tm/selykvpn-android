@@ -1,15 +1,26 @@
 package xyz.selykvpn.app.ui
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -18,9 +29,16 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -48,6 +66,7 @@ import xyz.selykvpn.app.ui.settings.SettingsScreen
 import xyz.selykvpn.app.ui.settings.SplitTunnelScreen
 import xyz.selykvpn.app.ui.share.ShareScreen
 import xyz.selykvpn.app.ui.tv.TvOnboardingScreen
+import xyz.selykvpn.app.vpn.VpnController
 import kotlinx.serialization.Serializable
 
 @Serializable data object OnboardingKey : NavKey
@@ -65,6 +84,7 @@ fun AppRoot(viewModel: AppViewModel, onConnect: () -> Unit) {
     val context = LocalContext.current
     val subscription by viewModel.subscription.collectAsStateWithLifecycle()
     val freeAccessConfig by viewModel.freeAccessConfig.collectAsStateWithLifecycle()
+    val captcha by viewModel.captcha.collectAsStateWithLifecycle()
     val importState by viewModel.importState.collectAsStateWithLifecycle()
     val keyError by viewModel.keyError.collectAsStateWithLifecycle()
     val config by viewModel.config.collectAsStateWithLifecycle()
@@ -219,6 +239,117 @@ fun AppRoot(viewModel: AppViewModel, onConnect: () -> Unit) {
                 null
             },
         )
+    }
+
+    captcha?.let { challenge ->
+        CaptchaDialog(
+            challenge = challenge,
+            loadBitmap = viewModel::loadCaptchaBitmap,
+            onSubmit = viewModel::submitCaptcha,
+            onRefresh = viewModel::refreshCaptcha,
+            onDismiss = viewModel::cancelCaptcha,
+        )
+    }
+}
+
+@Composable
+private fun CaptchaDialog(
+    challenge: VpnController.CaptchaChallenge,
+    loadBitmap: suspend (String) -> Bitmap?,
+    onSubmit: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var answer by remember(challenge.imageUrl) { mutableStateOf("") }
+    var refreshNonce by remember { mutableIntStateOf(0) }
+    var bitmap by remember(challenge.imageUrl) { mutableStateOf<Bitmap?>(null) }
+    var loading by remember(challenge.imageUrl) { mutableStateOf(true) }
+
+    LaunchedEffect(challenge.imageUrl, refreshNonce) {
+        loading = true
+        bitmap = loadBitmap(challenge.imageUrl)
+        loading = false
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = false),
+    ) {
+        Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    stringResource(R.string.free_access_captcha_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(100.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    val bmp = bitmap
+                    when {
+                        loading -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.5.dp)
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                stringResource(R.string.free_access_captcha_loading),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.DarkGray,
+                            )
+                        }
+                        bmp != null -> Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit,
+                        )
+                        else -> Text(
+                            stringResource(R.string.free_access_captcha_load_failed),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(8.dp),
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = answer,
+                    onValueChange = { answer = it },
+                    placeholder = { Text(stringResource(R.string.free_access_captcha_hint)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = {
+                        refreshNonce++
+                        onRefresh()
+                    }) {
+                        Text(stringResource(R.string.free_access_captcha_refresh))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onDismiss) {
+                            Text(stringResource(R.string.free_access_captcha_cancel))
+                        }
+                        Button(
+                            onClick = { onSubmit(answer) },
+                            enabled = answer.isNotBlank(),
+                        ) {
+                            Text(stringResource(R.string.free_access_captcha_submit))
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

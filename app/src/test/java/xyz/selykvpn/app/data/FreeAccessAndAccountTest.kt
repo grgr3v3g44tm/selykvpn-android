@@ -93,6 +93,47 @@ class FreeAccessAndAccountTest {
     }
 
     @Test
+    fun mergeFromRemotePreservesLocalWireGuardFieldsAndName() {
+        val local = FreeAccessConfig(
+            name = "Custom Gateway",
+            stealthLink = "https://vk.ru/call/join/localCall1",
+            privateKey = "privKeyLocal==",
+            peerPublicKey = "peerPubLocal==",
+            presharedKey = "pskLocal==",
+            tunnelAddress = "10.77.77.5/24",
+            deviceId = "dev-local-1",
+            useSessionAuth = true,
+        )
+        val remote = FreeAccessConfig(
+            name = "",
+            stealthLink = "",
+            privateKey = "",
+            peerPublicKey = "",
+            presharedKey = "",
+            tunnelAddress = "",
+            deviceId = "",
+            serverPassword = "srv-pass-new",
+            useSessionAuth = false,
+        )
+        val merged = local.mergeFromRemote(remote)
+        assertEquals("Custom Gateway", merged.name)
+        assertEquals("privKeyLocal==", merged.privateKey)
+        assertEquals("peerPubLocal==", merged.peerPublicKey)
+        assertEquals("pskLocal==", merged.presharedKey)
+        assertEquals("10.77.77.5/24", merged.tunnelAddress)
+        assertEquals("dev-local-1", merged.deviceId)
+        assertEquals("srv-pass-new", merged.serverPassword)
+        assertEquals("https://vk.ru/call/join/localCall1", merged.stealthLink)
+        assertFalse(merged.needsStealthLink)
+        assertTrue(merged.useSessionAuth)
+
+        val updated = merged.withCallLink("  https://vk.ru/call/join/newCall2 \nother line ")
+        assertEquals("https://vk.ru/call/join/newCall2", updated.stealthLink)
+        assertFalse(updated.needsStealthLink)
+        assertFalse(updated.useSessionAuth)
+    }
+
+    @Test
     fun accountStatusParsesServerStringPlanAndIsoExpiry() {
         val raw = """
             {

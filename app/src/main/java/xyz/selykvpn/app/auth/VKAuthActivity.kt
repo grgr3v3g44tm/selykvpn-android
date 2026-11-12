@@ -8,6 +8,7 @@ import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
 import android.os.Message
+import android.os.SystemClock
 import android.util.Log
 import android.view.ViewGroup
 import android.webkit.*
@@ -38,12 +39,15 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import xyz.selykvpn.app.R
 import xyz.selykvpn.app.ui.theme.SelykVpnTheme
 import xyz.selykvpn.app.vpn.VpnController
+import java.util.Collections
 
 private const val TAG = "VKAuthActivity"
 
@@ -68,6 +72,20 @@ class VKAuthActivity : ComponentActivity() {
         const val EXTRA_CALL_LINK = "extra_call_link"
         const val EXTRA_COOKIE_HEADER = "extra_cookie_header"
 
+        internal val BLOCKED_EXTERNAL_SCHEMES = setOf(
+            "intent", "vk", "vkauthorize", "vkauth", "vkontakte", "vk-app", "android-app", "market", "tg"
+        )
+
+        internal fun isAllowedWebScheme(scheme: String?): Boolean {
+            val s = scheme?.lowercase() ?: return false
+            return s == "http" || s == "https" || s == "about" || s == "javascript" || s == "data"
+        }
+
+        internal fun shouldBlockScheme(scheme: String?): Boolean {
+            val s = scheme?.lowercase() ?: return false
+            return s in BLOCKED_EXTERNAL_SCHEMES || !isAllowedWebScheme(s)
+        }
+
         fun createLoginIntent(context: Context): Intent {
             return Intent(context, VKAuthActivity::class.java).apply {
                 putExtra(EXTRA_MODE, MODE_LOGIN)
@@ -83,8 +101,19 @@ class VKAuthActivity : ComponentActivity() {
 
     private var mode = MODE_CREATE_CALL
     private var webViewInstance: WebView? = null
+
+    @Volatile
     private var isDone = false
+
+    @Volatile
+    private var isApiInFlight = false
     private var hasRedirectedToOAuth = false
+    private var oauthStartVisited = false
+    private var bouncedBackToLoginFromOAuth = false
+    private var staleCookieHeader: String? = null
+    private val failedTokens = Collections.synchronizedSet(HashSet<String>())
+    private var pageLoadWatchdogJob: Job? = null
+    private var lastBlockedSchemeToastMs = 0L
     private var onApiExecutionStateChange: ((Boolean, String) -> Unit)? = null
     private var onErrorStateChange: ((String?) -> Unit)? = null
 
@@ -197,7 +226,13 @@ class VKAuthActivity : ComponentActivity() {
                                 }
                                 IconButton(onClick = {
                                     VKCookieStore.clearSession()
+                                    VKCookieStore.clearWebViewCookies()
+                                    failedTokens.clear()
                                     hasRedirectedToOAuth = false
+                                    oauthStartVisited = false
+                                    bouncedBackToLoginFromOAuth = false
+                                    staleCookieHeader = null
+                                    isApiInFlight = false
                                     loadError = null
                                     statusText = "Войдите в аккаунт VK…"
                                     webViewInstance?.loadUrl(VK_LOGIN_URL)
@@ -207,8 +242,16 @@ class VKAuthActivity : ComponentActivity() {
                                 }
                                 IconButton(onClick = {
                                     loadError = null
-                                    isExecutingApi = false
-                                    webViewInstance?.reload()
+                                    isApiInFlight = false
+                                    failedTokens.clear()
+                                    webViewInstance?.let { wv ->
+                                        val cur = wv.url.orEmpty()
+                                        if (cur.isBlank() || cur == "about:blank" || isOAuthBlankPage(cur)) {
+                                            loadInitialUrl(wv)
+                                        } else {
+                                            wv.reload()
+                                        }
+                                    }
                                 }) {
                                     Icon(Icons.Default.Refresh, contentDescription = "Обновить")
                                 }
@@ -221,64 +264,75 @@ class VKAuthActivity : ComponentActivity() {
                             .fillMaxSize()
                             .padding(padding)
                     ) {
-                        if (loadError != null) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(24.dp)
-                            ) {
-                                Text(
-                                    "Не удалось загрузить страницу VK",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    textAlign = TextAlign.Center
-                                )
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    loadError.orEmpty(),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
-                                    textAlign = TextAlign.Center
-                                )
-                                Spacer(Modifier.height(16.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    OutlinedButton(onClick = { finishWithCancel() }) {
-                                        Text("Отмена")
+                        AndroidView(
+                            factory = { ctx ->
+                                WebView(ctx).apply {
+                                    webViewInstance = this
+                                    layoutParams = ViewGroup.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
+                                    setBackgroundColor(android.graphics.Color.WHITE)
+
+                                    setupWebView(this) { p, back ->
+                                        webProgress = p
+                                        canGoBack = back
                                     }
-                                    Button(onClick = {
-                                        loadError = null
-                                        webViewInstance?.reload()
-                                    }) {
-                                        Text("Повторить")
+
+                                    loadInitialUrl(this)
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+
+                        if (loadError != null) {
+                            Surface(modifier = Modifier.fillMaxSize()) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(24.dp)
+                                ) {
+                                    Text(
+                                        "Не удалось загрузить страницу VK",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        loadError.orEmpty(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    Spacer(Modifier.height(16.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        OutlinedButton(onClick = { finishWithCancel() }) {
+                                            Text("Отмена")
+                                        }
+                                        Button(onClick = {
+                                            loadError = null
+                                            isApiInFlight = false
+                                            failedTokens.clear()
+                                            webViewInstance?.let { wv ->
+                                                val cur = wv.url.orEmpty()
+                                                if (cur.isBlank() || cur == "about:blank" || isOAuthBlankPage(cur)) {
+                                                    loadInitialUrl(wv)
+                                                } else {
+                                                    wv.reload()
+                                                }
+                                            }
+                                        }) {
+                                            Text(getString(R.string.vk_auth_retry))
+                                        }
                                     }
                                 }
                             }
-                        } else {
-                            AndroidView(
-                                factory = { ctx ->
-                                    WebView(ctx).apply {
-                                        webViewInstance = this
-                                        layoutParams = ViewGroup.LayoutParams(
-                                            ViewGroup.LayoutParams.MATCH_PARENT,
-                                            ViewGroup.LayoutParams.MATCH_PARENT
-                                        )
-                                        setBackgroundColor(android.graphics.Color.WHITE)
-
-                                        setupWebView(this) { p, back ->
-                                            webProgress = p
-                                            canGoBack = back
-                                        }
-
-                                        loadInitialUrl(this)
-                                    }
-                                },
-                                modifier = Modifier.fillMaxSize()
-                            )
                         }
 
-                        if (webProgress in 1..99 && !isExecutingApi) {
+                        if (webProgress in 1..99 && !isExecutingApi && loadError == null) {
                             LinearProgressIndicator(
                                 progress = { webProgress / 100f },
                                 modifier = Modifier
@@ -356,6 +410,7 @@ class VKAuthActivity : ComponentActivity() {
 
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 onProgressChange(newProgress, view?.canGoBack() == true)
+                if (newProgress >= 100) cancelPageLoadWatchdog()
                 view?.url?.let { checkUrlForTokensOrCall(it, view) }
             }
 
@@ -377,18 +432,30 @@ class VKAuthActivity : ComponentActivity() {
                 error: SslError?
             ) {
                 Log.w(TAG, "SSL error in VK WebView for ${error?.url}: $error")
+                cancelPageLoadWatchdog()
                 handler?.cancel()
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 onProgressChange(10, view?.canGoBack() == true)
+                startPageLoadWatchdog(url)
                 url?.let { checkUrlForTokensOrCall(it, view) }
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 onProgressChange(100, view?.canGoBack() == true)
+                cancelPageLoadWatchdog()
+                if (url != null && oauthStartVisited && !bouncedBackToLoginFromOAuth && isVkLoginUrl(url)) {
+                    Log.w(TAG, "VK OAuth bounced back to login page; clearing stale cached cookies")
+                    bouncedBackToLoginFromOAuth = true
+                    oauthStartVisited = false
+                    hasRedirectedToOAuth = false
+                    staleCookieHeader = VKCookieStore.getValidCookieHeader()
+                    VKCookieStore.clearSession()
+                    VKCookieStore.clearWebViewCookies()
+                }
                 url?.let { checkUrlForTokensOrCall(it, view) }
                 view?.evaluateJavascript("window.location.href + ' ' + window.location.hash") { jsHrefAndHash ->
                     checkUrlForTokensOrCall(jsHrefAndHash, view)
@@ -403,12 +470,17 @@ class VKAuthActivity : ComponentActivity() {
                 if (checkUrlForTokensOrCall(nextUrl, view)) return true
 
                 // Block external app deep links so auth completes inside WebView
-                if (nextUrl.startsWith("intent:") || nextUrl.startsWith("vk://") || nextUrl.startsWith("android-app:")) {
+                if (shouldBlockScheme(scheme)) {
                     Log.i(TAG, "Blocked external intent scheme: $scheme")
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastBlockedSchemeToastMs > 4_000L) {
+                        lastBlockedSchemeToastMs = now
+                        Toast.makeText(this@VKAuthActivity, R.string.vk_auth_external_blocked, Toast.LENGTH_SHORT).show()
+                    }
                     return true
                 }
 
-                return !(scheme == "http" || scheme == "https" || scheme == "about" || scheme == "javascript" || scheme == "data")
+                return false
             }
 
             override fun onReceivedError(
@@ -423,18 +495,51 @@ class VKAuthActivity : ComponentActivity() {
                 if (request?.isForMainFrame != true) return
                 if (reqUrl.contains("access_token=") || isOAuthBlankPage(reqUrl)) return
 
+                cancelPageLoadWatchdog()
                 val desc = error?.description?.toString() ?: "Сетевая ошибка"
                 onErrorStateChange?.invoke("$desc (код: ${error?.errorCode ?: -1})")
             }
         }
     }
 
+    private fun startPageLoadWatchdog(url: String?) {
+        if (url.isNullOrBlank() || (!url.startsWith("http://") && !url.startsWith("https://")) || isOAuthBlankPage(url)) {
+            return
+        }
+        pageLoadWatchdogJob?.cancel()
+        pageLoadWatchdogJob = lifecycleScope.launch {
+            delay(20_000L)
+            if (!isDone && !isApiInFlight && !isFinishing && !isDestroyed) {
+                Log.w(TAG, "WebView load timed out on $url")
+                onErrorStateChange?.invoke(getString(R.string.vk_auth_timeout))
+            }
+        }
+    }
+
+    private fun cancelPageLoadWatchdog() {
+        pageLoadWatchdogJob?.cancel()
+        pageLoadWatchdogJob = null
+    }
+
+    private fun isVkLoginUrl(rawUrl: String): Boolean {
+        val lower = rawUrl.lowercase()
+        return lower.contains("m.vk.ru/login") ||
+            lower.contains("m.vk.com/login") ||
+            lower.contains("vk.ru/login") ||
+            lower.contains("vk.com/login")
+    }
+
     private fun loadInitialUrl(webView: WebView) {
         if (mode == MODE_LOGIN || !VKCookieStore.hasValidLogin()) {
+            oauthStartVisited = false
+            hasRedirectedToOAuth = false
+            staleCookieHeader = null
             VKCookieStore.clearWebViewCookies()
             webView.loadUrl(VK_LOGIN_URL)
         } else {
             hasRedirectedToOAuth = true
+            oauthStartVisited = true
+            staleCookieHeader = VKCookieStore.getValidCookieHeader()
             VKCookieStore.plantCookiesIntoWebView()
             webView.postDelayed({ webView.loadUrl(VK_OAUTH_URL) }, 150)
         }
@@ -456,7 +561,7 @@ class VKAuthActivity : ComponentActivity() {
     }
 
     private fun checkUrlForTokensOrCall(rawUrl: String?, webView: WebView?): Boolean {
-        if (isDone || rawUrl.isNullOrBlank()) return false
+        if (isDone || isApiInFlight || rawUrl.isNullOrBlank()) return false
         val url = rawUrl.trim('"', '\'', ' ')
 
         if (url.contains("call/join/")) {
@@ -467,13 +572,15 @@ class VKAuthActivity : ComponentActivity() {
 
         val token = VKCallHelper.extractAccessToken(url)
         if (token != null) {
+            if (token in failedTokens) return false
             if (mode == MODE_LOGIN) {
                 val header = VKCookieStore.getValidCookieHeader() ?: "access_token=$token"
                 finishWithSuccess("", header)
                 return true
             }
 
-            isDone = true
+            isApiInFlight = true
+            cancelPageLoadWatchdog()
             runOnUiThread {
                 onApiExecutionStateChange?.invoke(true, "Токен получен, создаём ссылку звонка…")
                 runCatching { webView?.stopLoading() }
@@ -483,10 +590,23 @@ class VKAuthActivity : ComponentActivity() {
                     if (!callLink.isNullOrBlank()) {
                         finishWithSuccess(callLink, VKCookieStore.getValidCookieHeader())
                     } else {
-                        isDone = false
-                        onApiExecutionStateChange?.invoke(false, "Ошибка создания звонка")
-                        if (isBanned) VKCookieStore.clearSession()
-                        Toast.makeText(this@VKAuthActivity, err ?: "Ошибка создания звонка", Toast.LENGTH_LONG).show()
+                        isApiInFlight = false
+                        failedTokens.add(token)
+                        val msg = err ?: "Ошибка создания звонка"
+                        onApiExecutionStateChange?.invoke(false, msg)
+                        val invalidAuth = isBanned || msg.contains("Ошибка VK 5")
+                        if (invalidAuth) {
+                            VKCookieStore.clearSession()
+                            VKCookieStore.clearWebViewCookies()
+                            hasRedirectedToOAuth = false
+                            oauthStartVisited = false
+                            webView?.loadUrl(VK_LOGIN_URL)
+                        } else {
+                            // Navigate off blank.html#access_token=... and expose Retry overlay.
+                            onErrorStateChange?.invoke(msg)
+                            webView?.loadUrl(VK_OAUTH_URL)
+                        }
+                        Toast.makeText(this@VKAuthActivity, msg, Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -514,6 +634,9 @@ class VKAuthActivity : ComponentActivity() {
                 val (remixsid, p) = VKCookieStore.extractCookiesFromManager(cm)
                 if (!remixsid.isNullOrBlank()) {
                     val header = if (!p.isNullOrBlank()) "remixsid=$remixsid; p=$p" else "remixsid=$remixsid"
+                    if (header == staleCookieHeader) {
+                        continue
+                    }
                     if (header != lastSavedHeader) {
                         lastSavedHeader = header
                         val oneYearAhead = System.currentTimeMillis() + (365L * 24 * 3600 * 1000)
@@ -526,13 +649,14 @@ class VKAuthActivity : ComponentActivity() {
                             finishWithSuccess("", header)
                         }
                         break
-                    } else if (!hasRedirectedToOAuth) {
+                    } else if (!hasRedirectedToOAuth && !isApiInFlight) {
                         withContext(Dispatchers.Main) {
                             val currentUrl = webViewInstance?.url ?: ""
                             val isAlreadyInOAuth = currentUrl.contains("oauth.vk.") ||
                                 currentUrl.contains("id.vk.") ||
                                 currentUrl.contains("act=grant_access")
                             hasRedirectedToOAuth = true
+                            oauthStartVisited = true
                             if (!isAlreadyInOAuth) {
                                 onApiExecutionStateChange?.invoke(false, "Вход выполнен! Открываем создание звонка…")
                                 VKCookieStore.plantCookiesIntoWebView(header)
@@ -542,10 +666,12 @@ class VKAuthActivity : ComponentActivity() {
                     }
                 }
 
-                withContext(Dispatchers.Main) {
-                    webViewInstance?.evaluateJavascript("window.location.href + ' ' + window.location.hash") { jsCombined ->
-                        if (!jsCombined.isNullOrBlank() && jsCombined.contains("access_token=")) {
-                            checkUrlForTokensOrCall(jsCombined, webViewInstance)
+                if (!isApiInFlight) {
+                    withContext(Dispatchers.Main) {
+                        webViewInstance?.evaluateJavascript("window.location.href + ' ' + window.location.hash") { jsCombined ->
+                            if (!jsCombined.isNullOrBlank() && jsCombined.contains("access_token=")) {
+                                checkUrlForTokensOrCall(jsCombined, webViewInstance)
+                            }
                         }
                     }
                 }
@@ -555,6 +681,8 @@ class VKAuthActivity : ComponentActivity() {
 
     private fun finishWithSuccess(callLink: String, cookieHeader: String?) {
         if (isFinishing || isDestroyed) return
+        cancelPageLoadWatchdog()
+        isApiInFlight = false
         isDone = true
         val result = Intent().apply {
             putExtra(EXTRA_CALL_LINK, callLink)
@@ -566,11 +694,13 @@ class VKAuthActivity : ComponentActivity() {
 
     private fun finishWithCancel() {
         if (isFinishing || isDestroyed) return
+        cancelPageLoadWatchdog()
         setResult(RESULT_CANCELED)
         finish()
     }
 
     override fun onDestroy() {
+        cancelPageLoadWatchdog()
         runCatching {
             webViewInstance?.apply {
                 stopLoading()

@@ -5,13 +5,14 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
+import android.os.Bundle
+import android.os.DeadObjectException
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.util.Log
-import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import com.vkturnproxy.core.WgTurnCore
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +29,7 @@ import kotlinx.serialization.encodeToString
 import xyz.selykvpn.app.R
 import xyz.selykvpn.app.data.AppJson
 import xyz.selykvpn.app.model.FreeAccessConfig
+import java.util.concurrent.CopyOnWriteArraySet
 
 /**
  * Isolated VPN service running inside android:process=":vkturn" so libwgturn.so's Go runtime
@@ -38,12 +40,25 @@ class FreeAccessVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Mutex()
     private val engine by lazy { FreeAccessEngine(this) }
+    private val clientMessengers = CopyOnWriteArraySet<Messenger>()
 
     @Volatile
     private var running: Boolean = false
 
     @Volatile
+    private var sessionGen: Long = 0L
+
+    @Volatile
     private var currentState: String = STATE_IDLE
+
+    @Volatile
+    private var currentStage: String? = null
+
+    @Volatile
+    private var captchaImageUrl: String = ""
+
+    @Volatile
+    private var captchaSid: String = ""
 
     @Volatile
     private var connectedSince: Long = 0L
@@ -54,11 +69,53 @@ class FreeAccessVpnService : VpnService() {
     private val ipcMessenger by lazy {
         Messenger(
             Handler(Looper.getMainLooper()) { msg ->
-                if (msg.what == MSG_REQUEST_SYNC) {
-                    emitStatus(error = null)
-                    true
-                } else {
-                    false
+                when (msg.what) {
+                    MSG_REGISTER_CLIENT -> {
+                        msg.replyTo?.let { client ->
+                            clientMessengers.add(client)
+                            sendBundleToClient(client, buildStatusBundle())
+                        }
+                        true
+                    }
+                    MSG_UNREGISTER_CLIENT -> {
+                        msg.replyTo?.let { clientMessengers.remove(it) }
+                        true
+                    }
+                    MSG_REQUEST_SYNC -> {
+                        msg.replyTo?.let { sendBundleToClient(it, buildStatusBundle()) }
+                        emitStatus()
+                        true
+                    }
+                    MSG_STOP -> {
+                        val handoff = msg.arg1 == 1
+                        requestStop(handoff)
+                        true
+                    }
+                    MSG_SOLVE_CAPTCHA -> {
+                        val answer = msg.data?.getString(EXTRA_CAPTCHA_ANSWER).orEmpty()
+                        if (answer.isNotBlank()) {
+                            scope.launch {
+                                if (engine.solveCaptcha(answer)) {
+                                    captchaImageUrl = ""
+                                    captchaSid = ""
+                                    currentStage = getString(R.string.free_access_stage_vk)
+                                    emitStatus()
+                                }
+                            }
+                        }
+                        true
+                    }
+                    MSG_REFRESH_CAPTCHA -> {
+                        scope.launch {
+                            val newUrl = engine.refreshCaptchaUrl()
+                            if (!newUrl.isNullOrBlank()) {
+                                captchaImageUrl = newUrl
+                                emitStatus()
+                            }
+                        }
+                        true
+                    }
+                    else -> false
                 }
             }
         )
@@ -81,24 +138,65 @@ class FreeAccessVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) {
+            running = false
+            currentState = STATE_IDLE
+            currentStage = null
+            captchaImageUrl = ""
+            captchaSid = ""
+            emitStatus()
             stopSelf()
             return START_NOT_STICKY
         }
         when (intent.action) {
             ACTION_STOP -> {
                 val handoff = intent.getBooleanExtra(EXTRA_HANDOFF, false)
-                scope.launch { lock.withLock { stopInternal(handoff = handoff) } }
+                requestStop(handoff)
+            }
+            ACTION_SOLVE_CAPTCHA -> {
+                val answer = intent.getStringExtra(EXTRA_CAPTCHA_ANSWER).orEmpty()
+                if (answer.isNotBlank()) {
+                    scope.launch { engine.solveCaptcha(answer) }
+                }
+            }
+            ACTION_REFRESH_CAPTCHA -> {
+                scope.launch {
+                    val newUrl = engine.refreshCaptchaUrl()
+                    if (!newUrl.isNullOrBlank()) {
+                        captchaImageUrl = newUrl
+                        emitStatus()
+                    }
+                }
             }
             ACTION_START, ACTION_RECONNECT -> {
                 val reconnect = intent.action == ACTION_RECONNECT
-                enterForeground(getString(R.string.notification_connecting), connected = false)
+                if (!enterForeground(getString(R.string.notification_connecting), connected = false)) {
+                    running = false
+                    currentState = STATE_IDLE
+                    currentStage = null
+                    captchaImageUrl = ""
+                    captchaSid = ""
+                    emitStatus(error = getString(R.string.vpn_start_failed_fgs))
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 val cfgJson = intent.getStringExtra(EXTRA_CONFIG_JSON).orEmpty()
                 val cookie = intent.getStringExtra(EXTRA_COOKIE_HEADER)
                 val excluded = intent.getStringArrayListExtra(EXTRA_EXCLUDED_APPS)?.toSet().orEmpty()
+                val mySession = ++sessionGen
+                if (reconnect || !running) {
+                    currentState = STATE_CONNECTING
+                    if (currentStage == null) {
+                        currentStage = getString(R.string.free_access_stage_vk)
+                    }
+                }
                 scope.launch {
                     lock.withLock {
-                        if (!reconnect && running) return@withLock
-                        startInternal(cfgJson, cookie, excluded)
+                        if (sessionGen != mySession) return@withLock
+                        if (!reconnect && running) {
+                            emitStatus()
+                            return@withLock
+                        }
+                        startInternal(cfgJson, cookie, excluded, mySession)
                     }
                 }
             }
@@ -106,7 +204,13 @@ class FreeAccessVpnService : VpnService() {
         return START_NOT_STICKY
     }
 
-    private fun startInternal(cfgJson: String, cookie: String?, excluded: Set<String>) {
+    private fun requestStop(handoff: Boolean) {
+        running = false
+        sessionGen++
+        scope.launch { lock.withLock { stopInternal(handoff = handoff) } }
+    }
+
+    private fun startInternal(cfgJson: String, cookie: String?, excluded: Set<String>, mySession: Long) {
         val cfg = runCatching {
             if (cfgJson.isNotBlank()) AppJson.decodeFromString<FreeAccessConfig>(cfgJson) else FreeAccessConfig()
         }.getOrDefault(FreeAccessConfig())
@@ -114,6 +218,9 @@ class FreeAccessVpnService : VpnService() {
         engine.stop()
         running = true
         currentState = STATE_CONNECTING
+        currentStage = getString(R.string.free_access_stage_vk)
+        captchaImageUrl = ""
+        captchaSid = ""
         connectedSince = 0L
         latestTraffic = VpnController.Traffic.ZERO
         emitStatus()
@@ -122,30 +229,48 @@ class FreeAccessVpnService : VpnService() {
             config = cfg,
             validCookie = cookie,
             excludedApps = excluded,
+            onStage = { stage ->
+                if (!running || sessionGen != mySession) return@start
+                currentStage = stage
+                emitStatus()
+            },
+            onCaptcha = { url, sid ->
+                if (!running || sessionGen != mySession) return@start
+                captchaImageUrl = url
+                captchaSid = sid
+                emitStatus()
+            },
             onReady = {
-                if (!running) return@start
+                if (!running || sessionGen != mySession) return@start
                 currentState = STATE_CONNECTED
+                currentStage = null
+                captchaImageUrl = ""
+                captchaSid = ""
                 if (connectedSince == 0L) connectedSince = System.currentTimeMillis()
                 enterForeground(getString(R.string.free_access_connected), connected = true)
                 emitStatus()
             },
             onTraffic = { t ->
-                if (!running) return@start
+                if (!running || sessionGen != mySession) return@start
                 latestTraffic = t
                 if (currentState == STATE_CONNECTED) emitStatus()
             },
             onError = { msg ->
+                if (!running || sessionGen != mySession) return@start
                 Log.e(TAG, "Free access error: $msg")
                 running = false
-                emitStatus(error = msg)
-                scope.launch { lock.withLock { stopInternal(handoff = false) } }
+                sessionGen++
+                scope.launch { lock.withLock { stopInternal(handoff = false, terminalError = msg) } }
             },
         )
     }
 
-    private suspend fun stopInternal(handoff: Boolean) {
-        if (!handoff) {
+    private suspend fun stopInternal(handoff: Boolean, terminalError: String? = null) {
+        if (!handoff && terminalError.isNullOrBlank()) {
             currentState = STATE_STOPPING
+            currentStage = null
+            captchaImageUrl = ""
+            captchaSid = ""
             emitStatus()
         }
         running = false
@@ -153,8 +278,11 @@ class FreeAccessVpnService : VpnService() {
         connectedSince = 0L
         latestTraffic = VpnController.Traffic.ZERO
         currentState = STATE_IDLE
+        currentStage = null
+        captchaImageUrl = ""
+        captchaSid = ""
         if (!handoff) {
-            emitStatus()
+            emitStatus(error = terminalError)
         }
         withContext(NonCancellable + Dispatchers.Main) {
             ServiceCompat.stopForeground(this@FreeAccessVpnService, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -162,22 +290,45 @@ class FreeAccessVpnService : VpnService() {
         }
     }
 
+    private fun buildStatusBundle(error: String? = null): Bundle = Bundle().apply {
+        putString(EXTRA_STATE, currentState)
+        putLong(EXTRA_SINCE, connectedSince)
+        putLong(EXTRA_UP_SPEED, latestTraffic.up)
+        putLong(EXTRA_DOWN_SPEED, latestTraffic.down)
+        putLong(EXTRA_TOTAL_UP, latestTraffic.totalUp)
+        putLong(EXTRA_TOTAL_DOWN, latestTraffic.totalDown)
+        currentStage?.let { putString(EXTRA_STAGE, it) }
+        if (captchaImageUrl.isNotBlank()) {
+            putString(EXTRA_CAPTCHA_URL, captchaImageUrl)
+            putString(EXTRA_CAPTCHA_SID, captchaSid)
+        }
+        if (!error.isNullOrBlank()) {
+            putString(EXTRA_ERROR, error)
+        }
+    }
+
+    private fun sendBundleToClient(client: Messenger, bundle: Bundle) {
+        try {
+            client.send(Message.obtain(null, MSG_STATUS_UPDATE).apply { data = bundle })
+        } catch (_: DeadObjectException) {
+            clientMessengers.remove(client)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to send status over Messenger", e)
+        }
+    }
+
     private fun emitStatus(error: String? = null) {
+        val bundle = buildStatusBundle(error)
+        for (client in clientMessengers) {
+            sendBundleToClient(client, bundle)
+        }
         val intent = Intent(ACTION_STATUS)
             .setPackage(packageName)
-            .putExtra(EXTRA_STATE, currentState)
-            .putExtra(EXTRA_SINCE, connectedSince)
-            .putExtra(EXTRA_UP_SPEED, latestTraffic.up)
-            .putExtra(EXTRA_DOWN_SPEED, latestTraffic.down)
-            .putExtra(EXTRA_TOTAL_UP, latestTraffic.totalUp)
-            .putExtra(EXTRA_TOTAL_DOWN, latestTraffic.totalDown)
-        if (!error.isNullOrBlank()) {
-            intent.putExtra(EXTRA_ERROR, error)
-        }
+            .putExtras(bundle)
         sendBroadcast(intent, "$packageName.INTERNAL_IPC")
     }
 
-    private fun enterForeground(text: String, connected: Boolean) {
+    private fun enterForeground(text: String, connected: Boolean): Boolean {
         val notification = Notifications.vpn(
             context = this,
             text = text,
@@ -185,7 +336,7 @@ class FreeAccessVpnService : VpnService() {
             stopServiceClass = FreeAccessVpnService::class.java,
             stopAction = ACTION_STOP,
         )
-        try {
+        return try {
             ServiceCompat.startForeground(
                 this,
                 Notifications.ID_VPN,
@@ -196,26 +347,33 @@ class FreeAccessVpnService : VpnService() {
                     0
                 },
             )
+            true
         } catch (e: Exception) {
-            Log.w(TAG, "startForeground failed", e)
-            runCatching { NotificationManagerCompat.from(this).notify(Notifications.ID_VPN, notification) }
+            Log.e(TAG, "startForeground failed", e)
+            FreeAccessLog.appendLine(this, TAG, "startForeground failed: ${e.message}")
+            false
         }
     }
 
     override fun onRevoke() {
-        scope.launch { lock.withLock { stopInternal(handoff = false) } }
+        requestStop(handoff = false)
     }
 
     override fun onDestroy() {
         running = false
+        sessionGen++
         engine.stop()
         runCatching { WgTurnCore.registerSocketProtector(null) }
         if (currentState != STATE_IDLE) {
             currentState = STATE_IDLE
+            currentStage = null
+            captchaImageUrl = ""
+            captchaSid = ""
             connectedSince = 0L
             latestTraffic = VpnController.Traffic.ZERO
             emitStatus()
         }
+        clientMessengers.clear()
         scope.cancel()
         super.onDestroy()
     }
@@ -228,8 +386,16 @@ class FreeAccessVpnService : VpnService() {
         const val ACTION_STOP = "xyz.selykvpn.app.FA_STOP"
         const val ACTION_BIND_IPC = "xyz.selykvpn.app.FA_BIND_IPC"
         const val ACTION_STATUS = "xyz.selykvpn.app.FA_STATUS"
+        const val ACTION_SOLVE_CAPTCHA = "xyz.selykvpn.app.FA_SOLVE_CAPTCHA"
+        const val ACTION_REFRESH_CAPTCHA = "xyz.selykvpn.app.FA_REFRESH_CAPTCHA"
 
         const val MSG_REQUEST_SYNC = 1
+        const val MSG_REGISTER_CLIENT = 2
+        const val MSG_UNREGISTER_CLIENT = 3
+        const val MSG_STATUS_UPDATE = 4
+        const val MSG_STOP = 5
+        const val MSG_SOLVE_CAPTCHA = 6
+        const val MSG_REFRESH_CAPTCHA = 7
 
         const val EXTRA_CONFIG_JSON = "config_json"
         const val EXTRA_COOKIE_HEADER = "cookie_header"
@@ -243,6 +409,10 @@ class FreeAccessVpnService : VpnService() {
         const val EXTRA_TOTAL_UP = "total_up"
         const val EXTRA_TOTAL_DOWN = "total_down"
         const val EXTRA_ERROR = "error"
+        const val EXTRA_STAGE = "stage"
+        const val EXTRA_CAPTCHA_URL = "captcha_url"
+        const val EXTRA_CAPTCHA_SID = "captcha_sid"
+        const val EXTRA_CAPTCHA_ANSWER = "captcha_answer"
 
         const val STATE_IDLE = "idle"
         const val STATE_CONNECTING = "connecting"

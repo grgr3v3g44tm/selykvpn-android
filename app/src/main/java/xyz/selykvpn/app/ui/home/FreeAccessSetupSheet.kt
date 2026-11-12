@@ -1,6 +1,9 @@
 package xyz.selykvpn.app.ui.home
 
 import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -226,6 +229,7 @@ internal fun FreeAccessSetupSheetContent(
     onUnlinkCall: () -> Unit,
     onDone: () -> Unit,
 ) {
+    val context = LocalContext.current
     val hasCallLink = config.hasRealVKCallLink()
     val missingWrapAPass = config.mode == TunnelMode.SRTP_WRAP_A && config.serverPassword.isBlank()
     val ready = hasCallLink && !missingWrapAPass
@@ -371,6 +375,24 @@ internal fun FreeAccessSetupSheetContent(
                     Text(stringResource(R.string.free_access_unlink_call), color = MaterialTheme.colorScheme.error)
                 }
             }
+
+            OutlinedButton(
+                onClick = {
+                    val pkgUri = Uri.parse("package:${context.packageName}")
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    runCatching { context.startActivity(intent) }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text(stringResource(R.string.free_access_battery_title))
+            }
+            Text(
+                text = stringResource(R.string.free_access_battery_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         FilledTonalButton(

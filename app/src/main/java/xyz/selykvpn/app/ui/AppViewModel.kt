@@ -27,7 +27,9 @@ import xyz.selykvpn.app.data.ServerKind
 import xyz.selykvpn.app.data.SubscriptionError
 import xyz.selykvpn.app.data.TvPairing
 import xyz.selykvpn.app.data.UpdateInfo
+import xyz.selykvpn.app.data.await
 import xyz.selykvpn.app.data.exclusionSettings
+import xyz.selykvpn.app.update.UpdateProgress
 import xyz.selykvpn.app.update.Updater
 import xyz.selykvpn.app.vpn.ConnectionLog
 import xyz.selykvpn.app.vpn.VpnController
@@ -82,6 +84,8 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     val config = graph.remoteConfig.state
     val vpnState = VpnController.state
     val traffic = VpnController.traffic
+    val freeAccessStage = VpnController.freeAccessStage
+    val captcha = VpnController.captcha
 
     val exclusions: StateFlow<ExclusionSettings> = exclusionSettings(graph.settings, graph.remoteConfig)
         .stateIn(viewModelScope, SharingStarted.Eagerly, ExclusionSettings(emptySet(), emptySet(), true, emptySet()))
@@ -279,8 +283,10 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _keyError = MutableStateFlow<Int?>(null)
     val keyError: StateFlow<Int?> = _keyError.asStateFlow()
 
-    private val _updateProgress = MutableStateFlow<Float?>(null)
-    val updateProgress: StateFlow<Float?> = _updateProgress.asStateFlow()
+    private val _updateProgress = MutableStateFlow<UpdateProgress?>(null)
+    val updateProgress: StateFlow<UpdateProgress?> = _updateProgress.asStateFlow()
+    private var updateJob: Job? = null
+    private var pendingInstallInfo: UpdateInfo? = null
 
     private val _messages = MutableSharedFlow<UiMessage>(extraBufferCapacity = 8)
     val messages: SharedFlow<UiMessage> = _messages.asSharedFlow()
@@ -300,8 +306,14 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
         onResume()
     }
 
-    /** Called when the app comes to the foreground: refresh what is outdated. */
+    /** Called when the app comes to the foreground: refresh what is outdated and sync `:vkturn`. */
     fun onResume() {
+        VpnController.syncState(app)
+        val pendingUpdate = pendingInstallInfo
+        if (pendingUpdate != null && Updater.canInstallPackages(app)) {
+            pendingInstallInfo = null
+            startUpdateDownloadOrInstall(pendingUpdate)
+        }
         viewModelScope.launch { graph.remoteConfig.refreshIfOlderThan(60 * 60_000L) }
         graph.whitelist.checkIfStale()
         val info = subscription.value ?: return
@@ -528,16 +540,53 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // endregion
 
-    // region Updates
+    // region Updates & Free Access Captcha
+
+    fun submitCaptcha(answer: String) = VpnController.submitCaptcha(app, answer)
+
+    fun refreshCaptcha() = VpnController.refreshCaptcha(app)
+
+    fun cancelCaptcha() = VpnController.cancelCaptcha(app)
+
+    suspend fun loadCaptchaBitmap(url: String): android.graphics.Bitmap? = withContext(Dispatchers.IO) {
+        runCatching {
+            graph.http.withClient { client ->
+                client.newCall(okhttp3.Request.Builder().url(url).build()).await().use { resp ->
+                    if (!resp.isSuccessful) return@withClient null
+                    val bytes = resp.body.bytes()
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                }
+            }
+        }.getOrNull()
+    }
 
     fun installUpdate() {
         val info = update.value ?: return
         if (_updateProgress.value != null) return
-        viewModelScope.launch {
-            _updateProgress.value = 0f
+        if (!Updater.canInstallPackages(app)) {
+            pendingInstallInfo = info
+            _messages.tryEmit(UiMessage(R.string.update_permission_needed))
+            Updater.openInstallPermissionSettings(app)
+            return
+        }
+        startUpdateDownloadOrInstall(info)
+    }
+
+    private fun startUpdateDownloadOrInstall(info: UpdateInfo) {
+        if (_updateProgress.value != null) return
+        updateJob?.cancel()
+        updateJob = viewModelScope.launch {
+            _updateProgress.value = UpdateProgress()
             try {
                 val file = Updater.download(app, graph.http, info) { _updateProgress.value = it }
-                Updater.install(app, file)
+                if (Updater.canInstallPackages(app)) {
+                    pendingInstallInfo = null
+                    Updater.install(app, file)
+                } else {
+                    pendingInstallInfo = info
+                    _messages.emit(UiMessage(R.string.update_permission_needed))
+                    Updater.openInstallPermissionSettings(app)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -546,6 +595,13 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
                 _updateProgress.value = null
             }
         }
+    }
+
+    fun cancelUpdate() {
+        updateJob?.cancel()
+        updateJob = null
+        pendingInstallInfo = null
+        _updateProgress.value = null
     }
 
     /** Hides the update card until a newer version is published. */

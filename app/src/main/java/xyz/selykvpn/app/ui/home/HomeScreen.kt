@@ -112,6 +112,7 @@ import xyz.selykvpn.app.model.FreeAccessConfig
 import xyz.selykvpn.app.model.TunnelMode
 import xyz.selykvpn.app.ui.AppViewModel
 import xyz.selykvpn.app.ui.Ping
+import xyz.selykvpn.app.update.UpdateProgress
 import xyz.selykvpn.app.ui.common.FlagAvatar
 import xyz.selykvpn.app.ui.common.formatBytes
 import xyz.selykvpn.app.ui.common.formatDuration
@@ -274,6 +275,7 @@ private fun HomeColumn(
     val update by viewModel.update.collectAsStateWithLifecycle()
     val updateProgress by viewModel.updateProgress.collectAsStateWithLifecycle()
     val activeMode by viewModel.activeMode.collectAsStateWithLifecycle()
+    val freeAccessStage by viewModel.freeAccessStage.collectAsStateWithLifecycle()
     val freeAccessConfig by viewModel.freeAccessConfig.collectAsStateWithLifecycle()
 
     BoxWithConstraints(modifier = modifier) {
@@ -306,7 +308,10 @@ private fun HomeColumn(
                         enabled = state == VpnController.State.Idle,
                     )
                     Spacer(Modifier.height(12.dp))
-                    StatusHeader(state)
+                    StatusHeader(
+                        state = state,
+                        freeAccessStage = if (activeMode == "free_access") freeAccessStage else null,
+                    )
                     SessionTraffic(visible = state is VpnController.State.Connected, viewModel = viewModel)
                     Spacer(Modifier.height(14.dp))
                     ConnectButton(
@@ -337,7 +342,13 @@ private fun HomeColumn(
                     )
                     update?.let {
                         Spacer(Modifier.height(10.dp))
-                        UpdateCard(it, updateProgress, onInstall = viewModel::installUpdate, onSkip = viewModel::skipUpdate)
+                        UpdateCard(
+                            info = it,
+                            progress = updateProgress,
+                            onInstall = viewModel::installUpdate,
+                            onSkip = viewModel::skipUpdate,
+                            onCancel = viewModel::cancelUpdate,
+                        )
                     }
                     subscription?.announce?.let {
                         Spacer(Modifier.height(10.dp))
@@ -396,7 +407,7 @@ private fun ServersPane(viewModel: AppViewModel, onSwap: () -> Unit, focus: Serv
 }
 
 @Composable
-private fun StatusHeader(state: VpnController.State) {
+private fun StatusHeader(state: VpnController.State, freeAccessStage: String? = null) {
     val title = when (state) {
         is VpnController.State.Connected -> R.string.status_connected
         VpnController.State.Connecting -> R.string.status_connecting
@@ -409,6 +420,14 @@ private fun StatusHeader(state: VpnController.State) {
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.onBackground,
         )
+        if (state == VpnController.State.Connecting && !freeAccessStage.isNullOrBlank()) {
+            Text(
+                text = freeAccessStage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
         val since = (state as? VpnController.State.Connected)?.since
         if (since != null) {
             var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -664,13 +683,20 @@ private fun AccountCard(account: AccountStatus?, subscription: SubscriptionInfo?
 }
 
 @Composable
-private fun UpdateCard(info: UpdateInfo, progress: Float?, onInstall: () -> Unit, onSkip: () -> Unit) {
+private fun UpdateCard(
+    info: UpdateInfo,
+    progress: UpdateProgress?,
+    onInstall: () -> Unit,
+    onSkip: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val context = LocalContext.current
     Card(
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = if (progress == null) 6.dp else 16.dp)) {
+        Column(Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Rounded.SystemUpdate, null)
                 Spacer(Modifier.width(12.dp))
@@ -685,7 +711,35 @@ private fun UpdateCard(info: UpdateInfo, progress: Float?, onInstall: () -> Unit
             }
             if (progress != null) {
                 Spacer(Modifier.height(10.dp))
-                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                val statusLabel = when {
+                    progress.fraction != null && progress.totalBytes > 0L -> {
+                        val pct = (progress.fraction * 100f).toInt().coerceIn(0, 100)
+                        stringResource(
+                            R.string.update_downloading_progress,
+                            pct,
+                            context.formatBytes(progress.downloadedBytes),
+                            context.formatBytes(progress.totalBytes),
+                        )
+                    }
+                    progress.downloadedBytes > 0L ->
+                        stringResource(R.string.update_downloading_bytes, context.formatBytes(progress.downloadedBytes))
+                    else -> stringResource(R.string.update_downloading)
+                }
+                Text(
+                    text = statusLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Spacer(Modifier.height(6.dp))
+                val fraction = progress.fraction
+                if (fraction != null) {
+                    LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onCancel) { Text(stringResource(R.string.update_cancel)) }
+                }
             } else {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onSkip) { Text(stringResource(R.string.update_skip)) }

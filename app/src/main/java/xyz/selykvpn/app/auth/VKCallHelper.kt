@@ -1,19 +1,19 @@
 package xyz.selykvpn.app.auth
 
 import android.content.Context
-import android.net.Uri
 import android.util.Log
 import android.webkit.WebSettings
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 
 private const val TAG = "VKCallHelper"
 
@@ -38,6 +38,9 @@ object VKCallHelper {
     private const val OAUTH_API_VERSION = "5.199"
     private const val CALLS_API_VERSION = "5.276"
     private const val REDIRECT_URI = "https://oauth.vk.com/blank.html"
+    private const val FAST_CALL_TIMEOUT_MS = 14_000L
+    private const val HTTP_TIMEOUT_MS = 5_000
+    private const val MAX_OAUTH_STEPS = 6
 
     suspend fun createCallFast(context: Context): FastCallResult = withContext(Dispatchers.IO) {
         VKCookieStore.init(context)
@@ -48,45 +51,37 @@ object VKCallHelper {
         }
 
         Log.i(TAG, "Запуск быстрого HTTP-создания звонка...")
-        try {
-            val token = obtainAccessTokenViaHttp(context, cookieHeader)
-            if (token.isNullOrBlank()) {
-                Log.w(TAG, "Быстрый HTTP-запрос токена вернул null — требуется подтверждение прав в WebView")
-                return@withContext FastCallResult.Error("Требуется подтвердить доступ в окне VK", needsUi = true)
+        withTimeoutOrNull(FAST_CALL_TIMEOUT_MS) {
+            try {
+                val token = obtainAccessTokenViaHttp(context, cookieHeader)
+                if (token.isNullOrBlank()) {
+                    Log.w(TAG, "Быстрый HTTP-запрос токена вернул null — требуется подтверждение прав в WebView")
+                    return@withTimeoutOrNull FastCallResult.Error("Требуется подтвердить доступ в окне VK", needsUi = true)
+                }
+
+                Log.i(TAG, "OAuth токен получен через HTTP, вызываем calls.start…")
+                createCallSuspend(token)
+            } catch (e: Exception) {
+                Log.e(TAG, "Ошибка быстрого создания звонка", e)
+                FastCallResult.Error("Ошибка сети при создании звонка: ${e.message}", needsUi = true)
             }
+        } ?: FastCallResult.Error("Таймаут быстрого создания звонка VK", needsUi = true)
+    }
 
-            Log.i(TAG, "OAuth токен получен через HTTP, вызываем calls.start…")
-            var callLink: String? = null
-            var errorMsg: String? = null
-            var isBanned = false
-            val latch = CountDownLatch(1)
-
-            createCallWithToken(token) { link, err, banned ->
-                callLink = link
-                errorMsg = err
-                isBanned = banned
-                latch.countDown()
-            }
-
-            val finished = latch.await(15, TimeUnit.SECONDS)
-            if (!finished) {
-                return@withContext FastCallResult.Error("Таймаут вызова calls.start", needsUi = true)
-            }
-
-            val finalLink = callLink
-            if (!finalLink.isNullOrBlank()) {
+    private suspend fun createCallSuspend(token: String): FastCallResult = suspendCancellableCoroutine { cont ->
+        createCallWithToken(token) { link, err, banned ->
+            if (!cont.isActive) return@createCallWithToken
+            val result = if (!link.isNullOrBlank()) {
                 Log.i(TAG, "Быстрое создание звонка УСПЕШНО")
-                FastCallResult.Success(finalLink)
+                FastCallResult.Success(link)
             } else {
                 FastCallResult.Error(
-                    message = errorMsg ?: "Не удалось создать звонок через VK API",
-                    needsUi = !isBanned,
-                    isAccountBanned = isBanned
+                    message = err ?: "Не удалось создать звонок через VK API",
+                    needsUi = !banned,
+                    isAccountBanned = banned,
                 )
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Ошибка быстрого создания звонка", e)
-            FastCallResult.Error("Ошибка сети при создании звонка: ${e.message}", needsUi = true)
+            cont.resume(result)
         }
     }
 
@@ -95,18 +90,15 @@ object VKCallHelper {
         val clean = rawUrl.trim('"', '\'', ' ')
         if (!clean.contains("access_token=")) return null
 
-        try {
-            val uri = Uri.parse(clean)
-            val fragment = uri.fragment
-            if (!fragment.isNullOrBlank() && fragment.contains("access_token=")) {
-                for (param in fragment.split("&")) {
-                    if (param.startsWith("access_token=")) {
-                        val token = param.removePrefix("access_token=").trim()
-                        if (token.isNotEmpty()) return token
-                    }
+        val fragment = clean.substringAfter('#', "")
+        if (fragment.contains("access_token=")) {
+            for (param in fragment.split("&")) {
+                if (param.startsWith("access_token=")) {
+                    val token = param.removePrefix("access_token=").trim()
+                    if (token.isNotEmpty()) return token
                 }
             }
-        } catch (_: Exception) {}
+        }
 
         val tokenPart = clean.substringAfter("access_token=")
         val token = tokenPart.substringBefore('&')
@@ -140,13 +132,13 @@ object VKCallHelper {
             "&state=vkturn" +
             "&v=$OAUTH_API_VERSION"
 
-        for (step in 0 until 10) {
+        for (step in 0 until MAX_OAUTH_STEPS) {
             var conn: HttpURLConnection? = null
             try {
                 conn = URL(currentUrl).openConnection() as HttpURLConnection
                 conn.instanceFollowRedirects = false
-                conn.connectTimeout = 8000
-                conn.readTimeout = 8000
+                conn.connectTimeout = HTTP_TIMEOUT_MS
+                conn.readTimeout = HTTP_TIMEOUT_MS
                 conn.setRequestProperty("User-Agent", userAgent)
                 conn.setRequestProperty("Cookie", cookieHeader)
                 conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -200,8 +192,8 @@ object VKCallHelper {
                 conn = URL(url).openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.instanceFollowRedirects = false
-                conn.connectTimeout = 6000
-                conn.readTimeout = 6000
+                conn.connectTimeout = HTTP_TIMEOUT_MS
+                conn.readTimeout = HTTP_TIMEOUT_MS
                 conn.doOutput = true
                 conn.setRequestProperty("User-Agent", ua)
                 conn.setRequestProperty("Cookie", cookieHeader)
@@ -253,8 +245,8 @@ object VKCallHelper {
                     conn = URL(endpoint).openConnection() as HttpURLConnection
                     conn.requestMethod = "POST"
                     conn.doOutput = true
-                    conn.connectTimeout = 10000
-                    conn.readTimeout = 10000
+                    conn.connectTimeout = 6000
+                    conn.readTimeout = 6000
                     conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
                     conn.setRequestProperty("User-Agent", "SelykVPN/2.0")
                     conn.setRequestProperty("Accept", "application/json")
@@ -263,7 +255,7 @@ object VKCallHelper {
                     conn.outputStream.use { it.write(postBytes) }
 
                     val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
-                    val responseStr = BufferedReader(InputStreamReader(stream)).use { it.readText() }
+                    val responseStr = stream?.let { BufferedReader(InputStreamReader(it)).use { r -> r.readText() } } ?: ""
 
                     val map = Gson().fromJson(responseStr, Map::class.java)
                     if (map != null && map.containsKey("error")) {

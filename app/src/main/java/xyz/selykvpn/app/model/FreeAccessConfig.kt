@@ -87,9 +87,14 @@ data class FreeAccessConfig(
         val needsCall = !(remoteHasCall || keepLocalCall)
         return remote.copy(
             id = id,
+            name = remote.name.ifBlank { name },
             stealthLink = effectiveStealth,
             needsStealthLink = needsCall,
             serverPassword = if (keepLocalPassword) serverPassword else remote.serverPassword,
+            privateKey = remote.privateKey.ifBlank { privateKey },
+            peerPublicKey = remote.peerPublicKey.ifBlank { peerPublicKey },
+            presharedKey = remote.presharedKey.ifBlank { presharedKey },
+            tunnelAddress = remote.tunnelAddress.ifBlank { tunnelAddress },
             deviceId = deviceId.ifBlank { remote.deviceId },
             useSessionAuth = useSessionAuth,
         )
@@ -113,22 +118,9 @@ data class FreeAccessConfig(
             ?: links.firstOrNull()
             ?: stealthLink.trim()
 
-        val stableDeviceId = if (deviceId.isNotBlank()) {
-            deviceId
-        } else {
+        val stableDeviceId = deviceId.ifBlank {
             try {
-                val app = xyz.selykvpn.app.SelykApp.instance
-                val prefs = app.getSharedPreferences("vkturn_device_prefs", android.content.Context.MODE_PRIVATE)
-                var hwid = prefs.getString("device_hwid", null)
-                if (hwid.isNullOrBlank()) {
-                    val androidId = android.provider.Settings.Secure.getString(
-                        app.contentResolver,
-                        android.provider.Settings.Secure.ANDROID_ID
-                    )
-                    hwid = androidId?.takeIf { it.isNotBlank() && it != "9774d56d682e549c" } ?: UUID.randomUUID().toString()
-                    prefs.edit().putString("device_hwid", hwid).apply()
-                }
-                hwid
+                resolveStableDeviceId(xyz.selykvpn.app.SelykApp.instance)
             } catch (_: Throwable) {
                 id.replace("-", "").take(16)
             }
@@ -458,6 +450,27 @@ data class FreeAccessConfig(
             } catch (_: Throwable) {
                 trimmed
             }
+        }
+
+        /**
+         * Resolves and persists a stable per-device HWID (resolved in the main process before
+         * passing the config to `:vkturn` so SharedPreferences never suffer multi-process races).
+         */
+        fun resolveStableDeviceId(context: android.content.Context): String {
+            val prefs = context.getSharedPreferences("vkturn_device_prefs", android.content.Context.MODE_PRIVATE)
+            var hwid = prefs.getString("device_hwid", null)
+            if (hwid.isNullOrBlank()) {
+                val androidId = runCatching {
+                    android.provider.Settings.Secure.getString(
+                        context.contentResolver,
+                        android.provider.Settings.Secure.ANDROID_ID
+                    )
+                }.getOrNull()
+                hwid = androidId?.takeIf { it.isNotBlank() && it != "9774d56d682e549c" }
+                    ?: UUID.randomUUID().toString()
+                prefs.edit().putString("device_hwid", hwid).apply()
+            }
+            return hwid
         }
     }
 }
