@@ -311,7 +311,7 @@
     <string name="settings_connection_log_off">Off — for troubleshooting</string>
     <string name="connlog_title">Connection log</string>
     <string name="connlog_enable">Keep a log</string>
-    <string name="connlog_enable_hint">Shows which addresses apps connect to and whether each connection goes through the VPN. It\'s for troubleshooting, so it\'s off by default. Kept only in the phone\'s memory until the next connection.</string>
+    <string name="connlog_enable_hint">Records app addresses (Standard VPN) and Free Access (VK TURN) debug logs. Off by default to avoid extra load.</string>
     <string name="connlog_empty">No connections yet</string>
     <string name="connlog_empty_disconnected">Connect the VPN to see the apps\' connections here</string>
     <string name="connlog_excluded_note">Apps without VPN don\'t appear here: their traffic bypasses the VPN.</string>

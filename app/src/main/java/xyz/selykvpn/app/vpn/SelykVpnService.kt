@@ -141,8 +141,15 @@ class SelykVpnService : VpnService() {
                     FreeAccessConfig()
                 }
                 val excluded = exclusionSettings(graph.settings, graph.remoteConfig).first().effective
+                val logEnabled = graph.settings.connectionLogNow()
                 withContext(Dispatchers.Main) {
-                    VpnController.startFreeAccess(applicationContext, cfg, excluded, reconnect = reconnect)
+                    VpnController.startFreeAccess(
+                        applicationContext,
+                        cfg,
+                        excluded,
+                        reconnect = reconnect,
+                        logEnabled = logEnabled,
+                    )
                 }
                 stopInternal(handoff = true)
                 return

@@ -313,7 +313,7 @@
     <string name="settings_connection_log_off">Выключен — нужен для отладки</string>
     <string name="connlog_title">Журнал подключений</string>
     <string name="connlog_enable">Вести журнал</string>
-    <string name="connlog_enable_hint">Показывает, к каким адресам обращаются приложения и идёт ли подключение через VPN. Нужен для отладки, поэтому выключен по умолчанию. Хранится только в памяти телефона до следующего подключения.</string>
+    <string name="connlog_enable_hint">Записывает адреса приложений (Основной VPN) и отладочный лог «Свободного доступа» (VK TURN). Выключен по умолчанию, чтобы не создавать лишнюю нагрузку.</string>
     <string name="connlog_empty">Подключений пока нет</string>
     <string name="connlog_empty_disconnected">Подключите VPN — здесь появятся подключения приложений</string>
     <string name="connlog_excluded_note">Приложения без VPN сюда не попадают: их трафик идёт мимо VPN.</string>

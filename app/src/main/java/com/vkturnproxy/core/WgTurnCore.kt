@@ -32,6 +32,7 @@ object WgTurnCore {
     external fun solveCaptcha(handle: Int, answer: String)
     external fun refreshCaptchaURL(handle: Int): String
     external fun setLogFilePath(path: String)
+    external fun setCacheDir(path: String)
 
     // VK Cookie Auth & Advanced
     external fun setVKCookieAuth(enabled: Boolean, cookie: String, linksJson: String)

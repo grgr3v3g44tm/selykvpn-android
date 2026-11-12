@@ -144,7 +144,13 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     fun updateFreeAccessConfig(cfg: xyz.selykvpn.app.model.FreeAccessConfig) = viewModelScope.launch {
         graph.settings.setFreeAccessConfig(AppJson.encodeToString(cfg))
         if (activeMode.value == "free_access" && vpnState.value is VpnController.State.Connected) {
-            VpnController.startFreeAccess(app, cfg, exclusions.value.effective, reconnect = true)
+            VpnController.startFreeAccess(
+                app,
+                cfg,
+                exclusions.value.effective,
+                reconnect = true,
+                logEnabled = connectionLog.value,
+            )
         }
     }
 
@@ -198,7 +204,11 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun setConnectionLog(enabled: Boolean) = viewModelScope.launch {
         graph.settings.setConnectionLog(enabled)
-        if (!enabled) ConnectionLog.clear()
+        VpnController.setFreeAccessLogEnabled(app, enabled)
+        if (!enabled) {
+            ConnectionLog.clear()
+            xyz.selykvpn.app.vpn.FreeAccessLog.clear(app)
+        }
     }
 
     fun checkWhitelist() = graph.whitelist.checkNow()
@@ -580,7 +590,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
                 _messages.tryEmit(UiMessage(R.string.free_access_need_call_link))
                 return
             }
-            VpnController.startFreeAccess(app, cfg, exclusions.value.effective)
+            VpnController.startFreeAccess(app, cfg, exclusions.value.effective, logEnabled = connectionLog.value)
             return
         }
         if (subscription.value == null) return

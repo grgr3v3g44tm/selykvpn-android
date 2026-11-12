@@ -15,11 +15,15 @@ object FreeAccessLog {
 
     private const val DIR_NAME = "logs"
     private const val FILE_NAME = "vkturn.log"
+    private const val CRED_POOL_FILE = "creds-pool.json"
     private const val MAX_BYTES = 1_024_000L
     private const val KEEP_BYTES = 256_000
 
+    fun logDir(context: Context): File =
+        File(context.filesDir, DIR_NAME).apply { mkdirs() }
+
     fun logFile(context: Context): File =
-        File(File(context.filesDir, DIR_NAME), FILE_NAME)
+        File(logDir(context), FILE_NAME)
 
     /** Ensures the log directory exists and trims oversized logs before Go opens [logFile]. */
     fun prepareForSession(context: Context): File {
@@ -27,6 +31,14 @@ object FreeAccessLog {
         file.parentFile?.mkdirs()
         trimIfOversized(file)
         return file
+    }
+
+    /** Clears persisted TURN credential pool cache after a bootstrap deadlock/timeout. */
+    fun clearCredPoolCache(context: Context) {
+        runCatching {
+            val cache = File(logDir(context), CRED_POOL_FILE)
+            if (cache.exists()) cache.delete()
+        }
     }
 
     fun appendLine(context: Context, tag: String, message: String) {

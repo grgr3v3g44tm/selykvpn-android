@@ -458,6 +458,7 @@ object VpnController {
         config: FreeAccessConfig,
         excludedApps: Set<String>,
         reconnect: Boolean = false,
+        logEnabled: Boolean = false,
     ) {
         val appCtx = context.applicationContext
         appContext = appCtx
@@ -495,7 +496,14 @@ object VpnController {
         val started = runCatching {
             ContextCompat.startForegroundService(
                 appCtx,
-                FreeAccessVpnService.startIntent(appCtx, effectiveConfig, validCookie, excludedApps, reconnect = reconnect),
+                FreeAccessVpnService.startIntent(
+                    appCtx,
+                    effectiveConfig,
+                    validCookie,
+                    excludedApps,
+                    reconnect = reconnect,
+                    logEnabled = logEnabled,
+                ),
             )
         }
         if (started.isFailure) {
@@ -564,6 +572,11 @@ object VpnController {
         stop(context)
     }
 
+    fun setFreeAccessLogEnabled(context: Context, enabled: Boolean) {
+        appContext = context.applicationContext
+        sendToRemote(FreeAccessVpnService.MSG_SET_LOG_ENABLED, arg1 = if (enabled) 1 else 0)
+    }
+
     fun start(context: Context, forceMode: String? = null) {
         val appCtx = context.applicationContext
         appContext = appCtx
@@ -577,8 +590,9 @@ object VpnController {
                 } ?: FreeAccessConfig()
                 val excluded = runCatching { exclusionSettings(graph.settings, graph.remoteConfig).first().effective }
                     .getOrDefault(emptySet())
+                val logEnabled = runCatching { graph.settings.connectionLogNow() }.getOrDefault(false)
                 withContext(Dispatchers.Main) {
-                    startFreeAccess(appCtx, cfg, excluded, reconnect = false)
+                    startFreeAccess(appCtx, cfg, excluded, reconnect = false, logEnabled = logEnabled)
                 }
             } else {
                 withContext(Dispatchers.Main) {
@@ -642,8 +656,9 @@ object VpnController {
                 } ?: return@launch
                 val excluded = runCatching { exclusionSettings(graph.settings, graph.remoteConfig).first().effective }
                     .getOrDefault(emptySet())
+                val logEnabled = runCatching { graph.settings.connectionLogNow() }.getOrDefault(false)
                 withContext(Dispatchers.Main) {
-                    startFreeAccess(appCtx, cfg, excluded, reconnect = true)
+                    startFreeAccess(appCtx, cfg, excluded, reconnect = true, logEnabled = logEnabled)
                 }
             }
         } else {

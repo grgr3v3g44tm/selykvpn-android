@@ -115,6 +115,10 @@ class FreeAccessVpnService : VpnService() {
                         }
                         true
                     }
+                    MSG_SET_LOG_ENABLED -> {
+                        engine.setLogEnabled(msg.arg1 == 1)
+                        true
+                    }
                     else -> false
                 }
             }
@@ -182,6 +186,7 @@ class FreeAccessVpnService : VpnService() {
                 val cfgJson = intent.getStringExtra(EXTRA_CONFIG_JSON).orEmpty()
                 val cookie = intent.getStringExtra(EXTRA_COOKIE_HEADER)
                 val excluded = intent.getStringArrayListExtra(EXTRA_EXCLUDED_APPS)?.toSet().orEmpty()
+                val logEnabled = intent.getBooleanExtra(EXTRA_LOG_ENABLED, false)
                 val mySession = ++sessionGen
                 if (reconnect || !running) {
                     currentState = STATE_CONNECTING
@@ -196,7 +201,7 @@ class FreeAccessVpnService : VpnService() {
                             emitStatus()
                             return@withLock
                         }
-                        startInternal(cfgJson, cookie, excluded, mySession)
+                        startInternal(cfgJson, cookie, excluded, logEnabled, mySession)
                     }
                 }
             }
@@ -210,7 +215,7 @@ class FreeAccessVpnService : VpnService() {
         scope.launch { lock.withLock { stopInternal(handoff = handoff) } }
     }
 
-    private fun startInternal(cfgJson: String, cookie: String?, excluded: Set<String>, mySession: Long) {
+    private fun startInternal(cfgJson: String, cookie: String?, excluded: Set<String>, logEnabled: Boolean, mySession: Long) {
         val cfg = runCatching {
             if (cfgJson.isNotBlank()) AppJson.decodeFromString<FreeAccessConfig>(cfgJson) else FreeAccessConfig()
         }.getOrDefault(FreeAccessConfig())
@@ -229,6 +234,7 @@ class FreeAccessVpnService : VpnService() {
             config = cfg,
             validCookie = cookie,
             excludedApps = excluded,
+            logEnabled = logEnabled,
             onStage = { stage ->
                 if (!running || sessionGen != mySession) return@start
                 currentStage = stage
@@ -396,10 +402,12 @@ class FreeAccessVpnService : VpnService() {
         const val MSG_STOP = 5
         const val MSG_SOLVE_CAPTCHA = 6
         const val MSG_REFRESH_CAPTCHA = 7
+        const val MSG_SET_LOG_ENABLED = 8
 
         const val EXTRA_CONFIG_JSON = "config_json"
         const val EXTRA_COOKIE_HEADER = "cookie_header"
         const val EXTRA_EXCLUDED_APPS = "excluded_apps"
+        const val EXTRA_LOG_ENABLED = "log_enabled"
         const val EXTRA_HANDOFF = "handoff"
 
         const val EXTRA_STATE = "state"
@@ -425,6 +433,7 @@ class FreeAccessVpnService : VpnService() {
             validCookie: String?,
             excludedApps: Set<String>,
             reconnect: Boolean = false,
+            logEnabled: Boolean = false,
         ): Intent = Intent(context, FreeAccessVpnService::class.java).apply {
             action = if (reconnect) ACTION_RECONNECT else ACTION_START
             putExtra(EXTRA_CONFIG_JSON, AppJson.encodeToString(config))
@@ -432,6 +441,7 @@ class FreeAccessVpnService : VpnService() {
                 putExtra(EXTRA_COOKIE_HEADER, validCookie)
             }
             putStringArrayListExtra(EXTRA_EXCLUDED_APPS, ArrayList(excludedApps))
+            putExtra(EXTRA_LOG_ENABLED, logEnabled)
         }
 
         fun stopIntent(context: Context, handoff: Boolean = false): Intent =

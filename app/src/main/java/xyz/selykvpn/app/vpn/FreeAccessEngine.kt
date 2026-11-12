@@ -60,6 +60,9 @@ class FreeAccessEngine(private val vpnService: VpnService) {
     @Volatile
     private var stopRequested: Boolean = false
 
+    @Volatile
+    private var loggingEnabled: Boolean = false
+
     private var startJob: Job? = null
     private var statsJob: Job? = null
     private val lifecycleMutex = Mutex()
@@ -68,10 +71,27 @@ class FreeAccessEngine(private val vpnService: VpnService) {
     private val _isConnected = MutableStateFlow(false)
     val isConnected = _isConnected.asStateFlow()
 
+    fun setLogEnabled(enabled: Boolean) {
+        loggingEnabled = enabled
+        runCatching {
+            WgTurnCore.setCacheDir(FreeAccessLog.logDir(vpnService).absolutePath)
+            if (enabled) {
+                val logFile = FreeAccessLog.prepareForSession(vpnService)
+                WgTurnCore.setLogFilePath(logFile.absolutePath)
+            } else {
+                WgTurnCore.setLogFilePath("")
+            }
+        }.onFailure { Log.w(TAG, "setLogEnabled($enabled) failed: ${it.message}") }
+    }
+
+    private fun logDiagnostic(message: String) {
+        if (loggingEnabled) FreeAccessLog.appendLine(vpnService, TAG, message)
+    }
+
     fun solveCaptcha(answer: String): Boolean {
         val handle = synchronized(nativeLock) { tunnelHandle }
         if (handle <= 0) return false
-        FreeAccessLog.appendLine(vpnService, TAG, "Submitting VK captcha answer")
+        logDiagnostic("Submitting VK captcha answer")
         return runCatching {
             WgTurnCore.solveCaptcha(handle, answer)
             true
@@ -81,7 +101,7 @@ class FreeAccessEngine(private val vpnService: VpnService) {
     fun refreshCaptchaUrl(): String? {
         val handle = synchronized(nativeLock) { tunnelHandle }
         if (handle <= 0) return null
-        FreeAccessLog.appendLine(vpnService, TAG, "Refreshing VK captcha image")
+        logDiagnostic("Refreshing VK captcha image")
         return runCatching { WgTurnCore.refreshCaptchaURL(handle).takeIf { it.isNotBlank() } }.getOrNull()
     }
 
@@ -89,12 +109,14 @@ class FreeAccessEngine(private val vpnService: VpnService) {
         config: FreeAccessConfig,
         validCookie: String?,
         excludedApps: Set<String>,
+        logEnabled: Boolean = false,
         onStage: (String) -> Unit,
         onCaptcha: (imageUrl: String, sid: String) -> Unit,
         onReady: () -> Unit,
         onTraffic: (VpnController.Traffic) -> Unit,
         onError: (String) -> Unit,
     ) {
+        loggingEnabled = logEnabled
         val prevJob = startJob
         val myGen = synchronized(nativeLock) {
             stopRequested = false
@@ -115,13 +137,13 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                 try {
                     if (!config.hasRealVKCallLink()) {
                         Log.e(TAG, "Missing valid VK call link")
-                        FreeAccessLog.appendLine(vpnService, TAG, "Aborted: missing valid VK call link")
+                        logDiagnostic("Aborted: missing valid VK call link")
                         onError("Требуется ссылка на звонок VK. Откройте «Прямой защищённый шлюз» и привяжите звонок.")
                         return@withLock
                     }
                     if (config.mode == TunnelMode.SRTP_WRAP_A && config.serverPassword.isBlank()) {
                         Log.e(TAG, "WRAP-A mode requires serverPassword")
-                        FreeAccessLog.appendLine(vpnService, TAG, "Aborted: WRAP-A serverPassword missing")
+                        logDiagnostic("Aborted: WRAP-A serverPassword missing")
                         onError("В ключе отсутствует пароль сервера WRAP-A. Обновите ключ в Telegram-боте.")
                         return@withLock
                     }
@@ -129,21 +151,17 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                         (config.privateKey.isBlank() || config.peerPublicKey.isBlank())
                     ) {
                         Log.e(TAG, "WireGuard parameters are missing for mode=${config.mode}")
-                        FreeAccessLog.appendLine(vpnService, TAG, "Aborted: WireGuard keys missing")
+                        logDiagnostic("Aborted: WireGuard keys missing")
                         onError("В конфигурации отсутствуют ключи WireGuard. Обновите ключ в Telegram-боте.")
                         return@withLock
                     }
 
-                    val logFile = FreeAccessLog.prepareForSession(vpnService)
-                    runCatching { WgTurnCore.setLogFilePath(logFile.absolutePath) }
-                        .onFailure { Log.w(TAG, "setLogFilePath failed: ${it.message}") }
+                    setLogEnabled(loggingEnabled)
 
                     val cookieLinks = config.getParsedStealthLinks()
                     val cookieToUse = validCookie?.takeIf { config.useSessionAuth && it.isNotBlank() }
                     val effectiveCookieAuth = cookieToUse != null
-                    FreeAccessLog.appendLine(
-                        vpnService,
-                        TAG,
+                    logDiagnostic(
                         "Start mode=${config.mode}, useUDP=${config.useUDP}, cookieAuth=$effectiveCookieAuth, peer=${config.peerAddress}"
                     )
                     Log.i(TAG, "Starting Free Access tunnel: mode=${config.mode}, useUDP=${config.useUDP}")
@@ -166,7 +184,7 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                     val handle = WgTurnCore.startVKBootstrap(proxyConfigJson)
                     if (handle <= 0) {
                         Log.e(TAG, "Failed to start bootstrap, handle=$handle")
-                        FreeAccessLog.appendLine(vpnService, TAG, "startVKBootstrap failed: handle=$handle")
+                        logDiagnostic("startVKBootstrap failed: handle=$handle")
                         if (!isAborted()) onError("Ошибка инициализации шлюза")
                         return@withLock
                     }
@@ -193,7 +211,10 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                         val authError = combineAuthErrors(handle)
                         val code = (bootstrapResult as? BootstrapResult.Failed)?.code ?: 0
                         Log.e(TAG, "Bootstrap failed: result=$bootstrapResult, authError=$authError")
-                        FreeAccessLog.appendLine(vpnService, TAG, "Bootstrap failed: result=$bootstrapResult authError=$authError")
+                        logDiagnostic("Bootstrap failed: result=$bootstrapResult authError=$authError")
+                        if (bootstrapResult is BootstrapResult.Timeout) {
+                            FreeAccessLog.clearCredPoolCache(vpnService)
+                        }
                         tearDownNative()
                         onError(mapBootstrapError(code, authError))
                         return@withLock
@@ -220,14 +241,14 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                                 element["mtu"]?.jsonPrimitive?.content?.toIntOrNull()?.let { provMtu ->
                                     if (provMtu in 1200..1280) mtu = provMtu
                                 }
-                                FreeAccessLog.appendLine(vpnService, TAG, "WRAP-A provisioned: addr=$tunnelAddr mtu=$mtu")
+                                logDiagnostic("WRAP-A provisioned: addr=$tunnelAddr mtu=$mtu")
                             } catch (e: Exception) {
                                 Log.w(TAG, "Error parsing WRAP-A provision: ${e.message}")
                             }
                         } else {
                             val authError = combineAuthErrors(handle)
                             Log.e(TAG, "WRAP-A provision failed: authError=$authError")
-                            FreeAccessLog.appendLine(vpnService, TAG, "WRAP-A provision failed: $authError")
+                            logDiagnostic("WRAP-A provision failed: $authError")
                             tearDownNative()
                             onError(
                                 authError.ifBlank {
@@ -278,7 +299,7 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                     val pfd = builder.establish()
                     if (pfd == null) {
                         Log.e(TAG, "VpnService.Builder.establish() returned null")
-                        FreeAccessLog.appendLine(vpnService, TAG, "VpnService.Builder.establish() returned null")
+                        logDiagnostic("VpnService.Builder.establish() returned null")
                         tearDownNative()
                         if (!isAborted()) onError("Не удалось создать сетевой интерфейс")
                         return@withLock
@@ -299,21 +320,21 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                     val attachRes = WgTurnCore.attachWireGuard(handle, uapiConfig, pfd.fd)
                     if (attachRes < 0) {
                         Log.e(TAG, "attachWireGuard failed with code $attachRes")
-                        FreeAccessLog.appendLine(vpnService, TAG, "attachWireGuard failed: $attachRes")
+                        logDiagnostic("attachWireGuard failed: $attachRes")
                         tearDownNative()
                         if (!isAborted()) onError("Ошибка связывания сетевого туннеля ($attachRes)")
                         return@withLock
                     }
 
                     Log.i(TAG, "TUN and WireGuard attached, waiting for handshake...")
-                    FreeAccessLog.appendLine(vpnService, TAG, "TUN attached, awaiting WireGuard handshake")
+                    logDiagnostic("TUN attached, awaiting WireGuard handshake")
                     onStage(vpnService.getString(R.string.free_access_stage_handshake))
                     startStatsAndHandshake(handle, myGen, onReady, onTraffic, onError)
                 } catch (_: CancellationException) {
                     tearDownNative()
                 } catch (e: Exception) {
                     Log.e(TAG, "Error starting Free Access tunnel", e)
-                    FreeAccessLog.appendLine(vpnService, TAG, "Start exception: ${e.message}")
+                    logDiagnostic("Start exception: ${e.message}")
                     tearDownNative()
                     if (!isAborted()) onError(e.message ?: "Ошибка подключения")
                 }
@@ -347,7 +368,7 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                     lastCaptchaUrl = stats.captchaImageUrl
                     lastCaptchaSid = stats.captchaSid
                     deadline = maxOf(deadline, SystemClock.elapsedRealtime() + CAPTCHA_TIMEOUT_MS)
-                    FreeAccessLog.appendLine(vpnService, TAG, "VK captcha challenge received (sid=${stats.captchaSid.ifBlank { "legacy" }})")
+                    logDiagnostic("VK captcha challenge received (sid=${stats.captchaSid.ifBlank { "legacy" }})")
                     onStage(vpnService.getString(R.string.free_access_stage_captcha))
                     onCaptcha(stats.captchaImageUrl, stats.captchaSid)
                 }
@@ -435,14 +456,14 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                             handshakeConfirmed = true
                             _isConnected.value = true
                             Log.i(TAG, "WireGuard handshake confirmed (rx_bytes=$downTotal)")
-                            FreeAccessLog.appendLine(vpnService, TAG, "WireGuard handshake confirmed (rx=$downTotal)")
+                            logDiagnostic("WireGuard handshake confirmed (rx=$downTotal)")
                             onReady()
                         } else {
                             handshakeWaitSec++
                             if (handshakeWaitSec >= HANDSHAKE_TIMEOUT_SEC) {
                                 val authErr = combineAuthErrors(handle)
                                 Log.e(TAG, "WireGuard handshake timed out after ${HANDSHAKE_TIMEOUT_SEC}s, authErr=$authErr")
-                                FreeAccessLog.appendLine(vpnService, TAG, "Handshake timeout (${HANDSHAKE_TIMEOUT_SEC}s), authErr=$authErr")
+                                logDiagnostic("Handshake timeout (${HANDSHAKE_TIMEOUT_SEC}s), authErr=$authErr")
                                 tearDownNative()
                                 if (!stopRequested && startGen == expectedGen) {
                                     val msg = if (authErr.isNotBlank()) {
@@ -494,7 +515,7 @@ class FreeAccessEngine(private val vpnService: VpnService) {
         }
 
         if (handleToClose > 0) {
-            FreeAccessLog.appendLine(vpnService, TAG, "Closing tunnel handle=$handleToClose")
+            logDiagnostic("Closing tunnel handle=$handleToClose")
             runCatching { WgTurnCore.turnOff(handleToClose) }
                 .onFailure { Log.w(TAG, "Error in turnOff", it) }
         }
