@@ -23,6 +23,8 @@ data class RemoteConfig(
         "sub.selykvpn.xyz",
         "core.selykvpn.xyz",
         "panel.selykvpn.xyz",
+        "*.xamudhabibi.qzz.io",
+        "xamudhabibi.qzz.io",
         "panel.xamudhabibi.qzz.io",
     ),
     val subscriptionMirrors: List<String> = emptyList(),
@@ -73,19 +75,11 @@ data class TelegramProxy(val title: String, val url: String, val flag: String? =
 @Serializable
 data class ServerFilter(val emoji: String, val title: String)
 
-/**
- * White lists: if only [allowedProbes] answer while [blockedProbes] don't, the operator lets
- * through only approved services. Servers are found by words in their names.
- */
+/** White lists: if only [allowedProbes] answer while [blockedProbes] don't, only approved services work. */
 @Serializable
 data class WhitelistConfig(
     val blockedProbes: List<String> = listOf("https://www.google.com/generate_204", "https://www.gstatic.com/generate_204"),
     val allowedProbes: List<String> = listOf("https://vk.ru", "https://ya.ru"),
-    val lteServer: List<String> = listOf("LTE"),
-    val wifiServer: List<String> = listOf("Wi-Fi"),
-    val bypassServer: List<String> = listOf("Все операторы"),
-    /** While white lists are on, the ping button checks only servers with one of these words. */
-    val pingServers: List<String> = listOf("Все операторы", "LTE"),
 )
 
 /** Host names without "https://". */
@@ -136,6 +130,15 @@ data class UpdateInfo(
     val sha256: String? = null,
     val changelog: String? = null,
 )
+
+enum class UpdateCheckOutcome { AVAILABLE, UP_TO_DATE, FAILED }
+
+/** Determines user feedback after a manual update check. */
+fun evaluateUpdateCheck(refreshOk: Boolean, hasUpdate: Boolean): UpdateCheckOutcome = when {
+    hasUpdate -> UpdateCheckOutcome.AVAILABLE
+    !refreshOk -> UpdateCheckOutcome.FAILED
+    else -> UpdateCheckOutcome.UP_TO_DATE
+}
 
 class RemoteConfigRepository(context: Context, private val http: Http) {
     private val file = File(context.filesDir, "remote_config.json")

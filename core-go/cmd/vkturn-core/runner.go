@@ -215,7 +215,7 @@ func (r *TunnelRunner) startAsync(req StartRequest) error {
 		if err != nil {
 			localAddr, _ = netip.ParseAddr("10.77.77.2")
 		}
-		dnsAddr, _ := netip.ParseAddr("10.77.77.1")
+		dnsAddr, _ := netip.ParseAddr("1.1.1.1")
 		mtu := req.Profile.WireGuard.MTU
 		if mtu <= 0 {
 			mtu = 1280

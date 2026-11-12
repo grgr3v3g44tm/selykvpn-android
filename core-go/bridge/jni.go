@@ -122,6 +122,14 @@ Java_com_vkturnproxy_core_WgTurnCore_setLogFilePath(JNIEnv *env, jclass clazz, j
     (*env)->ReleaseStringUTFChars(env, jPath, p);
 }
 
+JNIEXPORT void JNICALL
+Java_com_vkturnproxy_core_WgTurnCore_setCacheDir(JNIEnv *env, jclass clazz, jstring jPath) {
+    if (!jPath) return;
+    const char *p = (*env)->GetStringUTFChars(env, jPath, NULL);
+    wgSetCacheDir(p);
+    (*env)->ReleaseStringUTFChars(env, jPath, p);
+}
+
 // CSQTT JNI
 JNIEXPORT jint JNICALL
 Java_com_vkturnproxy_core_WgTurnCore_csqttStart(JNIEnv *env, jclass clazz, jstring jConfig) {

@@ -57,6 +57,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import xyz.selykvpn.app.BuildConfig
@@ -69,6 +70,7 @@ import xyz.selykvpn.app.ui.common.centeredMaxWidth
 import xyz.selykvpn.app.ui.common.isWideWindow
 import xyz.selykvpn.app.ui.common.openUrl
 import xyz.selykvpn.app.ui.home.SupportRow
+import xyz.selykvpn.app.ui.theme.SelykVpnTheme
 import xyz.selykvpn.app.update.Updater
 import xyz.selykvpn.app.vpn.Xray
 
@@ -359,4 +361,42 @@ private fun SettingsRow(
         trailingContent = trailing,
         modifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier,
     )
+}
+
+@Preview(name = "Settings Compact 360dp", widthDp = 360, heightDp = 640, showBackground = true)
+@Preview(name = "Settings Wide 600dp Light", widthDp = 600, heightDp = 640, showBackground = true)
+@Composable
+fun SettingsPreview() {
+    SelykVpnTheme(palette = "selyk", darkTheme = true) {
+        Scaffold { padding ->
+            LazyColumn(
+                Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .centeredMaxWidth(720.dp),
+            ) {
+                item { SectionTitle(R.string.settings_subscription) }
+                item {
+                    SettingsRow(
+                        icon = Icons.Rounded.Refresh,
+                        title = stringResource(R.string.settings_update_subscription),
+                        subtitle = "Только что",
+                    )
+                }
+                item {
+                    SettingsRow(
+                        icon = Icons.Rounded.Key,
+                        title = stringResource(R.string.settings_change_key),
+                    )
+                }
+                item {
+                    SettingsRow(
+                        icon = Icons.Rounded.Palette,
+                        title = stringResource(R.string.theme_palette_title),
+                        subtitle = stringResource(R.string.theme_selyk_premium),
+                    )
+                }
+            }
+        }
+    }
 }

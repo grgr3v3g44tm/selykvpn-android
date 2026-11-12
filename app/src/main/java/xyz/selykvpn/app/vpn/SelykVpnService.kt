@@ -19,6 +19,7 @@ import xyz.selykvpn.app.BuildConfig
 import xyz.selykvpn.app.SelykApp
 import xyz.selykvpn.app.MainActivity
 import xyz.selykvpn.app.R
+import xyz.selykvpn.app.data.AppJson
 import xyz.selykvpn.app.data.RoutingSettings
 import xyz.selykvpn.app.data.ServerEntry
 import xyz.selykvpn.app.data.ShareSettings
@@ -27,7 +28,6 @@ import xyz.selykvpn.app.data.UPDATE_MANUAL
 import xyz.selykvpn.app.data.UnderlyingNetwork
 import xyz.selykvpn.app.data.exclusionSettings
 import xyz.selykvpn.app.model.FreeAccessConfig
-import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -56,8 +56,11 @@ class SelykVpnService : VpnService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Mutex()
-    private val freeAccessEngine by lazy { FreeAccessEngine(this) }
     private var tun: ParcelFileDescriptor? = null
+
+    private val isTunnelActive: Boolean
+        get() = tun != null
+
     private var statsJob: Job? = null
     private var watchJob: Job? = null
 
@@ -100,67 +103,61 @@ class SelykVpnService : VpnService() {
     private val healthLock = Mutex()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        if (intent == null) {
+            // Do not blindly restart on sticky null intents after failure/kill.
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        when (intent.action) {
             ACTION_STOP -> {
-                scope.launch { lock.withLock { stopInternal() } }
-                return START_NOT_STICKY
+                val handoff = intent.getBooleanExtra(EXTRA_HANDOFF, false)
+                scope.launch { lock.withLock { stopInternal(handoff = handoff) } }
             }
             ACTION_RECONNECT -> scope.launch {
-                lock.withLock { if (tun != null) startInternal(reconnect = true) }
+                lock.withLock { if (isTunnelActive) startInternal(reconnect = true) }
             }
             else -> {
-                // ACTION_START from the app, SERVICE_INTERFACE for always-on VPN, or a restart after the process died.
+                // ACTION_START from the app or SERVICE_INTERFACE for always-on VPN.
                 enterForeground(getString(R.string.notification_connecting), connected = false)
-                scope.launch { lock.withLock { if (tun == null) startInternal(reconnect = false) } }
+                scope.launch { lock.withLock { if (!isTunnelActive) startInternal(reconnect = false) } }
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     /** Must be called with [lock] held. */
     private suspend fun startInternal(reconnect: Boolean) {
         val graph = SelykApp.graph
         val previous = VpnController.state.value as? VpnController.State.Connected
-        if (!reconnect) VpnController.state.value = VpnController.State.Connecting
         try {
             val mode = graph.settings.activeMode.first()
-            val excluded = exclusionSettings(graph.settings, graph.remoteConfig).first().effective
-
             if (mode == "free_access") {
-                statsJob?.cancel()
-                Xray.stop()
-                freeAccessEngine.stop()
-
+                // Hand off Always-On / tile starts cleanly to the isolated :vkturn process without loading libxray.
                 val freeAccessCfgStr = graph.settings.freeAccessConfig.first()
                 val cfg = if (!freeAccessCfgStr.isNullOrBlank()) {
-                    try {
-                        Json.decodeFromString<FreeAccessConfig>(freeAccessCfgStr)
-                    } catch (_: Exception) {
-                        FreeAccessConfig()
-                    }
+                    runCatching { AppJson.decodeFromString<FreeAccessConfig>(freeAccessCfgStr) }
+                        .getOrDefault(FreeAccessConfig())
                 } else {
                     FreeAccessConfig()
                 }
-
-                freeAccessEngine.start(
-                    config = cfg,
-                    excludedApps = excluded,
-                    onReady = {
-                        VpnController.state.value = VpnController.State.Connected(
-                            since = previous?.since ?: System.currentTimeMillis(),
-                            serverKey = "free_access",
-                        )
-                        enterForeground(getString(R.string.free_access_connected), connected = true)
-                    },
-                    onError = { msg ->
-                        Log.e(TAG, "Free access error: $msg")
-                        VpnController.reportError(msg)
-                        scope.launch { lock.withLock { stopInternal() } }
-                    }
-                )
+                val excluded = exclusionSettings(graph.settings, graph.remoteConfig).first().effective
+                val logEnabled = graph.settings.connectionLogNow()
+                withContext(Dispatchers.Main) {
+                    VpnController.startFreeAccess(
+                        applicationContext,
+                        cfg,
+                        excluded,
+                        reconnect = reconnect,
+                        logEnabled = logEnabled,
+                    )
+                }
+                stopInternal(handoff = true)
                 return
             }
 
+            if (!reconnect) VpnController.state.value = VpnController.State.Connecting
+            VpnController.activeBackend = VpnController.Backend.REGULAR
+            val excluded = exclusionSettings(graph.settings, graph.remoteConfig).first().effective
             val server = graph.subscriptions.selectedServer() ?: error(getString(R.string.error_no_servers))
             val raw = graph.subscriptions.configFor(server.key) ?: error(getString(R.string.error_no_servers))
             val shareSettings = graph.settings.share.first().takeIf { it.enabled }
@@ -169,7 +166,6 @@ class SelykVpnService : VpnService() {
             // Stop the old core first: it holds the share proxy ports. Keep what it has counted.
             statsJob?.cancel()
             if (reconnect) sampleTraffic(withSpeed = false)
-            freeAccessEngine.stop()
             Xray.stop()
 
             val share = shareSettings?.let { sharePorts(it) }
@@ -367,6 +363,7 @@ class SelykVpnService : VpnService() {
 
     private suspend fun checkAutoSelectLocked(afterSleep: Boolean) {
         val serverKey = (VpnController.state.value as? VpnController.State.Connected)?.serverKey ?: return
+        if (serverKey == "free_access") return
         if (afterSleep) Xray.recheckServers()
         var checks = Xray.observatory() ?: return
         if (checks.isEmpty()) return
@@ -436,13 +433,16 @@ class SelykVpnService : VpnService() {
     }
 
     /** Must be called with [lock] held. */
-    private suspend fun stopInternal() {
-        VpnController.state.value = VpnController.State.Stopping
+    private suspend fun stopInternal(handoff: Boolean = false) {
+        if (!handoff) {
+            VpnController.state.value = VpnController.State.Stopping
+        }
         statsJob?.cancel()
         statsJob = null
-        freeAccessEngine.stop()
-        Xray.stop()
-        Xray.setConnectionListener(null)
+        if (tun != null) {
+            Xray.stop()
+            Xray.setConnectionListener(null)
+        }
         unregisterScreenReceiver()
         VpnController.appProxy.value = null
         VpnController.share.value = null
@@ -450,8 +450,11 @@ class SelykVpnService : VpnService() {
         tun = null
         applied = null
         appliedConfig = null
-        VpnController.traffic.value = VpnController.Traffic.ZERO
-        VpnController.state.value = VpnController.State.Idle
+        if (!handoff && VpnController.activeBackend != VpnController.Backend.FREE_ACCESS) {
+            VpnController.activeBackend = VpnController.Backend.NONE
+            VpnController.traffic.value = VpnController.Traffic.ZERO
+            VpnController.state.value = VpnController.State.Idle
+        }
         // May run inside the watcher that is cancelled below, so finish the service regardless.
         withContext(NonCancellable + Dispatchers.Main) {
             ServiceCompat.stopForeground(this@SelykVpnService, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -494,12 +497,17 @@ class SelykVpnService : VpnService() {
 
     override fun onDestroy() {
         unregisterScreenReceiver()
-        Xray.stop()
+        if (tun != null) {
+            Xray.stop()
+        }
         runCatching { tun?.close() }
         tun = null
         VpnController.appProxy.value = null
         VpnController.share.value = null
-        VpnController.state.value = VpnController.State.Idle
+        if (VpnController.activeBackend == VpnController.Backend.REGULAR) {
+            VpnController.activeBackend = VpnController.Backend.NONE
+            VpnController.state.value = VpnController.State.Idle
+        }
         scope.cancel()
         super.onDestroy()
     }
@@ -511,6 +519,7 @@ class SelykVpnService : VpnService() {
         const val ACTION_START = "xyz.selykvpn.app.START"
         const val ACTION_STOP = "xyz.selykvpn.app.STOP"
         const val ACTION_RECONNECT = "xyz.selykvpn.app.RECONNECT"
+        const val EXTRA_HANDOFF = "handoff"
 
         private const val TUN_IPV4 = "172.19.0.1"
         private const val TUN_DNS = "172.19.0.2"

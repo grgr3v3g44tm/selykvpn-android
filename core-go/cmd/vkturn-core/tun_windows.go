@@ -77,7 +77,7 @@ func createPlatformTUN(name string, mtu int, clientIP string, dns string, turnIP
 
 	// 2. Configure DNS on the adapter
 	if dns == "" {
-		dns = "10.77.77.1"
+		dns = "1.1.1.1, 8.8.8.8"
 	}
 	primaryDNS := strings.TrimSpace(strings.Split(dns, ",")[0])
 	if primaryDNS != "" {

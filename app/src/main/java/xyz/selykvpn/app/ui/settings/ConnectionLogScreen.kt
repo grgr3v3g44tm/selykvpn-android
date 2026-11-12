@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Android
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.ExpandLess
@@ -64,6 +65,7 @@ import xyz.selykvpn.app.ui.common.AppIcon
 import xyz.selykvpn.app.ui.common.centeredMaxWidth
 import xyz.selykvpn.app.ui.common.copyToClipboard
 import xyz.selykvpn.app.vpn.ConnectionLog
+import xyz.selykvpn.app.vpn.FreeAccessLog
 import xyz.selykvpn.app.vpn.VpnController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -80,11 +82,13 @@ private enum class LogFilter(val route: ConnectionLog.Route?) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConnectionLogScreen(viewModel: AppViewModel, onBack: () -> Unit) {
+    val context = LocalContext.current
     val enabled by viewModel.connectionLog.collectAsStateWithLifecycle()
     val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
     var filter by rememberSaveable { mutableStateOf(LogFilter.ALL) }
     var query by rememberSaveable { mutableStateOf("") }
     var expanded by remember { mutableStateOf(emptySet<String>()) }
+    var showVkTurnLog by rememberSaveable { mutableStateOf(false) }
     var cleared by remember { mutableStateOf(0) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
 
@@ -101,6 +105,15 @@ fun ConnectionLogScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                     value = withContext(Dispatchers.Default) { ConnectionLog.snapshot() }
                 }
                 delay(1_000)
+            }
+        }
+    }
+    val vkturnLines by produceState(initialValue = emptyList<String>(), cleared) {
+        value = withContext(Dispatchers.IO) { FreeAccessLog.readTail(context, maxLines = 150) }
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                delay(1_500)
+                value = withContext(Dispatchers.IO) { FreeAccessLog.readTail(context, maxLines = 150) }
             }
         }
     }
@@ -121,9 +134,10 @@ fun ConnectionLogScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                 title = { Text(stringResource(R.string.connlog_title)) },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, null) } },
                 actions = {
-                    if (apps.isNotEmpty()) {
+                    if (apps.isNotEmpty() || vkturnLines.isNotEmpty()) {
                         IconButton(onClick = {
                             ConnectionLog.clear()
+                            FreeAccessLog.clear(context)
                             cleared++
                         }) { Icon(Icons.Rounded.DeleteSweep, stringResource(R.string.connlog_clear)) }
                     }
@@ -155,6 +169,53 @@ fun ConnectionLogScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                         }
                         Spacer(Modifier.width(12.dp))
                         Switch(checked = enabled, onCheckedChange = { viewModel.setConnectionLog(it) })
+                    }
+                }
+            }
+            if (vkturnLines.isNotEmpty()) {
+                item(key = "vkturn-log") {
+                    Card(
+                        onClick = { showVkTurnLog = !showVkTurnLog },
+                        shape = RoundedCornerShape(24.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .padding(top = 12.dp),
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        stringResource(R.string.connlog_vkturn_title),
+                                        style = MaterialTheme.typography.titleMedium,
+                                    )
+                                    Text(
+                                        vkturnLines.lastOrNull().orEmpty(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                IconButton(onClick = { context.copyToClipboard(vkturnLines.joinToString("\n")) }) {
+                                    Icon(Icons.Rounded.ContentCopy, contentDescription = null)
+                                }
+                                Icon(
+                                    if (showVkTurnLog) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (showVkTurnLog) {
+                                Text(
+                                    text = vkturnLines.takeLast(60).joinToString("\n"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 10.dp),
+                                )
+                            }
+                        }
                     }
                 }
             }

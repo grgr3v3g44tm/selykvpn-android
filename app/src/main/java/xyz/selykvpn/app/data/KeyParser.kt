@@ -14,7 +14,13 @@ object KeyParser {
 
     /** Remnawave client-type suffixes: https://sub.example.com/<shortUuid>/<type>. */
     private val CLIENT_SUFFIXES = setOf("json", "v2ray-json", "singbox", "mihomo", "clash", "stash")
-    private val IMPORT_HOSTS = setOf("tgapp.selykvpn.xyz", "www.tgapp.selykvpn.xyz", "selykvpn.xyz")
+    private val IMPORT_HOSTS = setOf(
+        "tgapp.selykvpn.xyz",
+        "www.tgapp.selykvpn.xyz",
+        "selykvpn.xyz",
+        "tgapp.xamudhabibi.qzz.io",
+        "www.tgapp.xamudhabibi.qzz.io",
+    )
 
     private val URL_REGEX = Regex("""(?i)\b(?:https?|selykvpn)://[^\s"'<>«»]+""")
     private val BARE_HOST_REGEX = Regex("""(?i)\b(?:[a-z0-9-]+\.)+[a-z]{2,}/[^\s"'<>«»]+""")
@@ -40,11 +46,13 @@ object KeyParser {
         "selykconnection.net",
     )
 
+    fun mergedAllowedHosts(allowedHosts: List<String>): List<String> =
+        (allowedHosts + OUR_DEFAULT_DOMAINS).distinct()
+
     fun isOurServerHostOrIp(hostOrIp: String, allowedHosts: List<String>): Boolean {
         val clean = hostOrIp.trim().lowercase().trimEnd('.').substringBefore(':').trim('[', ']')
         if (clean in OUR_SERVER_IPS) return true
-        if (hostAllowed(clean, allowedHosts)) return true
-        if (hostAllowed(clean, OUR_DEFAULT_DOMAINS)) return true
+        if (hostAllowed(clean, mergedAllowedHosts(allowedHosts))) return true
         return false
     }
 
@@ -111,7 +119,7 @@ object KeyParser {
         val url = candidate.toHttpUrlOrNull() ?: return Result.NotALink
         val host = url.host.lowercase().trimEnd('.')
         if (host in IMPORT_HOSTS) return Result.NotALink
-        if (!hostAllowed(host, allowedHosts)) return Result.Foreign
+        if (!hostAllowed(host, mergedAllowedHosts(allowedHosts))) return Result.Foreign
         return normalize(url, host)?.let { Result.Ok(it) } ?: Result.NotALink
     }
 

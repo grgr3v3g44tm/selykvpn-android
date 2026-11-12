@@ -435,7 +435,9 @@ func wgWaitBootstrapReady(tunnelHandle C.int32_t, timeoutMs C.int32_t) C.int32_t
 	// retry on timeout but fail-fast on error.
 	if strings.Contains(err.Error(), "bootstrap timeout") {
 		log.Printf("wgWaitBootstrapReady: tunnel %d timeout after %s", id, timeout)
-		lastBootstrapError.Store(err.Error())
+		if attemptErr := entry.proxy.LastBootstrapAttemptError(); attemptErr != "" {
+			lastBootstrapError.Store(attemptErr)
+		}
 		return 0
 	}
 	log.Printf("wgWaitBootstrapReady: tunnel %d failed: %v", id, err)
@@ -1166,17 +1168,24 @@ func dupFD(fd int) (int, error) {
 // --- Shared log file support (fully async, zero impact on caller timing) ---
 
 var (
-	logFileMu   sync.Mutex
-	logFilePath string
-	logChan     chan string
+	logFileMu       sync.Mutex
+	logFilePath     string
+	cacheDirPath    string
+	logChan         chan string
+	logFileDisabled atomic.Bool
 )
 
-// logDir is the directory of the log file Swift set (the App Group), or ""
-// before it did — read under logFileMu, which wgSetLogFilePath writes under.
+// logDir is the directory for state caches (creds-pool.json, vk_profile.json):
+// prefers explicit cacheDirPath set via wgSetCacheDir and falls back to the
+// directory of logFilePath when only wgSetLogFilePath was configured.
 func logDir() string {
 	logFileMu.Lock()
+	c := cacheDirPath
 	p := logFilePath
 	logFileMu.Unlock()
+	if c != "" {
+		return c
+	}
 	if p == "" {
 		return ""
 	}
@@ -1206,7 +1215,9 @@ func startLogWriter() {
 			p := logFilePath
 			logFileMu.Unlock()
 			if p == "" {
-				if len(pending) < pendingCap {
+				if logFileDisabled.Load() {
+					pending = nil
+				} else if len(pending) < pendingCap {
 					pending = append(pending, line)
 				}
 				continue
@@ -1244,12 +1255,29 @@ func startLogWriter() {
 	}()
 }
 
+//export wgSetCacheDir
+func wgSetCacheDir(path *C.char) {
+	d := C.GoString(path)
+	logFileMu.Lock()
+	cacheDirPath = d
+	logFileMu.Unlock()
+	if d != "" {
+		proxy.SetVKProfilePath(filepath.Join(d, "vk_profile.json"))
+	}
+}
+
 //export wgSetLogFilePath
 func wgSetLogFilePath(path *C.char) {
 	p := C.GoString(path)
 	logFileMu.Lock()
 	logFilePath = p
+	c := cacheDirPath
 	logFileMu.Unlock()
+	if p == "" {
+		logFileDisabled.Store(true)
+		return
+	}
+	logFileDisabled.Store(false)
 	log.Printf("wgSetLogFilePath: %s", p)
 
 	// Side-effect: derive companion paths in the same App Group container.
@@ -1258,10 +1286,11 @@ func wgSetLogFilePath(path *C.char) {
 	// so each process sees the captured browser profile cache the main
 	// app's CaptchaWKWebView writes into vk_profile.json. Empty path
 	// disables — solveCaptchaPoW silently falls back to generated fp.
-	if p != "" {
+	if c == "" {
 		profilePath := filepath.Join(filepath.Dir(p), "vk_profile.json")
 		proxy.SetVKProfilePath(profilePath)
 		log.Printf("wgSetLogFilePath: vk_profile.json path = %s", profilePath)
+	}
 
 		// Redirect this process's stderr to the SAME vpn.log file that
 		// SharedLogger writes to. Rationale: our normal log.Printf path
@@ -1300,7 +1329,6 @@ func wgSetLogFilePath(path *C.char) {
 		} else {
 			log.Printf("wgSetLogFilePath: failed to open stderr redirect target %s: %v", p, err)
 		}
-	}
 }
 
 // osLogWriter writes Go log output to os_log (visible in Console.app)
@@ -1308,6 +1336,9 @@ func wgSetLogFilePath(path *C.char) {
 type osLogWriter struct{}
 
 func (osLogWriter) Write(p []byte) (int, error) {
+	if logFileDisabled.Load() {
+		return len(p), nil
+	}
 	s := strings.TrimRight(string(p), "\n")
 	msg := C.CString(s)
 	defer C.free(unsafe.Pointer(msg))

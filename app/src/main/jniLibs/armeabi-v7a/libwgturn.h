@@ -119,6 +119,7 @@ extern void wgSetUplinkPace(int32_t kib, int32_t burstKiB);
 extern char* wgGetAuthError(void);
 extern char* wgProbeVKCreds(char* linkID, char* vkHostIPsJSON, char* savedSID, char* savedKey, char* savedToken1, char* savedClientID, double savedTs, double savedAttempt);
 extern char* wgVersion(void);
+extern void wgSetCacheDir(char* path);
 extern void wgSetLogFilePath(char* path);
 extern void wgSetTimezoneOffset(int offsetSeconds);
 extern char* wgSpeedtestServers(void);

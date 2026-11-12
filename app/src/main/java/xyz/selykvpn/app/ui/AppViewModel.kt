@@ -8,6 +8,8 @@ import androidx.lifecycle.viewModelScope
 import xyz.selykvpn.app.BuildConfig
 import xyz.selykvpn.app.SelykApp
 import xyz.selykvpn.app.R
+import xyz.selykvpn.app.data.AccountStatus
+import xyz.selykvpn.app.data.AppJson
 import xyz.selykvpn.app.data.ExclusionSettings
 import xyz.selykvpn.app.data.SettingsFileException
 import xyz.selykvpn.app.data.SettingsImport
@@ -16,16 +18,20 @@ import xyz.selykvpn.app.data.TransferKind
 import xyz.selykvpn.app.data.RouteAction
 import xyz.selykvpn.app.data.RoutingSettings
 import xyz.selykvpn.app.data.ShareSettings
+import xyz.selykvpn.app.data.TariffAccess
 import xyz.selykvpn.app.data.UPDATE_FROM_SUBSCRIPTION
-import xyz.selykvpn.app.data.WhitelistRules
-import xyz.selykvpn.app.data.WhitelistStatus
+import xyz.selykvpn.app.data.WhitelistEvent
 import xyz.selykvpn.app.data.KeyParser
 import xyz.selykvpn.app.data.ServerEntry
 import xyz.selykvpn.app.data.ServerKind
 import xyz.selykvpn.app.data.SubscriptionError
 import xyz.selykvpn.app.data.TvPairing
+import xyz.selykvpn.app.data.UpdateCheckOutcome
 import xyz.selykvpn.app.data.UpdateInfo
+import xyz.selykvpn.app.data.await
+import xyz.selykvpn.app.data.evaluateUpdateCheck
 import xyz.selykvpn.app.data.exclusionSettings
+import xyz.selykvpn.app.update.UpdateProgress
 import xyz.selykvpn.app.update.Updater
 import xyz.selykvpn.app.vpn.ConnectionLog
 import xyz.selykvpn.app.vpn.VpnController
@@ -80,6 +86,8 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     val config = graph.remoteConfig.state
     val vpnState = VpnController.state
     val traffic = VpnController.traffic
+    val freeAccessStage = VpnController.freeAccessStage
+    val captcha = VpnController.captcha
 
     val exclusions: StateFlow<ExclusionSettings> = exclusionSettings(graph.settings, graph.remoteConfig)
         .stateIn(viewModelScope, SharingStarted.Eagerly, ExclusionSettings(emptySet(), emptySet(), true, emptySet()))
@@ -108,22 +116,85 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     val freeAccessConfig: StateFlow<xyz.selykvpn.app.model.FreeAccessConfig> = graph.settings.freeAccessConfig
         .map { str ->
             if (str.isNullOrBlank()) xyz.selykvpn.app.model.FreeAccessConfig()
-            else runCatching { kotlinx.serialization.json.Json.decodeFromString<xyz.selykvpn.app.model.FreeAccessConfig>(str) }
+            else runCatching { AppJson.decodeFromString<xyz.selykvpn.app.model.FreeAccessConfig>(str) }
                 .getOrDefault(xyz.selykvpn.app.model.FreeAccessConfig())
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, xyz.selykvpn.app.model.FreeAccessConfig())
 
+    val freeAccessAllowed: StateFlow<Boolean> = combine(subscription, account, freeAccessConfig) { sub, acc, cfg ->
+        TariffAccess.isFreeAccessAllowed(
+            hasSubscription = sub != null,
+            account = acc,
+            freeAccessConfig = cfg,
+        )
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        TariffAccess.isFreeAccessAllowed(
+            hasSubscription = graph.subscriptions.state.value != null,
+            account = graph.account.state.value,
+            freeAccessConfig = freeAccessConfig.value,
+        ),
+    )
+
+    fun notifyFreeAccessLocked() {
+        _messages.tryEmit(UiMessage(R.string.free_access_tariff_locked))
+    }
+
     fun updateFreeAccessConfig(cfg: xyz.selykvpn.app.model.FreeAccessConfig) = viewModelScope.launch {
-        graph.settings.setFreeAccessConfig(kotlinx.serialization.json.Json.encodeToString(cfg))
+        graph.settings.setFreeAccessConfig(AppJson.encodeToString(cfg))
         if (activeMode.value == "free_access" && vpnState.value is VpnController.State.Connected) {
-            VpnController.reconnect(app)
+            VpnController.startFreeAccess(
+                app,
+                cfg,
+                exclusions.value.effective,
+                reconnect = true,
+                logEnabled = connectionLog.value,
+            )
+        }
+    }
+
+    private suspend fun syncFreeAccessFromStatus(status: AccountStatus?) {
+        if (status != null && status.found && !status.isWhitelist && subscription.value != null) {
+            val current = freeAccessConfig.value
+            val cleared = current.clearGatewayCredentials()
+            if (cleared != current) {
+                graph.settings.setFreeAccessConfig(AppJson.encodeToString(cleared))
+            }
+            graph.settings.setWhitelistAutoSwitched(null)
+            if (activeMode.value == "free_access") {
+                graph.settings.setActiveMode("regular")
+            }
+            if (VpnController.activeBackend == VpnController.Backend.FREE_ACCESS && VpnController.isActive) {
+                VpnController.switchMode(app, "regular")
+            }
+            return
+        }
+        val uri = status?.vkturnUri?.takeIf { it.isNotBlank() }
+        val parsedRemote = uri?.let { xyz.selykvpn.app.model.FreeAccessConfig.parse(it) }
+        val extraPass = status?.vkturnPassword?.takeIf { it.isNotBlank() }
+        val remoteCfg = when {
+            parsedRemote != null && parsedRemote.serverPassword.isBlank() && extraPass != null ->
+                parsedRemote.copy(serverPassword = extraPass)
+            else -> parsedRemote
+        } ?: return
+
+        val current = freeAccessConfig.value
+        val merged = current.mergeFromRemote(remoteCfg)
+        if (merged != current) {
+            graph.settings.setFreeAccessConfig(AppJson.encodeToString(merged))
         }
     }
 
     fun setMode(mode: String) = viewModelScope.launch {
+        if (mode == "free_access" && !freeAccessAllowed.value) {
+            _messages.emit(UiMessage(R.string.free_access_tariff_locked))
+            return@launch
+        }
+        graph.settings.setWhitelistAutoSwitched(null)
         graph.settings.setActiveMode(mode)
-        if (vpnState.value is VpnController.State.Connected) {
-            VpnController.reconnect(app)
+        if (VpnController.isActive) {
+            VpnController.switchMode(app, mode)
         }
     }
 
@@ -133,14 +204,22 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun setConnectionLog(enabled: Boolean) = viewModelScope.launch {
         graph.settings.setConnectionLog(enabled)
-        if (!enabled) ConnectionLog.clear()
+        VpnController.setFreeAccessLogEnabled(app, enabled)
+        if (!enabled) {
+            ConnectionLog.clear()
+            xyz.selykvpn.app.vpn.FreeAccessLog.clear(app)
+        }
     }
 
     fun checkWhitelist() = graph.whitelist.checkNow()
 
     fun setWhitelistDetect(enabled: Boolean) = viewModelScope.launch {
         graph.settings.setWhitelistDetect(enabled)
-        if (enabled) graph.whitelist.checkNow()
+        if (!enabled) {
+            graph.settings.setWhitelistAutoSwitched(null)
+        } else {
+            graph.whitelist.checkNow()
+        }
     }
 
     fun setSubscriptionUpdateHours(hours: Int) = viewModelScope.launch { graph.settings.setSubscriptionUpdateHours(hours) }
@@ -260,8 +339,10 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _keyError = MutableStateFlow<Int?>(null)
     val keyError: StateFlow<Int?> = _keyError.asStateFlow()
 
-    private val _updateProgress = MutableStateFlow<Float?>(null)
-    val updateProgress: StateFlow<Float?> = _updateProgress.asStateFlow()
+    private val _updateProgress = MutableStateFlow<UpdateProgress?>(null)
+    val updateProgress: StateFlow<UpdateProgress?> = _updateProgress.asStateFlow()
+    private var updateJob: Job? = null
+    private var pendingInstallInfo: UpdateInfo? = null
 
     private val _messages = MutableSharedFlow<UiMessage>(extraBufferCapacity = 8)
     val messages: SharedFlow<UiMessage> = _messages.asSharedFlow()
@@ -272,21 +353,36 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
             VpnController.errors.collect { _messages.emit(UiMessage(R.string.vpn_error, listOf(it))) }
         }
         viewModelScope.launch {
-            graph.whitelist.switched.collect { server ->
-                val text = if (graph.whitelist.status.value == WhitelistStatus.WHITELIST) R.string.whitelist_switched_on
-                else R.string.whitelist_switched_off
-                _messages.emit(UiMessage(text, listOf(listOfNotNull(server.flag, server.title).joinToString(" "))))
+            graph.whitelist.events.collect { event ->
+                val text = when (event) {
+                    is WhitelistEvent.Switched -> if (event.mode == "free_access") {
+                        R.string.whitelist_switched_on
+                    } else {
+                        R.string.whitelist_switched_off
+                    }
+                    WhitelistEvent.SetupRequired -> R.string.whitelist_setup_required
+                    WhitelistEvent.TariffLocked -> R.string.whitelist_tariff_locked
+                }
+                _messages.emit(UiMessage(text))
             }
         }
         onResume()
     }
 
-    /** Called when the app comes to the foreground: refresh what is outdated. */
+    /** Called when the app comes to the foreground: refresh what is outdated and sync `:vkturn`. */
     fun onResume() {
+        VpnController.syncState(app)
+        val pendingUpdate = pendingInstallInfo
+        if (pendingUpdate != null && Updater.canInstallPackages(app)) {
+            pendingInstallInfo = null
+            startUpdateDownloadOrInstall(pendingUpdate)
+        }
         viewModelScope.launch { graph.remoteConfig.refreshIfOlderThan(60 * 60_000L) }
         graph.whitelist.checkIfStale()
         val info = subscription.value ?: return
-        viewModelScope.launch { graph.account.refresh(info.url) }
+        viewModelScope.launch {
+            syncFreeAccessFromStatus(graph.account.refresh(info.url))
+        }
         viewModelScope.launch {
             if (graph.subscriptions.isStale(graph.settings.subscriptionUpdateHoursNow())) {
                 runCatching { graph.subscriptions.refresh() }
@@ -309,7 +405,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
         }
         when (val result = KeyParser.parse(text, config.value.allowedSubscriptionHosts)) {
             is KeyParser.Result.FreeAccess -> {
-                updateFreeAccessConfig(result.config)
+                updateFreeAccessConfig(freeAccessConfig.value.mergeFromRemote(result.config))
                 setMode("free_access")
                 _messages.tryEmit(UiMessage(R.string.free_access_imported))
             }
@@ -368,13 +464,24 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun import(key: KeyParser.Key) = viewModelScope.launch {
         _importState.value = ImportState.Loading
         try {
-            val wasConnected = vpnState.value is VpnController.State.Connected
+            val prevUrl = subscription.value?.url
+            val wasConnected = VpnController.isActive
+            val wasFreeAccess = VpnController.activeBackend == VpnController.Backend.FREE_ACCESS
             graph.subscriptions.import(key)
             _pings.value = emptyMap()
             graph.account.clear()
-            launch { graph.account.refresh(key.url, force = true) }
+            if (prevUrl != null && prevUrl != key.url) {
+                val cleared = freeAccessConfig.value.clearGatewayCredentials()
+                if (cleared != freeAccessConfig.value) {
+                    graph.settings.setFreeAccessConfig(AppJson.encodeToString(cleared))
+                }
+                graph.settings.setWhitelistAutoSwitched(null)
+            }
+            syncFreeAccessFromStatus(graph.account.refresh(key.url, force = true))
             _messages.emit(UiMessage(R.string.key_added))
-            if (wasConnected) VpnController.reconnect(app)
+            if (wasConnected && (!wasFreeAccess || freeAccessAllowed.value)) {
+                VpnController.reconnect(app)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -388,7 +495,9 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     fun refreshSubscription(showMessage: Boolean = true) = viewModelScope.launch {
         try {
             graph.subscriptions.refresh()
-            subscription.value?.let { launch { graph.account.refresh(it.url, force = true) } }
+            subscription.value?.let {
+                launch { syncFreeAccessFromStatus(graph.account.refresh(it.url, force = true)) }
+            }
             if (showMessage) _messages.emit(UiMessage(R.string.servers_updated))
         } catch (e: CancellationException) {
             throw e
@@ -413,11 +522,6 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
         VpnController.reconnect(app)
     }
 
-    /** White lists are on: the ping button checks only the servers that work under them. */
-    val pingWhitelistOnly: StateFlow<Boolean> = combine(whitelistStatus, subscription, config) { status, info, cfg ->
-        status == WhitelistStatus.WHITELIST && info?.servers.orEmpty().any { WhitelistRules.worksUnderWhitelist(it, cfg.whitelist) }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
-
     private var pingAll: Job? = null
     private var pingRun = 0
     /** Shared by restarted runs: a cancelled run's measurements keep their slot until they finish. */
@@ -434,7 +538,6 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
             _pinging.value = true
             try {
                 val servers = info.servers.filter { it.pingable }
-                    .filter { !pingWhitelistOnly.value || WhitelistRules.worksUnderWhitelist(it, config.value.whitelist) }
                 _pings.update { old -> old + servers.associate { it.key to Ping.Testing } }
                 servers.map { entry ->
                     async {
@@ -477,8 +580,21 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     // region VPN
 
     fun connect() {
+        if (activeMode.value == "free_access") {
+            if (!freeAccessAllowed.value) {
+                _messages.tryEmit(UiMessage(R.string.free_access_tariff_locked))
+                return
+            }
+            val cfg = freeAccessConfig.value
+            if (!cfg.hasRealVKCallLink()) {
+                _messages.tryEmit(UiMessage(R.string.free_access_need_call_link))
+                return
+            }
+            VpnController.startFreeAccess(app, cfg, exclusions.value.effective, logEnabled = connectionLog.value)
+            return
+        }
         if (subscription.value == null) return
-        VpnController.start(app)
+        VpnController.startRegular(app)
     }
 
     fun disconnect() = VpnController.stop(app)
@@ -496,16 +612,53 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // endregion
 
-    // region Updates
+    // region Updates & Free Access Captcha
+
+    fun submitCaptcha(answer: String) = VpnController.submitCaptcha(app, answer)
+
+    fun refreshCaptcha() = VpnController.refreshCaptcha(app)
+
+    fun cancelCaptcha() = VpnController.cancelCaptcha(app)
+
+    suspend fun loadCaptchaBitmap(url: String): android.graphics.Bitmap? = withContext(Dispatchers.IO) {
+        runCatching {
+            graph.http.withClient { client ->
+                client.newCall(okhttp3.Request.Builder().url(url).build()).await().use { resp ->
+                    if (!resp.isSuccessful) return@withClient null
+                    val bytes = resp.body.bytes()
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                }
+            }
+        }.getOrNull()
+    }
 
     fun installUpdate() {
         val info = update.value ?: return
         if (_updateProgress.value != null) return
-        viewModelScope.launch {
-            _updateProgress.value = 0f
+        if (!Updater.canInstallPackages(app)) {
+            pendingInstallInfo = info
+            _messages.tryEmit(UiMessage(R.string.update_permission_needed))
+            Updater.openInstallPermissionSettings(app)
+            return
+        }
+        startUpdateDownloadOrInstall(info)
+    }
+
+    private fun startUpdateDownloadOrInstall(info: UpdateInfo) {
+        if (_updateProgress.value != null) return
+        updateJob?.cancel()
+        updateJob = viewModelScope.launch {
+            _updateProgress.value = UpdateProgress()
             try {
                 val file = Updater.download(app, graph.http, info) { _updateProgress.value = it }
-                Updater.install(app, file)
+                if (Updater.canInstallPackages(app)) {
+                    pendingInstallInfo = null
+                    Updater.install(app, file)
+                } else {
+                    pendingInstallInfo = info
+                    _messages.emit(UiMessage(R.string.update_permission_needed))
+                    Updater.openInstallPermissionSettings(app)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -516,20 +669,30 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun cancelUpdate() {
+        updateJob?.cancel()
+        updateJob = null
+        pendingInstallInfo = null
+        _updateProgress.value = null
+    }
+
     /** Hides the update card until a newer version is published. */
     fun skipUpdate() {
         val info = update.value ?: return
         viewModelScope.launch { graph.settings.setSkippedUpdate(info.versionCode) }
     }
 
-    /** A manual check brings back a skipped update. */
+    /** A manual check brings back a skipped update and reports the outcome. */
     fun checkForUpdates() = viewModelScope.launch {
-        graph.remoteConfig.refresh()
+        val refreshOk = graph.remoteConfig.refresh()
         val available = config.value.update?.takeIf { Updater.SUPPORTED && it.versionCode > BuildConfig.VERSION_CODE }
-        if (available == null) {
-            _messages.emit(UiMessage(R.string.settings_up_to_date))
-        } else {
-            graph.settings.setSkippedUpdate(0)
+        when (evaluateUpdateCheck(refreshOk, available != null)) {
+            UpdateCheckOutcome.AVAILABLE -> {
+                graph.settings.setSkippedUpdate(0)
+                _messages.emit(UiMessage(R.string.settings_update_available, listOf(available!!.versionName)))
+            }
+            UpdateCheckOutcome.FAILED -> _messages.emit(UiMessage(R.string.settings_update_check_failed))
+            UpdateCheckOutcome.UP_TO_DATE -> _messages.emit(UiMessage(R.string.settings_up_to_date))
         }
     }
 

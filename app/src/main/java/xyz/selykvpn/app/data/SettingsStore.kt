@@ -12,6 +12,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import xyz.selykvpn.app.isTv
+import xyz.selykvpn.app.model.FreeAccessConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -68,6 +69,13 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit {
             if (cfgJson != null) it[Keys.freeAccessConfig] = cfgJson else it.remove(Keys.freeAccessConfig)
         }
+    }
+
+    suspend fun freeAccessConfigNow(): FreeAccessConfig {
+        val raw = data.first()[Keys.freeAccessConfig].orEmpty()
+        if (raw.isBlank()) return FreeAccessConfig()
+        return runCatching { AppJson.decodeFromString(FreeAccessConfig.serializer(), raw) }
+            .getOrDefault(FreeAccessConfig())
     }
 
     val selectedServer: Flow<String?> = data.map { it[Keys.selectedServer] }

@@ -2250,6 +2250,31 @@ func (cp *credPool) get(connIdx int, allowCaptchaBlock bool) (string, *TURNCreds
 		}
 	}
 	if target == -1 {
+		// Third pass: complete cold-start deadlock where EVERY slot in the
+		// pool is disk-loaded pending (zero ready, zero active, zero
+		// saturated, zero fetching). Replacing one idle pending slot lets
+		// bootstrap mint a fresh credential immediately instead of waiting
+		// 10 minutes while still preserving pending slots whenever live or
+		// saturated slots already exist.
+		hasLiveOrSaturated := false
+		for i := range cp.pool {
+			e := cp.pool[i]
+			if e.fetching || e.active > 0 || cp.isFreshLocked(i) || (e.creds != nil && now.Before(e.saturatedUntil)) {
+				hasLiveOrSaturated = true
+				break
+			}
+		}
+		if !hasLiveOrSaturated {
+			for _, slot := range candidatesOrdered() {
+				e := cp.pool[slot]
+				if entryIsPending(e) && e.active == 0 && !e.fetching && !now.Before(e.cooldownUntil) {
+					target = slot
+					break
+				}
+			}
+		}
+	}
+	if target == -1 {
 		// Every slot is either saturated with conns still bound, pending, on
 		// cooldown, or being fetched by someone else. Return a descriptive
 		// error so the caller's reconnect loop knows to back off and try

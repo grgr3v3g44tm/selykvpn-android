@@ -503,6 +503,11 @@ type Proxy struct {
 	// A field-analysis number: it says the server's repeats reach this phone.
 	pongRepeats atomic.Int64
 
+	// Latest conn 0 failure message observed during bootstrap retries, so
+	// callers polling WaitBootstrap with short timeouts can surface the real
+	// DTLS / TURN / VK reason instead of "bootstrap timeout after 1s".
+	lastBootstrapAttemptErr atomic.Value
+
 	// Per-conn last-activity timestamps (UnixNano) for skip-on-recent-tx
 	// wake-probe optimization. Updated alongside connTxBytes/connRxBytes
 	// from the data path goroutines (NOT from probe Writes — probes are
@@ -698,10 +703,22 @@ func applyGOMAXPROCS(n int) {
 func (p *Proxy) signalBootstrapDone(err error) {
 	if err == nil {
 		p.firstSessionUp.Store(true)
+		p.lastBootstrapAttemptErr.Store("")
+	} else {
+		p.lastBootstrapAttemptErr.Store(err.Error())
 	}
 	p.bootstrapDoneOnce.Do(func() {
 		p.bootstrapDoneCh <- err
 	})
+}
+
+// LastBootstrapAttemptError returns the latest conn 0 error recorded during
+// bootstrap retries (empty string if none yet or bootstrap succeeded).
+func (p *Proxy) LastBootstrapAttemptError() string {
+	if v, ok := p.lastBootstrapAttemptErr.Load().(string); ok {
+		return v
+	}
+	return ""
 }
 
 // WaitBootstrap blocks until bootstrap is ready, a fatal error occurred,
@@ -994,13 +1011,23 @@ func (p *Proxy) startConnections() error {
 	// next attempt catches the recovery within at most 60s instead
 	// of waiting for the next 5-min watchdog tick.
 	bootstrapBackoff := func(failedAttempt int) time.Duration {
-		return time.Duration(failedAttempt) * 10 * time.Second
+		switch failedAttempt {
+		case 1:
+			return 2 * time.Second
+		case 2:
+			return 5 * time.Second
+		default:
+			return time.Duration(failedAttempt-1) * 10 * time.Second
+		}
 	}
 	// Safety window beyond longest cooldown — guards against slot timer
 	// firing slightly after our calculated deadline (re-arms, scheduler
 	// jitter, etc). Empirically a few seconds is plenty.
 	const allSaturatedWaitSafety = 5 * time.Second
 	err := spawnConn0()
+	if err != nil {
+		p.lastBootstrapAttemptErr.Store(err.Error())
+	}
 	for attempt := 1; err != nil && attempt < maxBootstrapAttempts; attempt++ {
 		var captchaErr *CaptchaRequiredError
 		if errors.As(err, &captchaErr) {
@@ -1072,7 +1099,10 @@ func (p *Proxy) startConnections() error {
 
 		err = spawnConn0()
 		if err == nil {
+			p.lastBootstrapAttemptErr.Store("")
 			log.Printf("proxy: bootstrap attempt %d/%d succeeded", attempt+1, maxBootstrapAttempts)
+		} else {
+			p.lastBootstrapAttemptErr.Store(err.Error())
 		}
 	}
 
@@ -3332,6 +3362,33 @@ func (p *Proxy) runWrapASession(sessCtx context.Context, linkID string, readyCh 
 	return nil
 }
 
+// detachablePacketConn prevents dtls.Conn.Close() from closing the shared
+// AsyncPacketPipe between DTLS handshake retry attempts in dialDTLSWrapA,
+// while unblocking any pending ReadFrom from the failed attempt.
+type detachablePacketConn struct {
+	net.PacketConn
+	closed atomic.Bool
+}
+
+func (c *detachablePacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	if c.closed.Load() {
+		return 0, nil, net.ErrClosed
+	}
+	n, addr, err := c.PacketConn.ReadFrom(p)
+	if c.closed.Load() {
+		return 0, nil, net.ErrClosed
+	}
+	return n, addr, err
+}
+
+func (c *detachablePacketConn) Close() error {
+	if c.closed.Swap(true) {
+		return nil
+	}
+	_ = c.PacketConn.SetReadDeadline(time.Now())
+	return nil
+}
+
 // dialDTLSWrapA dials a plain DTLS client over the WRAP-A transport using
 // amurcanov's exact config (single cipher TLS_ECDHE_ECDSA_WITH_AES_128_GCM_
 // SHA256, RequireExtendedMasterSecret, send-only 8-byte ConnectionID — from
@@ -3355,7 +3412,9 @@ func dialDTLSWrapA(ctx context.Context, transport net.PacketConn, peer *net.UDPA
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		dconn, derr := dtls.Client(transport, peer, config)
+		_ = transport.SetReadDeadline(time.Time{})
+		attemptConn := &detachablePacketConn{PacketConn: transport}
+		dconn, derr := dtls.Client(attemptConn, peer, config)
 		if derr != nil {
 			lastErr = derr
 			continue

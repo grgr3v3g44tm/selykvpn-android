@@ -189,7 +189,7 @@ class SubscriptionRepository(
      */
     private suspend fun download(key: KeyParser.Key): Downloaded {
         val config = remoteConfig.state.value
-        val allowed = config.allowedSubscriptionHosts
+        val allowed = KeyParser.mergedAllowedHosts(config.allowedSubscriptionHosts)
         val candidates = buildList {
             add(key.url + "/json")
             add(key.url)

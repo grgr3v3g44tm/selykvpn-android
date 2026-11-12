@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -58,8 +59,16 @@ data class WhitelistCheck(
     val allowed: List<ProbeResult>,
 )
 
+enum class ModeSwitchDecision { NONE, TO_FREE_ACCESS, TO_REGULAR, SETUP_REQUIRED, TARIFF_LOCKED }
+
+sealed interface WhitelistEvent {
+    data class Switched(val mode: String) : WhitelistEvent
+    data object SetupRequired : WhitelistEvent
+    data object TariffLocked : WhitelistEvent
+}
+
 object WhitelistRules {
-    private fun normalize(text: String) = text.replace("️", "")
+    const val AUTO_MODE_FREE_ACCESS = "mode:free_access"
 
     fun classify(blockedOk: Boolean, allowedOk: Boolean): WhitelistStatus = when {
         blockedOk -> WhitelistStatus.ALL_OK
@@ -67,50 +76,42 @@ object WhitelistRules {
         else -> WhitelistStatus.NO_INTERNET
     }
 
-    /** All words appear in the server name ("LTE" and "🎲"). */
-    fun matches(entry: ServerEntry, words: List<String>): Boolean =
-        words.isNotEmpty() && entry.kind != ServerKind.SEPARATOR &&
-            words.all { normalize(entry.remarks).contains(normalize(it), ignoreCase = true) }
-
-    fun isBypass(entry: ServerEntry, config: WhitelistConfig): Boolean =
-        config.bypassServer.any { normalize(entry.remarks).contains(normalize(it), ignoreCase = true) }
-
-    /** Servers meant for white lists ("Все операторы", "LTE"): the only ones worth pinging while they are on. */
-    fun worksUnderWhitelist(entry: ServerEntry, config: WhitelistConfig): Boolean =
-        config.pingServers.any { normalize(entry.remarks).contains(normalize(it), ignoreCase = true) }
-
     /**
-     * Which server to switch to when the status changes, or null to keep the current one.
-     * White lists on: move to the LTE auto server unless a bypass or LTE server is already chosen.
-     * White lists off: move back to the Wi-Fi auto server only from a bypass server, or from the
-     * server the app itself chose earlier; anything the user picked by hand stays.
+     * Decides how the active app mode should change when operator white lists turn on or off:
+     * - White lists on: switch from `regular` to `free_access` if allowed by tariff and ready;
+     *   emit setup/tariff notice if not ready or unavailable.
+     * - White lists off: return from `free_access` back to `regular` only when the app itself
+     *   performed the switch earlier; a manual `free_access` choice stays untouched.
      */
-    fun target(
+    fun targetMode(
         old: WhitelistStatus,
         new: WhitelistStatus,
-        current: ServerEntry,
-        servers: List<ServerEntry>,
-        config: WhitelistConfig,
-        autoSwitchedKey: String?,
-    ): ServerEntry? = when {
-        new == WhitelistStatus.WHITELIST && old != WhitelistStatus.WHITELIST -> {
-            if (isBypass(current, config) || matches(current, config.lteServer)) null
-            else servers.firstOrNull { matches(it, config.lteServer) }
+        currentMode: String,
+        freeAccessAllowed: Boolean,
+        freeAccessReady: Boolean,
+        autoSwitchedMarker: String?,
+    ): ModeSwitchDecision = when {
+        new == WhitelistStatus.WHITELIST && old != WhitelistStatus.WHITELIST -> when {
+            currentMode == "free_access" -> ModeSwitchDecision.NONE
+            !freeAccessAllowed -> ModeSwitchDecision.TARIFF_LOCKED
+            freeAccessReady -> ModeSwitchDecision.TO_FREE_ACCESS
+            else -> ModeSwitchDecision.SETUP_REQUIRED
         }
         new == WhitelistStatus.ALL_OK && old != WhitelistStatus.ALL_OK -> {
-            val wasAutoSwitched = current.key == autoSwitchedKey
-            val fromBypass = old == WhitelistStatus.WHITELIST && isBypass(current, config)
-            if (wasAutoSwitched || fromBypass) servers.firstOrNull { matches(it, config.wifiServer) }?.takeIf { it.key != current.key }
-            else null
+            if (currentMode == "free_access" && autoSwitchedMarker == AUTO_MODE_FREE_ACCESS) {
+                ModeSwitchDecision.TO_REGULAR
+            } else {
+                ModeSwitchDecision.NONE
+            }
         }
-        else -> null
+        else -> ModeSwitchDecision.NONE
     }
 }
 
 /**
  * Checks (directly, bypassing the VPN) whether the operator has turned on white lists: when the app
- * is opened, when the network changes and every few minutes while connected; switches servers
- * accordingly. With the app closed and the VPN off it does nothing at all, to save battery.
+ * is opened, when the network changes and every few minutes while connected; switches between
+ * Standard (`regular`) and Free Access (`free_access`) modes accordingly.
  */
 class WhitelistMonitor(
     private val context: Context,
@@ -118,6 +119,7 @@ class WhitelistMonitor(
     private val settings: SettingsStore,
     private val remoteConfig: RemoteConfigRepository,
     private val subscriptions: SubscriptionRepository,
+    private val accounts: AccountRepository,
     private val scope: CoroutineScope,
 ) {
     private val _status = MutableStateFlow(WhitelistStatus.UNKNOWN)
@@ -129,9 +131,9 @@ class WhitelistMonitor(
     private val _checking = MutableStateFlow(false)
     val checking: StateFlow<Boolean> = _checking.asStateFlow()
 
-    /** Server the app switched to, for a message in the UI. */
-    private val _switched = MutableSharedFlow<ServerEntry>(extraBufferCapacity = 4)
-    val switched: SharedFlow<ServerEntry> = _switched.asSharedFlow()
+    /** Mode-switch or setup notifications emitted for UI snackbars. */
+    private val _events = MutableSharedFlow<WhitelistEvent>(extraBufferCapacity = 4)
+    val events: SharedFlow<WhitelistEvent> = _events.asSharedFlow()
 
     @Volatile
     var checkedAt: Long = 0L
@@ -236,7 +238,7 @@ class WhitelistMonitor(
             )
             val old = _status.value
             _status.value = new
-            autoSwitch(old, new, config)
+            autoSwitch(old, new)
         } finally {
             checkingNetwork = null
             _checking.value = false
@@ -265,18 +267,43 @@ class WhitelistMonitor(
         else -> ProbeError.OTHER
     }
 
-    private suspend fun autoSwitch(old: WhitelistStatus, new: WhitelistStatus, config: WhitelistConfig) {
-        val info = subscriptions.state.value ?: return
-        val current = subscriptions.selectedServer() ?: return
-        val target = WhitelistRules.target(old, new, current, info.selectable, config, settings.whitelistAutoSwitchedNow())
-        if (new == WhitelistStatus.ALL_OK && old != WhitelistStatus.ALL_OK && target != null) {
-            settings.setWhitelistAutoSwitched(null)
+    private suspend fun autoSwitch(old: WhitelistStatus, new: WhitelistStatus) {
+        val currentMode = settings.activeMode.first()
+        val cfg = settings.freeAccessConfigNow()
+        val hasSub = subscriptions.state.value != null
+        val allowed = TariffAccess.isFreeAccessAllowed(hasSub, accounts.state.value, cfg)
+        val decision = WhitelistRules.targetMode(
+            old = old,
+            new = new,
+            currentMode = currentMode,
+            freeAccessAllowed = allowed,
+            freeAccessReady = cfg.isReadyForTunnel(),
+            autoSwitchedMarker = settings.whitelistAutoSwitchedNow(),
+        )
+        when (decision) {
+            ModeSwitchDecision.NONE -> return
+            ModeSwitchDecision.SETUP_REQUIRED -> {
+                _events.tryEmit(WhitelistEvent.SetupRequired)
+                return
+            }
+            ModeSwitchDecision.TARIFF_LOCKED -> {
+                _events.tryEmit(WhitelistEvent.TariffLocked)
+                return
+            }
+            ModeSwitchDecision.TO_FREE_ACCESS -> {
+                settings.setWhitelistAutoSwitched(WhitelistRules.AUTO_MODE_FREE_ACCESS)
+                settings.setActiveMode("free_access")
+                if (VpnController.isActive) VpnController.switchMode(context, "free_access")
+                _events.tryEmit(WhitelistEvent.Switched("free_access"))
+            }
+            ModeSwitchDecision.TO_REGULAR -> {
+                settings.setWhitelistAutoSwitched(null)
+                if (!hasSub) return
+                settings.setActiveMode("regular")
+                if (VpnController.isActive) VpnController.switchMode(context, "regular")
+                _events.tryEmit(WhitelistEvent.Switched("regular"))
+            }
         }
-        target ?: return
-        settings.setSelectedServer(target.key)
-        if (new == WhitelistStatus.WHITELIST) settings.setWhitelistAutoSwitched(target.key)
-        VpnController.reconnect(context)
-        _switched.tryEmit(target)
     }
 
     private companion object {

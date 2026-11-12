@@ -100,3 +100,49 @@ func TestPathChangeReplacesAnIdleSaturatedSlotWhenNothingIsEmpty(t *testing.T) {
 		t.Fatalf("acquire with the remaining saturated slots in use: %v — want a park, not a replaced cred under ten live conns", err)
 	}
 }
+
+// When EVERY slot in a disk-loaded pool is pending (e.g., 2-slot pool after a
+// recent restart within VK's 10-minute allocation cooldown), Phase 2 must
+// replace an idle pending slot and mint a fresh credential instead of returning
+// "no slot available" for 10 minutes.
+func TestPendingOnlyPoolReplacesIdlePendingSlotInsteadOfDeadlocking(t *testing.T) {
+	var mints atomic.Int32
+	fetch := func(_ bool, slot int) (string, *TURNCreds, error) {
+		mints.Add(1)
+		addr := "203.0.113.22:19302"
+		return addr, &TURNCreds{
+			Username:  fmt.Sprintf("%d:minted-%d", time.Now().Add(8*time.Hour).Unix(), slot),
+			Password:  "p",
+			Address:   addr,
+			Addresses: []string{addr},
+		}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	cp := newCredPool(ctx, 2, 2*time.Minute, "", fetch)
+	now := time.Now()
+	cp.mu.Lock()
+	for i := range cp.pool {
+		creds := &TURNCreds{
+			Username:  fmt.Sprintf("%d:pending-%d", now.Add(8*time.Hour).Unix(), i),
+			Password:  "p",
+			Address:   "203.0.113.11:19302",
+			Addresses: []string{"203.0.113.11:19302"},
+		}
+		cp.pool[i] = credPoolEntry{
+			addr:        creds.Address,
+			creds:       creds,
+			ts:          now.Add(-3 * time.Minute),
+			availableAt: now.Add(7 * time.Minute),
+		}
+	}
+	cp.mu.Unlock()
+
+	addr, creds, slot, err := cp.get(0, false)
+	if err != nil {
+		t.Fatalf("expected idle pending slot replacement, got error: %v", err)
+	}
+	if mints.Load() != 1 || addr == "" || creds == nil || !strings.Contains(creds.Username, "minted-") {
+		t.Fatalf("unexpected mint result: mints=%d slot=%d addr=%q creds=%v", mints.Load(), slot, addr, creds)
+	}
+}

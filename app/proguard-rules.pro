@@ -1,6 +1,10 @@
-# gomobile bindings (Xray core): classes are looked up from native code by name.
+# gomobile / Go JNI bridges (Xray core & libwgturn VK TURN core)
 -keep class go.** { *; }
 -keep class xyz.selykvpn.libxray.** { *; }
+-keep class com.vkturnproxy.core.** { *; }
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
 
 # kotlinx.serialization
 -keepattributes *Annotation*, InnerClasses
