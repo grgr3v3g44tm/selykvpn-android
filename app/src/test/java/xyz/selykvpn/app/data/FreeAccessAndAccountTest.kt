@@ -161,4 +161,55 @@ class FreeAccessAndAccountTest {
         assertEquals("p_abc", parsed.vkturnPassword)
         assertEquals(123L, parsed.fetchedAt)
     }
+
+    @Test
+    fun tariffAccessRulesAndCredentialCleanup() {
+        val readySrtp = FreeAccessConfig(
+            mode = TunnelMode.SRTP_WRAP_A,
+            serverPassword = "secret",
+            stealthLink = "https://vk.ru/call/join/valid123",
+            needsStealthLink = false,
+        )
+        assertTrue(readySrtp.hasGatewayCredentials())
+        assertTrue(readySrtp.isReadyForTunnel())
+
+        val cleared = readySrtp.clearGatewayCredentials()
+        assertFalse(cleared.hasGatewayCredentials())
+        assertFalse(cleared.isReadyForTunnel())
+
+        // Standalone vkturnproxy:// without subscription is always allowed.
+        assertTrue(TariffAccess.isFreeAccessAllowed(hasSubscription = false, account = null, freeAccessConfig = FreeAccessConfig()))
+
+        // Subscription with known whitelist vs standard tariff.
+        assertTrue(
+            TariffAccess.isFreeAccessAllowed(
+                hasSubscription = true,
+                account = AccountStatus(found = true, isWhitelist = true),
+                freeAccessConfig = FreeAccessConfig(),
+            ),
+        )
+        assertFalse(
+            TariffAccess.isFreeAccessAllowed(
+                hasSubscription = true,
+                account = AccountStatus(found = true, isWhitelist = false),
+                freeAccessConfig = readySrtp,
+            ),
+        )
+
+        // Subscription with offline/unknown account falls back to gateway credentials presence.
+        assertTrue(
+            TariffAccess.isFreeAccessAllowed(
+                hasSubscription = true,
+                account = null,
+                freeAccessConfig = readySrtp,
+            ),
+        )
+        assertFalse(
+            TariffAccess.isFreeAccessAllowed(
+                hasSubscription = true,
+                account = AccountStatus(found = false),
+                freeAccessConfig = FreeAccessConfig(),
+            ),
+        )
+    }
 }

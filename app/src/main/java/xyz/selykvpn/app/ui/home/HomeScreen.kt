@@ -277,6 +277,7 @@ private fun HomeColumn(
     val activeMode by viewModel.activeMode.collectAsStateWithLifecycle()
     val freeAccessStage by viewModel.freeAccessStage.collectAsStateWithLifecycle()
     val freeAccessConfig by viewModel.freeAccessConfig.collectAsStateWithLifecycle()
+    val freeAccessAllowed by viewModel.freeAccessAllowed.collectAsStateWithLifecycle()
 
     BoxWithConstraints(modifier = modifier) {
         val minHeight = maxHeight
@@ -306,6 +307,8 @@ private fun HomeColumn(
                         activeMode = activeMode,
                         onModeChange = viewModel::setMode,
                         enabled = state == VpnController.State.Idle,
+                        freeAccessAllowed = freeAccessAllowed,
+                        onLockedFreeAccessClick = viewModel::notifyFreeAccessLocked,
                     )
                     Spacer(Modifier.height(12.dp))
                     StatusHeader(
@@ -1005,6 +1008,8 @@ fun ModeSegmentedSwitch(
     onModeChange: (String) -> Unit,
     enabled: Boolean,
     modifier: Modifier = Modifier,
+    freeAccessAllowed: Boolean = true,
+    onLockedFreeAccessClick: () -> Unit = {},
 ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -1047,22 +1052,40 @@ fun ModeSegmentedSwitch(
 
             // Mode 2: Свободный доступ
             Surface(
-                onClick = { if (enabled) onModeChange("free_access") },
+                onClick = {
+                    if (!freeAccessAllowed) {
+                        onLockedFreeAccessClick()
+                    } else if (enabled) {
+                        onModeChange("free_access")
+                    }
+                },
                 shape = RoundedCornerShape(10.dp),
-                color = if (!isRegular) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                contentColor = if (!isRegular) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (!isRegular && freeAccessAllowed) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                contentColor = when {
+                    !freeAccessAllowed -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                    !isRegular -> MaterialTheme.colorScheme.onPrimaryContainer
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
             ) {
-                Box(
-                    contentAlignment = Alignment.Center,
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                 ) {
+                    if (!freeAccessAllowed) {
+                        Icon(
+                            imageVector = Icons.Rounded.Lock,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
                     Text(
                         text = stringResource(R.string.mode_free_access),
                         style = MaterialTheme.typography.labelMedium,
-                        fontWeight = if (!isRegular) FontWeight.SemiBold else FontWeight.Normal,
+                        fontWeight = if (!isRegular && freeAccessAllowed) FontWeight.SemiBold else FontWeight.Normal,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )

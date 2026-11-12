@@ -66,6 +66,22 @@ data class FreeAccessConfig(
 
     fun hasValidStealthLink(): Boolean = hasRealVKCallLink()
 
+    fun hasGatewayCredentials(): Boolean = when (mode) {
+        TunnelMode.SRTP_WRAP_A -> serverPassword.isNotBlank()
+        else -> privateKey.isNotBlank() && peerPublicKey.isNotBlank()
+    }
+
+    fun isReadyForTunnel(): Boolean = hasRealVKCallLink() && hasGatewayCredentials()
+
+    fun clearGatewayCredentials(): FreeAccessConfig = copy(
+        serverPassword = "",
+        wrapKeyHex = "",
+        privateKey = "",
+        peerPublicKey = "",
+        presharedKey = "",
+        needsStealthLink = true,
+    )
+
     fun withCallLink(newLink: String): FreeAccessConfig {
         val clean = newLink.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") } ?: newLink.trim()
         return copy(stealthLink = clean, needsStealthLink = false, useSessionAuth = false)

@@ -95,6 +95,8 @@
     <string name="settings_version">Version %1$s</string>
     <string name="settings_check_update">Check for updates</string>
     <string name="settings_up_to_date">You have the latest version</string>
+    <string name="settings_update_available">Update %1$s is available — open the home screen to install</string>
+    <string name="settings_update_check_failed">Couldn\'t check for updates</string>
 
     <!-- Split tunneling -->
     <string name="split_title">Apps without VPN</string>
@@ -202,8 +204,11 @@
     <string name="whitelist_on">Only services from the white list work right now</string>
     <string name="whitelist_none">Nothing works right now</string>
     <string name="whitelist_checking">Checking…</string>
-    <string name="whitelist_switched_on">White lists are on — switched to %1$s</string>
-    <string name="whitelist_switched_off">White lists are off — switched back to %1$s</string>
+    <string name="whitelist_switched_on">White lists are on — switched to Free Access</string>
+    <string name="whitelist_switched_off">White lists are off — switched back to Standard mode</string>
+    <string name="whitelist_setup_required">White lists detected, but Free Access is not set up — configure it for auto-switching</string>
+    <string name="whitelist_tariff_locked">White lists detected, but Free Access is unavailable on your current plan</string>
+    <string name="free_access_tariff_locked">Free Access is only available on the whitelist bypass plan</string>
     <string name="traffic_used_only">Used: %1$s</string>
     <string name="traffic_left">%1$s left</string>
     <string name="settings_auto_update">Automatic update</string>
@@ -212,7 +217,7 @@
     <string name="settings_routing">Routing</string>
     <string name="settings_routing_hint">Your rules: direct, through VPN, blocked</string>
     <string name="settings_whitelist">Detect white lists</string>
-    <string name="settings_whitelist_hint">Checks sites when the network changes and switches to the LTE auto server when the operator turns white lists on</string>
+    <string name="settings_whitelist_hint">Checks the network and switches to Free Access when the operator turns white lists on</string>
     <string name="routing_title">Routing</string>
     <string name="routing_enabled">Use my rules</string>
     <string name="routing_enabled_hint">They take priority over the server\'s rules</string>

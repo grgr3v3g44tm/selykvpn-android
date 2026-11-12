@@ -3,6 +3,7 @@ package xyz.selykvpn.app.data
 import android.content.Context
 import android.util.Log
 import xyz.selykvpn.app.BuildConfig
+import xyz.selykvpn.app.model.FreeAccessConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,6 +58,19 @@ private data class AccountStatusDto(
 
 @Serializable
 private data class StatusRequest(val url: String)
+
+/** Determines whether "Свободный доступ" is unlocked for the imported subscription / account tariff. */
+object TariffAccess {
+    fun isFreeAccessAllowed(
+        hasSubscription: Boolean,
+        account: AccountStatus?,
+        freeAccessConfig: FreeAccessConfig,
+    ): Boolean {
+        if (!hasSubscription) return true
+        if (account != null && account.found) return account.isWhitelist
+        return freeAccessConfig.hasGatewayCredentials()
+    }
+}
 
 class AccountRepository(context: Context, private val http: Http) {
     private val file = File(context.filesDir, "account.json")

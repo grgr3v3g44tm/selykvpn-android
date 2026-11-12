@@ -73,5 +73,5 @@ class AppGraph(app: Application) {
     val subscriptions = SubscriptionRepository(app, http, remoteConfig, settings)
     val account = AccountRepository(app, http)
     val tvPairing = TvPairing(http)
-    val whitelist = WhitelistMonitor(app, http, settings, remoteConfig, subscriptions, scope)
+    val whitelist = WhitelistMonitor(app, http, settings, remoteConfig, subscriptions, account, scope)
 }

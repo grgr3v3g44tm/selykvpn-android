@@ -78,8 +78,8 @@ object Updater {
             http.withClient { base ->
                 val client = base.newBuilder()
                     .connectTimeout(15, TimeUnit.SECONDS)
-                    .readTimeout(30, TimeUnit.SECONDS)
-                    .callTimeout(5, TimeUnit.MINUTES)
+                    .readTimeout(45, TimeUnit.SECONDS)
+                    .callTimeout(15, TimeUnit.MINUTES)
                     .build()
                 client.newCall(Request.Builder().url(url).build()).await().use { response ->
                     check(response.isSuccessful) { "HTTP ${response.code}" }

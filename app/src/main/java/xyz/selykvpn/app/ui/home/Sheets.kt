@@ -130,7 +130,6 @@ fun ServersList(
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
     val config by viewModel.config.collectAsStateWithLifecycle()
     val filter by viewModel.serverFilter.collectAsStateWithLifecycle()
-    val whitelistOnly by viewModel.pingWhitelistOnly.collectAsStateWithLifecycle()
     val haptic = LocalHapticFeedback.current
     val listState = rememberLazyListState()
     val tabsState = rememberLazyListState()
@@ -188,14 +187,6 @@ fun ServersList(
                 if (refreshing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 else Icon(Icons.Rounded.Refresh, stringResource(R.string.servers_update))
             }
-        }
-        if (whitelistOnly) {
-            Text(
-                stringResource(R.string.servers_whitelist_ping),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp),
-            )
         }
         if (tabs.isNotEmpty()) {
             LazyRow(

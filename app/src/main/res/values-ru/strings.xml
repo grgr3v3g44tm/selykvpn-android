@@ -93,6 +93,8 @@
     <string name="settings_version">Версия %1$s</string>
     <string name="settings_check_update">Проверить обновления</string>
     <string name="settings_up_to_date">У вас последняя версия</string>
+    <string name="settings_update_available">Доступно обновление %1$s — откройте главный экран для установки</string>
+    <string name="settings_update_check_failed">Не удалось проверить обновления</string>
 
     <!-- Split tunneling -->
     <string name="split_title">Приложения без VPN</string>
@@ -202,8 +204,11 @@
     <string name="whitelist_on">Сейчас работают только сервисы из белого списка</string>
     <string name="whitelist_none">Сейчас у вас ничего не работает</string>
     <string name="whitelist_checking">Проверяем…</string>
-    <string name="whitelist_switched_on">Включены белые списки — переключили на %1$s</string>
-    <string name="whitelist_switched_off">Белые списки выключены — вернули %1$s</string>
+    <string name="whitelist_switched_on">Включены белые списки — переключили на «Свободный доступ»</string>
+    <string name="whitelist_switched_off">Белые списки выключены — вернули «Основной» режим</string>
+    <string name="whitelist_setup_required">Включены белые списки, но «Свободный доступ» не настроен — настройте его для автопереключения</string>
+    <string name="whitelist_tariff_locked">Включены белые списки, но «Свободный доступ» недоступен на вашем тарифе</string>
+    <string name="free_access_tariff_locked">«Свободный доступ» доступен только на тарифе с обходом белых списков</string>
     <string name="traffic_used_only">Использовано %1$s</string>
     <string name="traffic_left">осталось %1$s</string>
     <string name="settings_auto_update">Автообновление подписки</string>
@@ -212,7 +217,7 @@
     <string name="settings_routing">Маршрутизация</string>
     <string name="settings_routing_hint">Свои правила: напрямую, через VPN, блокировать</string>
     <string name="settings_whitelist">Определять белые списки</string>
-    <string name="settings_whitelist_hint">Проверяем сайты при смене сети и, если оператор включил белые списки, переключаем на «Автовыбор LTE»</string>
+    <string name="settings_whitelist_hint">Проверяем сеть при подключении и смене сети и переключаем на «Свободный доступ», если оператор включил белые списки</string>
     <string name="routing_title">Маршрутизация</string>
     <string name="routing_enabled">Использовать свои правила</string>
     <string name="routing_enabled_hint">Они важнее правил сервера</string>

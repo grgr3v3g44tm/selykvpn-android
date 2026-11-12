@@ -5,6 +5,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import xyz.selykvpn.app.data.UpdateCheckOutcome
+import xyz.selykvpn.app.data.evaluateUpdateCheck
 import xyz.selykvpn.app.update.UpdateProgress
 
 class VkAuthAndUpdaterTest {
@@ -49,5 +51,13 @@ class VkAuthAndUpdaterTest {
 
         val known = UpdateProgress(fraction = 0.5f, downloadedBytes = 5_000_000L, totalBytes = 10_000_000L)
         assertEquals(0.5f, known.fraction!!, 0.001f)
+    }
+
+    @Test
+    fun evaluateUpdateCheckDistinguishesAvailableFailedAndUpToDate() {
+        assertEquals(UpdateCheckOutcome.AVAILABLE, evaluateUpdateCheck(refreshOk = true, hasUpdate = true))
+        assertEquals(UpdateCheckOutcome.AVAILABLE, evaluateUpdateCheck(refreshOk = false, hasUpdate = true))
+        assertEquals(UpdateCheckOutcome.FAILED, evaluateUpdateCheck(refreshOk = false, hasUpdate = false))
+        assertEquals(UpdateCheckOutcome.UP_TO_DATE, evaluateUpdateCheck(refreshOk = true, hasUpdate = false))
     }
 }
