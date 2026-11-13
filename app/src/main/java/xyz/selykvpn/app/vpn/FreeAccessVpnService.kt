@@ -345,7 +345,7 @@ class FreeAccessVpnService : VpnService() {
         return try {
             ServiceCompat.startForeground(
                 this,
-                Notifications.ID_VPN,
+                Notifications.ID_VPN_FREE_ACCESS,
                 notification,
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE

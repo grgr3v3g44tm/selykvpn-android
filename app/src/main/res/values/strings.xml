@@ -429,5 +429,9 @@
     <string name="theme_palette_title">Color Palette</string>
     <string name="theme_selyk_premium">Selyk Premium (Carmine)</string>
     <string name="theme_graphite_cool">Cool Slate</string>
+    <string name="free_access_missing_password">Free Access gateway password is missing. Refresh your key in the Telegram bot.</string>
+    <string name="free_access_missing_keys">WireGuard keys are missing for Free Access. Refresh your key in the Telegram bot.</string>
+    <string name="free_access_wrapa_dtls_timeout">Free Access gateway didn\'t reply to handshake (DTLS timeout). Check your key or try again later.</string>
+    <string name="share_free_access_unsupported">HTTP/SOCKS proxy sharing is only available in Regular VPN mode. Switch to Regular VPN to share internet with other devices.</string>
 
 </resources>

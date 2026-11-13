@@ -44,6 +44,9 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                 cleanedError.contains("cookie rejected", ignoreCase = true) ||
                     cleanedError.contains("re-login required", ignoreCase = true) ->
                     "Сессия VK истекла. Войдите через VK заново или вставьте ссылку вручную."
+                cleanedError.contains("WRAP-A DTLS", ignoreCase = true) ||
+                    cleanedError.contains("DTLS handshake", ignoreCase = true) ->
+                    "Шлюз Свободного доступа не отвечает на рукопожатие (DTLS timeout). Проверьте ключ в боте или попробуйте позже."
                 cleanedError.isNotBlank() -> cleanedError
                 readyCode == 0 -> "Таймаут подключения к прямому шлюзу"
                 else -> "Ошибка подключения к серверам VK ($readyCode)"

@@ -6,12 +6,8 @@ import android.net.VpnService
 import android.os.Bundle
 import android.widget.Toast
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.decodeFromString
-import xyz.selykvpn.app.data.AppJson
-import xyz.selykvpn.app.model.FreeAccessConfig
 import xyz.selykvpn.app.vpn.VpnController
 
 /**
@@ -38,18 +34,9 @@ class ShortcutActivity : Activity() {
         }
         val graph = SelykApp.graph
         graph.scope.launch(Dispatchers.IO) {
-            val mode = runCatching { graph.settings.activeMode.first() }.getOrDefault("regular")
-            val ready = if (mode == "free_access") {
-                val cfgStr = runCatching { graph.settings.freeAccessConfig.first() }.getOrNull()
-                val cfg = cfgStr?.takeIf { it.isNotBlank() }?.let {
-                    runCatching { AppJson.decodeFromString<FreeAccessConfig>(it) }.getOrNull()
-                }
-                cfg?.hasRealVKCallLink() == true
-            } else {
-                graph.subscriptions.state.value != null
-            }
+            val mode = VpnController.quickStartModeIfReady(graph)
             withContext(Dispatchers.Main) {
-                if (!ready) {
+                if (mode == null) {
                     openAppForConnect()
                 } else {
                     try {

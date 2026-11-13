@@ -10,21 +10,23 @@ import android.service.quicksettings.TileService
 import xyz.selykvpn.app.SelykApp
 import xyz.selykvpn.app.MainActivity
 import xyz.selykvpn.app.R
-import xyz.selykvpn.app.data.AppJson
-import xyz.selykvpn.app.model.FreeAccessConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** Quick Settings tile: one tap to connect or disconnect. */
 class VpnTileService : TileService() {
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var job: Job? = null
 
     override fun onStartListening() {
-        job = CoroutineScope(Dispatchers.Main).launch {
+        VpnController.syncState(this)
+        job?.cancel()
+        job = serviceScope.launch {
             VpnController.state.collect { render(it) }
         }
     }
@@ -32,6 +34,11 @@ class VpnTileService : TileService() {
     override fun onStopListening() {
         job?.cancel()
         job = null
+    }
+
+    override fun onDestroy() {
+        serviceScope.cancel()
+        super.onDestroy()
     }
 
     override fun onClick() {
@@ -43,24 +50,14 @@ class VpnTileService : TileService() {
             openApp()
             return
         }
-        CoroutineScope(Dispatchers.IO).launch {
-            val graph = SelykApp.graph
-            val mode = runCatching { graph.settings.activeMode.first() }.getOrDefault("regular")
-            val ready = if (mode == "free_access") {
-                val cfgStr = runCatching { graph.settings.freeAccessConfig.first() }.getOrNull()
-                val cfg = cfgStr?.takeIf { it.isNotBlank() }?.let {
-                    runCatching { AppJson.decodeFromString<FreeAccessConfig>(it) }.getOrNull()
-                }
-                cfg?.hasRealVKCallLink() == true
-            } else {
-                graph.subscriptions.state.value != null
-            }
+        serviceScope.launch(Dispatchers.IO) {
+            val mode = VpnController.quickStartModeIfReady(SelykApp.graph)
             withContext(Dispatchers.Main) {
-                if (!ready) {
+                if (mode == null) {
                     openApp()
                 } else {
                     try {
-                        VpnController.start(this@VpnTileService)
+                        VpnController.start(this@VpnTileService, forceMode = mode)
                     } catch (_: Exception) {
                         // Background start restrictions: let the activity start it.
                         openApp()

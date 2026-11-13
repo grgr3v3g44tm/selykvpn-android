@@ -477,10 +477,21 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
                 graph.settings.setWhitelistAutoSwitched(null)
             }
-            syncFreeAccessFromStatus(graph.account.refresh(key.url, force = true))
+            val accountStatus = graph.account.refresh(key.url, force = true)
+            syncFreeAccessFromStatus(accountStatus)
+            val updatedCfg = graph.settings.freeAccessConfigNow()
+            val allowedNow = TariffAccess.isFreeAccessAllowed(
+                hasSubscription = true,
+                account = accountStatus,
+                freeAccessConfig = updatedCfg,
+            )
             _messages.emit(UiMessage(R.string.key_added))
-            if (wasConnected && (!wasFreeAccess || freeAccessAllowed.value)) {
-                VpnController.reconnect(app)
+            if (wasConnected) {
+                if (wasFreeAccess && !allowedNow) {
+                    VpnController.stop(app)
+                } else {
+                    VpnController.reconnect(app)
+                }
             }
         } catch (e: CancellationException) {
             throw e
@@ -510,6 +521,15 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
         VpnController.stop(app)
         graph.subscriptions.clear()
         graph.account.clear()
+        val currentCfg = freeAccessConfig.value
+        val clearedCfg = currentCfg.clearGatewayCredentials()
+        if (clearedCfg != currentCfg) {
+            graph.settings.setFreeAccessConfig(AppJson.encodeToString(clearedCfg))
+        }
+        graph.settings.setWhitelistAutoSwitched(null)
+        if (activeMode.value == "free_access") {
+            graph.settings.setActiveMode("regular")
+        }
         _pings.value = emptyMap()
     }
 
@@ -519,7 +539,15 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun selectServer(key: String) = viewModelScope.launch {
         graph.settings.setSelectedServer(key)
-        VpnController.reconnect(app)
+        if (activeMode.value == "free_access" || VpnController.activeBackend == VpnController.Backend.FREE_ACCESS) {
+            graph.settings.setWhitelistAutoSwitched(null)
+            graph.settings.setActiveMode("regular")
+            if (VpnController.isActive) {
+                VpnController.switchMode(app, "regular")
+            }
+        } else {
+            VpnController.reconnect(app)
+        }
     }
 
     private var pingAll: Job? = null
@@ -588,6 +616,15 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
             val cfg = freeAccessConfig.value
             if (!cfg.hasRealVKCallLink()) {
                 _messages.tryEmit(UiMessage(R.string.free_access_need_call_link))
+                return
+            }
+            if (!cfg.isReadyForTunnel()) {
+                val msgRes = if (cfg.mode == xyz.selykvpn.app.model.TunnelMode.SRTP_WRAP_A) {
+                    R.string.free_access_missing_password
+                } else {
+                    R.string.free_access_missing_keys
+                }
+                _messages.tryEmit(UiMessage(msgRes))
                 return
             }
             VpnController.startFreeAccess(app, cfg, exclusions.value.effective, logEnabled = connectionLog.value)

@@ -10,6 +10,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
+import xyz.selykvpn.app.data.AccountStatus
+import xyz.selykvpn.app.model.FreeAccessConfig
+import xyz.selykvpn.app.model.TunnelMode
+
 class FreeAccessRecoveryTest {
 
     @Before
@@ -118,7 +122,7 @@ class FreeAccessRecoveryTest {
             FreeAccessEngine.mapBootstrapError(readyCode = 0, authError = ""),
         )
         assertEquals(
-            "WRAP-A DTLS: handshake error: context deadline exceeded",
+            "Шлюз Свободного доступа не отвечает на рукопожатие (DTLS timeout). Проверьте ключ в боте или попробуйте позже.",
             FreeAccessEngine.mapBootstrapError(
                 readyCode = 0,
                 authError = "WRAP-A DTLS: handshake error: context deadline exceeded",
@@ -132,5 +136,56 @@ class FreeAccessRecoveryTest {
             "Сессия VK истекла. Войдите через VK заново или вставьте ссылку вручную.",
             FreeAccessEngine.mapBootstrapError(readyCode = -1, authError = "cookie rejected by VK"),
         )
+    }
+
+    @Test
+    fun modeReadyToStartChecksTariffAndWrapAPassword() {
+        val noPassWrapA = FreeAccessConfig(
+            mode = TunnelMode.SRTP_WRAP_A,
+            stealthLink = "https://vk.ru/call/join/validCall123",
+            needsStealthLink = false,
+            serverPassword = "",
+        )
+        val validWrapA = noPassWrapA.copy(serverPassword = "p_secret")
+        val whitelistAcc = AccountStatus(found = true, isWhitelist = true)
+        val regularAcc = AccountStatus(found = true, isWhitelist = false)
+
+        // Missing WRAP-A password -> tile/shortcut must NOT start free_access directly
+        assertEquals(
+            false,
+            VpnController.isModeReadyToStart("free_access", hasSubscription = true, account = whitelistAcc, freeAccessConfig = noPassWrapA),
+        )
+        // Non-whitelist subscription -> tile/shortcut must NOT start free_access even if password exists
+        assertEquals(
+            false,
+            VpnController.isModeReadyToStart("free_access", hasSubscription = true, account = regularAcc, freeAccessConfig = validWrapA),
+        )
+        // Whitelist subscription + valid call link + WRAP-A password -> ready
+        assertEquals(
+            true,
+            VpnController.isModeReadyToStart("free_access", hasSubscription = true, account = whitelistAcc, freeAccessConfig = validWrapA),
+        )
+        // Standalone free_access (no subscription) + valid config -> ready
+        assertEquals(
+            true,
+            VpnController.isModeReadyToStart("free_access", hasSubscription = false, account = null, freeAccessConfig = validWrapA),
+        )
+        // Regular mode requires subscription
+        assertEquals(false, VpnController.isModeReadyToStart("regular", hasSubscription = false, account = null, freeAccessConfig = null))
+        assertEquals(true, VpnController.isModeReadyToStart("regular", hasSubscription = true, account = regularAcc, freeAccessConfig = null))
+    }
+
+    @Test
+    fun parseNormalizesKnownServerIpToPublicDomain() {
+        val conf = """
+            [Interface]
+            PrivateKey = cPrivKey=
+            Address = 10.77.77.12/16
+            [Peer]
+            PublicKey = sPubKey=
+            Endpoint = 144.31.79.239:56000
+        """.trimIndent()
+        val parsed = FreeAccessConfig.parse(conf)
+        assertEquals("media-stream.xamudhabibi.qzz.io:56000", parsed?.peerAddress)
     }
 }
