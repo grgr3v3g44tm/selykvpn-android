@@ -28,6 +28,7 @@ sealed class SubscriptionError(message: String) : Exception(message) {
     class BadFormat : SubscriptionError("unsupported subscription format")
     class NoServers : SubscriptionError("subscription has no servers")
     class DeviceLimit : SubscriptionError("device limit reached")
+    class FreeAccessDeviceLimit : SubscriptionError("free access device limit reached")
     class Expired : SubscriptionError("subscription expired")
     class Unsupported : SubscriptionError("client or protocol unsupported")
     class Network(cause: Throwable) : SubscriptionError(cause.message ?: "network error")

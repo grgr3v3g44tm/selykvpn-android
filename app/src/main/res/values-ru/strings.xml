@@ -28,6 +28,7 @@
     <string name="error_bad_format">Не удалось прочитать подписку. Напишите в поддержку.</string>
     <string name="error_no_servers">В подписке нет активных серверов.</string>
     <string name="error_device_limit">Превышен лимит устройств. Отвяжите неиспользуемое устройство в Telegram-боте.</string>
+    <string name="error_free_access_device_limit">Превышен лимит устройств для Свободного доступа. Отвяжите неиспользуемое устройство в Telegram-боте.</string>
     <string name="error_subscription_expired">Срок действия вашей подписки истёк. Продлите тариф в Telegram-боте.</string>
     <string name="error_subscription_unsupported">Данный формат подписки не поддерживается. Обновите приложение.</string>
     <string name="replace_key_title">Заменить ключ?</string>

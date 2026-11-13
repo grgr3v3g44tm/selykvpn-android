@@ -37,6 +37,9 @@ data class AccountStatus(
     val vkturnUri: String? = null,
     val vkturnPassword: String? = null,
     val tunnelIp: String? = null,
+    val vkturnDeviceLimitReached: Boolean = false,
+    val vkturnSlotsLimit: Int? = null,
+    val vkturnSlotsUsed: Int? = null,
     val fetchedAt: Long = 0,
 )
 
@@ -54,10 +57,19 @@ private data class AccountStatusDto(
     val vkturnUri: String? = null,
     val vkturnPassword: String? = null,
     val tunnelIp: String? = null,
+    val vkturnDeviceLimitReached: Boolean = false,
+    val vkturnSlotsLimit: Int? = null,
+    val vkturnSlotsUsed: Int? = null,
 )
 
 @Serializable
-private data class StatusRequest(val url: String)
+private data class StatusRequest(
+    val url: String,
+    val hwid: String? = null,
+    val deviceName: String? = null,
+    val platform: String? = null,
+    val appVersion: String? = null,
+)
 
 /** Determines whether "Свободный доступ" is unlocked for the imported subscription / account tariff. */
 object TariffAccess {
@@ -67,12 +79,15 @@ object TariffAccess {
         freeAccessConfig: FreeAccessConfig,
     ): Boolean {
         if (!hasSubscription) return true
-        if (account != null && account.found) return account.isWhitelist
+        if (account != null && account.found) {
+            return account.isWhitelist && !account.vkturnDeviceLimitReached
+        }
         return freeAccessConfig.hasGatewayCredentials()
     }
 }
 
 class AccountRepository(context: Context, private val http: Http) {
+    private val appContext = context.applicationContext
     private val file = File(context.filesDir, "account.json")
     private val _state = MutableStateFlow(load())
     val state: StateFlow<AccountStatus?> = _state.asStateFlow()
@@ -87,10 +102,22 @@ class AccountRepository(context: Context, private val http: Http) {
             return@withContext cached
         }
         runCatching {
-            val body = AppJson.encodeToString(StatusRequest.serializer(), StatusRequest(subscriptionUrl))
+            val hwid = FreeAccessConfig.resolveStableDeviceId(appContext)
+            val reqBody = StatusRequest(
+                url = subscriptionUrl,
+                hwid = hwid,
+                deviceName = Device.model,
+                platform = "android",
+                appVersion = BuildConfig.VERSION_NAME,
+            )
+            val body = AppJson.encodeToString(StatusRequest.serializer(), reqBody)
                 .toRequestBody("application/json".toMediaType())
             val text = http.withClient { client ->
-                val request = Request.Builder().url("${BuildConfig.API_BASE}/api/v1/subscription/status").post(body).build()
+                val request = Request.Builder()
+                    .url("${BuildConfig.API_BASE}/api/v1/subscription/status")
+                    .header("x-hwid", hwid)
+                    .post(body)
+                    .build()
                 client.newCall(request).await().use { response ->
                     check(response.isSuccessful) { "HTTP ${response.code}" }
                     response.body.string()
@@ -126,6 +153,9 @@ class AccountRepository(context: Context, private val http: Http) {
                 vkturnUri = dto.vkturnUri,
                 vkturnPassword = dto.vkturnPassword,
                 tunnelIp = dto.tunnelIp,
+                vkturnDeviceLimitReached = dto.vkturnDeviceLimitReached,
+                vkturnSlotsLimit = dto.vkturnSlotsLimit,
+                vkturnSlotsUsed = dto.vkturnSlotsUsed,
                 fetchedAt = fetchedAt,
             )
         }

@@ -30,6 +30,7 @@
     <string name="error_bad_format">The subscription could not be read. Please contact support.</string>
     <string name="error_no_servers">The subscription has no active servers.</string>
     <string name="error_device_limit">Device limit reached. Disconnect unused devices in the Telegram bot.</string>
+    <string name="error_free_access_device_limit">Free Access device limit reached. Unlink an unused device in the Telegram bot.</string>
     <string name="error_subscription_expired">Your subscription has expired. Renew your plan in the Telegram bot.</string>
     <string name="error_subscription_unsupported">This subscription format is not supported. Please update the app.</string>
     <string name="replace_key_title">Replace the key?</string>

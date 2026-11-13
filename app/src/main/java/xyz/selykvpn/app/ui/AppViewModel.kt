@@ -155,7 +155,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun syncFreeAccessFromStatus(status: AccountStatus?) {
-        if (status != null && status.found && !status.isWhitelist && subscription.value != null) {
+        if (status != null && status.found && (!status.isWhitelist || status.vkturnDeviceLimitReached) && subscription.value != null) {
             val current = freeAccessConfig.value
             val cleared = current.clearGatewayCredentials()
             if (cleared != current) {
@@ -478,6 +478,22 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
                 graph.settings.setWhitelistAutoSwitched(null)
             }
             val accountStatus = graph.account.refresh(key.url, force = true)
+            if (accountStatus != null && accountStatus.found && accountStatus.isWhitelist && accountStatus.vkturnDeviceLimitReached) {
+                graph.subscriptions.clear()
+                graph.account.clear()
+                val cleared = freeAccessConfig.value.clearGatewayCredentials()
+                if (cleared != freeAccessConfig.value) {
+                    graph.settings.setFreeAccessConfig(AppJson.encodeToString(cleared))
+                }
+                graph.settings.setWhitelistAutoSwitched(null)
+                if (activeMode.value == "free_access") {
+                    graph.settings.setActiveMode("regular")
+                }
+                if (wasConnected) {
+                    VpnController.stop(app)
+                }
+                throw SubscriptionError.FreeAccessDeviceLimit()
+            }
             syncFreeAccessFromStatus(accountStatus)
             val updatedCfg = graph.settings.freeAccessConfigNow()
             val allowedNow = TariffAccess.isFreeAccessAllowed(
@@ -755,6 +771,7 @@ fun Throwable.messageRes(): Int = when (this) {
     is SubscriptionError.BadFormat -> R.string.error_bad_format
     is SubscriptionError.NoServers -> R.string.error_no_servers
     is SubscriptionError.DeviceLimit -> R.string.error_device_limit
+    is SubscriptionError.FreeAccessDeviceLimit -> R.string.error_free_access_device_limit
     is SubscriptionError.Expired -> R.string.error_subscription_expired
     is SubscriptionError.Unsupported -> R.string.error_subscription_unsupported
     else -> R.string.error_download
