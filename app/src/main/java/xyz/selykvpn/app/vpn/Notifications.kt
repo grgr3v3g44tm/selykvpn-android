@@ -14,6 +14,7 @@ import xyz.selykvpn.app.R
 object Notifications {
     const val CHANNEL_VPN = "vpn_status"
     const val ID_VPN = 1
+    const val ID_VPN_FREE_ACCESS = 2
 
     fun createChannels(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return

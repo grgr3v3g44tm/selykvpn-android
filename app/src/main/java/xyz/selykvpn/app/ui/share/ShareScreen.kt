@@ -87,6 +87,7 @@ fun ShareScreen(viewModel: AppViewModel, onBack: () -> Unit) {
     val settings by viewModel.shareSettings.collectAsStateWithLifecycle()
     val share by viewModel.share.collectAsStateWithLifecycle()
     val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
+    val activeMode by viewModel.activeMode.collectAsStateWithLifecycle()
 
     // Addresses change when Wi-Fi or the hotspot is switched, so re-read them while the screen is open.
     var addresses by remember { mutableStateOf(emptyList<LocalAddress>()) }
@@ -138,9 +139,14 @@ fun ShareScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                 }
             }
 
+            if (activeMode == "free_access" || VpnController.activeBackend == VpnController.Backend.FREE_ACCESS) {
+                InfoCard(stringResource(R.string.share_free_access_unsupported))
+            }
+
             AnimatedVisibility(visible = enabled) {
                 val connected = vpnState is VpnController.State.Connected && share != null
                 when {
+                    activeMode == "free_access" || VpnController.activeBackend == VpnController.Backend.FREE_ACCESS -> Unit
                     !connected -> InfoCard(stringResource(R.string.share_waiting))
                     addresses.isEmpty() -> InfoCard(stringResource(R.string.share_no_network))
                     else -> DetailsCard(addresses, httpPort, socksPort)

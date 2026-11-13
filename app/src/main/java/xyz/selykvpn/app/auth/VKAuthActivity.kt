@@ -728,9 +728,22 @@ class VKAuthActivity : ComponentActivity() {
         if (token != null) {
             if (token in failedTokens) return false
             if (mode == MODE_LOGIN) {
-                val header = VKCookieStore.getValidCookieHeader() ?: "access_token=$token"
-                finishWithSuccess("", header)
-                return true
+                val cmCookies = VKCookieStore.extractFullCookiesFromManager(CookieManager.getInstance())
+                val header = if (!cmCookies.remixsid.isNullOrBlank()) {
+                    val extracted = cmCookies.toCookieHeader()
+                    if (extracted != staleCookieHeader) {
+                        val oneYearAhead = System.currentTimeMillis() + (365L * 24 * 3600 * 1000)
+                        VKCookieStore.saveSession(extracted, oneYearAhead)
+                        extracted
+                    } else null
+                } else {
+                    VKCookieStore.getValidCookieHeader()?.takeIf { VKCookieStore.extractCookieValue(it, "remixsid") != null }
+                }
+                if (!header.isNullOrBlank()) {
+                    finishWithSuccess("", header)
+                    return true
+                }
+                return false
             }
 
             startCallCreationWithToken(token, webView)

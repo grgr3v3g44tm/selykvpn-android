@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B-blue)](https://android.com)
 [![Android TV](https://img.shields.io/badge/Android%20TV-Supported-emerald)](https://android.com/tv/)
-[![VirusTotal](https://img.shields.io/badge/VirusTotal-0%2F70%20Clean-brightgreen)](https://www.virustotal.com/gui/file/869fd8b81b696f6dd48e2191b6a314ce06173503b865ddefe0e837e67b081038)
+[![VirusTotal](https://img.shields.io/badge/VirusTotal-0%2F70%20Clean-brightgreen)](https://www.virustotal.com/gui/file/10f861730f200d4ecc2ddd1472077ff8c50082b52312c3aa141da014bc253c03)
 
 Официальный Android-клиент сетевого комплекса **Селюк VPN**, объединяющий два режима защиты в одном приложении:
 1. **Обычный VPN**: Высокоскоростное ядро **Xray-core** (VLESS + Reality XHTTP / Vision) для максимальной скорости (до 1 Гбит/с), стриминга YouTube в 4K и свободного доступа к мировым сервисам.
@@ -16,11 +16,11 @@
 - **100% Открытый исходный код**: Никаких скрытых трекеров, рекламы или сторонних сборщиков данных.
 - **Стандартные системные разрешения**: Используется только стандартный Android `VpnService` для создания туннеля.
 - **Встроенные базы GeoIP & GeoSite**: Полноценные актуальные базы маршрутизации `geoip.dat` и `geosite.dat` поставляются в комплекте с автоматическим фоновым обновлением.
-- **Верификация VirusTotal**:
-  - **arm64-v8a**: [VirusTotal Report (0/70 Clean)](https://www.virustotal.com/gui/file/869fd8b81b696f6dd48e2191b6a314ce06173503b865ddefe0e837e67b081038)  
-    `SHA-256: 869fd8b81b696f6dd48e2191b6a314ce06173503b865ddefe0e837e67b081038`
-  - **Universal**: [VirusTotal Report (0/70 Clean)](https://www.virustotal.com/gui/file/427a8a36f11115e3e73c7a953ff0a1fe3393eaa42a3c7c7650a4ff17163d094f)  
-    `SHA-256: 427a8a36f11115e3e73c7a953ff0a1fe3393eaa42a3c7c7650a4ff17163d094f`
+- **Верификация VirusTotal (Релиз 2.0.7)**:
+  - **arm64-v8a**: [VirusTotal Report (Clean)](https://www.virustotal.com/gui/file/10f861730f200d4ecc2ddd1472077ff8c50082b52312c3aa141da014bc253c03)  
+    `SHA-256: 10f861730f200d4ecc2ddd1472077ff8c50082b52312c3aa141da014bc253c03`
+  - **Universal**: [VirusTotal Report (Clean)](https://www.virustotal.com/gui/file/315a9cacfb0f6ef496ba1906b2db3c489b4f98a2febe23274beebff16cbdbf0d)  
+    `SHA-256: 315a9cacfb0f6ef496ba1906b2db3c489b4f98a2febe23274beebff16cbdbf0d`
 
 ---
 
@@ -53,8 +53,8 @@
 
 ```bash
 # Клонирование репозитория
-git clone https://github.com/maximyt288/vkturn-android.git
-cd vkturn-android
+git clone https://github.com/grgr3v3g44tm/selykvpn-android.git
+cd selykvpn-android
 
 # Сборка Release APK
 ./gradlew assembleDirectRelease

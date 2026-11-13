@@ -317,7 +317,8 @@ data class FreeAccessConfig(
                 val needsStealthLink = vkLink.trim().contains("placeholder", ignoreCase = true) ||
                     !vkLink.contains("call/join/")
 
-                val peerAddress = jsonString(settings, "peerAddress", "peer_addr") ?: "media-stream.xamudhabibi.qzz.io:56000"
+                val rawPeerAddress = jsonString(settings, "peerAddress", "peer_addr") ?: "media-stream.xamudhabibi.qzz.io:56000"
+                val peerAddress = normalizePeerEndpoint(rawPeerAddress)
                 val numConns = jsonInt(settings, "numConnections", "num_conns") ?: 8
 
                 val useDTLS = jsonBoolean(settings, "useDTLS", "use_dtls") ?: true
@@ -424,7 +425,7 @@ data class FreeAccessConfig(
             return FreeAccessConfig(
                 name = "Свободный доступ",
                 mode = TunnelMode.SRTP,
-                peerAddress = endpoint,
+                peerAddress = normalizePeerEndpoint(endpoint),
                 privateKey = privateKey,
                 peerPublicKey = publicKey,
                 presharedKey = presharedKey,
@@ -453,6 +454,22 @@ data class FreeAccessConfig(
             return runCatching {
                 kotlin.io.encoding.Base64.decode(padded)
             }.getOrNull()
+        }
+
+        /**
+         * Rewrites raw server IPs or deprecated domains in a VK TURN endpoint to the
+         * canonical public domain while keeping the port (defaulting to 56000).
+         */
+        private fun normalizePeerEndpoint(rawEndpoint: String): String {
+            val trimmed = rawEndpoint.trim()
+            if (trimmed.isEmpty()) return "media-stream.xamudhabibi.qzz.io:56000"
+            val hostPart = trimmed.substringBefore(':').trim().trim('[', ']').lowercase()
+            val portPart = trimmed.substringAfter(':', "").takeIf { it.all(Char::isDigit) && it.isNotEmpty() } ?: "56000"
+            return if (hostPart in xyz.selykvpn.app.data.KeyParser.OUR_SERVER_IPS || hostPart == "turn.selykvpn.xyz") {
+                "media-stream.xamudhabibi.qzz.io:$portPart"
+            } else {
+                trimmed
+            }
         }
 
         fun keyToHex(key: String): String {

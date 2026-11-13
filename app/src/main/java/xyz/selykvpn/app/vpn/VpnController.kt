@@ -577,6 +577,47 @@ object VpnController {
         sendToRemote(FreeAccessVpnService.MSG_SET_LOG_ENABLED, arg1 = if (enabled) 1 else 0)
     }
 
+    internal fun isModeReadyToStart(
+        mode: String,
+        hasSubscription: Boolean,
+        account: xyz.selykvpn.app.data.AccountStatus?,
+        freeAccessConfig: FreeAccessConfig?,
+    ): Boolean = if (mode == "free_access") {
+        val cfg = freeAccessConfig ?: return false
+        val allowed = xyz.selykvpn.app.data.TariffAccess.isFreeAccessAllowed(
+            hasSubscription = hasSubscription,
+            account = account,
+            freeAccessConfig = cfg,
+        )
+        allowed && cfg.isReadyForTunnel()
+    } else {
+        hasSubscription
+    }
+
+    /**
+     * Checks whether the active mode has valid credentials/config and tariff permission
+     * to start directly from a tile or app shortcut; returns the mode ("regular"/"free_access")
+     * or null if user setup or tariff unlock in MainActivity is required.
+     */
+    internal suspend fun quickStartModeIfReady(graph: xyz.selykvpn.app.AppGraph): String? {
+        val mode = runCatching { graph.settings.activeMode.first() }.getOrDefault("regular")
+        val cfg = if (mode == "free_access") {
+            val cfgStr = runCatching { graph.settings.freeAccessConfig.first() }.getOrNull()
+            cfgStr?.takeIf { it.isNotBlank() }?.let {
+                runCatching { AppJson.decodeFromString<FreeAccessConfig>(it) }.getOrNull()
+            }
+        } else {
+            null
+        }
+        val ready = isModeReadyToStart(
+            mode = mode,
+            hasSubscription = graph.subscriptions.state.value != null,
+            account = graph.account.state.value,
+            freeAccessConfig = cfg,
+        )
+        return if (ready) mode else null
+    }
+
     fun start(context: Context, forceMode: String? = null) {
         val appCtx = context.applicationContext
         appContext = appCtx

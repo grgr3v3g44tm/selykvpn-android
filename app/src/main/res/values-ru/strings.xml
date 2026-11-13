@@ -433,5 +433,9 @@
     <string name="theme_palette_title">Цветовая тема</string>
     <string name="theme_selyk_premium">Селюк Премиум</string>
     <string name="theme_graphite_cool">Холодный графит</string>
+    <string name="free_access_missing_password">В ключе отсутствует пароль шлюза WRAP-A. Обновите ключ в Telegram-боте.</string>
+    <string name="free_access_missing_keys">В конфигурации Свободного доступа отсутствуют ключи WireGuard. Обновите ключ в Telegram-боте.</string>
+    <string name="free_access_wrapa_dtls_timeout">Шлюз Свободного доступа не отвечает на рукопожатие (DTLS timeout). Проверьте ключ или попробуйте позже.</string>
+    <string name="share_free_access_unsupported">Раздача прокси (HTTP/SOCKS5) доступна только в режиме «Обычный VPN». Переключите режим на главном экране.</string>
 
 </resources>
