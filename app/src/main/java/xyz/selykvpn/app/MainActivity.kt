@@ -69,7 +69,12 @@ class MainActivity : ComponentActivity() {
         }
         if (file != null) viewModel.openSettingsFile(file)
         if (text != null) viewModel.submitKey(text)
-        if (intent.getBooleanExtra(EXTRA_CONNECT, false)) requestConnect()
+        if (
+            intent.getBooleanExtra(EXTRA_CONNECT, false) &&
+            intent.getStringExtra(EXTRA_CONNECT_TOKEN) == SelykApp.internalConnectToken
+        ) {
+            requestConnect()
+        }
         // Consume the intent so a configuration change does not import the key again.
         setIntent(Intent(this, MainActivity::class.java))
     }
@@ -114,5 +119,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_CONNECT = "connect"
+        const val EXTRA_CONNECT_TOKEN = "connect_token"
     }
 }

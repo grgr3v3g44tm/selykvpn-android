@@ -30,25 +30,44 @@ object UnderlyingNetwork {
             close()
             return@callbackFlow
         }
-        // Callbacks arrive one at a time on the system's connectivity thread.
+        // Callbacks arrive on the connectivity thread, while awaitClose/current may run elsewhere.
+        val networksLock = Any()
         val networks = HashMap<Network, Pair<NetworkCapabilities?, LinkProperties?>>()
         fun publish() {
-            val best = networks.entries.minByOrNull { rank(it.value.first) }
-            trySend(best?.let { state(it.key, it.value.first, it.value.second) })
+            val snapshot = synchronized(networksLock) {
+                val best = networks.entries
+                    .filter { (_, pair) ->
+                        val caps = pair.first
+                        caps != null &&
+                            !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    }
+                    .minByOrNull { rank(it.value.first) }
+                best?.let { state(it.key, it.value.first, it.value.second) }
+            }
+            trySend(snapshot)
         }
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                networks[network] = caps to networks[network]?.second
+                synchronized(networksLock) {
+                    val prevLp = networks[network]?.second ?: runCatching { cm.getLinkProperties(network) }.getOrNull()
+                    networks[network] = caps to prevLp
+                }
                 publish()
             }
 
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
-                networks[network] = networks[network]?.first to lp
+                synchronized(networksLock) {
+                    val prevCaps = networks[network]?.first ?: runCatching { cm.getNetworkCapabilities(network) }.getOrNull()
+                    networks[network] = prevCaps to lp
+                }
                 publish()
             }
 
             override fun onLost(network: Network) {
-                networks.remove(network)
+                synchronized(networksLock) {
+                    networks.remove(network)
+                }
                 publish()
             }
         }

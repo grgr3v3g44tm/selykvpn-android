@@ -8,11 +8,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 private const val TAG = "VKCallHelper"
@@ -39,8 +43,25 @@ object VKCallHelper {
     private const val CALLS_API_VERSION = "5.276"
     private const val REDIRECT_URI = "https://oauth.vk.com/blank.html"
     private const val FAST_CALL_TIMEOUT_MS = 14_000L
-    private const val HTTP_TIMEOUT_MS = 5_000
+    private const val HTTP_TIMEOUT_MS = 5_000L
     private const val MAX_OAUTH_STEPS = 6
+    private const val MAX_VK_BODY_BYTES = 2L * 1024L * 1024L
+
+    private val gson = Gson()
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(HTTP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .readTimeout(HTTP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .callTimeout(8_000L, TimeUnit.MILLISECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
+
+    internal fun isTrustedVkHost(host: String): Boolean {
+        val h = host.trim().lowercase().trimEnd('.')
+        return h == "vk.com" || h.endsWith(".vk.com") ||
+            h == "vk.ru" || h.endsWith(".vk.ru") ||
+            h == "vk.me" || h.endsWith(".vk.me")
+    }
 
     suspend fun createCallFast(context: Context): FastCallResult = withContext(Dispatchers.IO) {
         VKCookieStore.init(context)
@@ -69,7 +90,7 @@ object VKCallHelper {
     }
 
     private suspend fun createCallSuspend(token: String): FastCallResult = suspendCancellableCoroutine { cont ->
-        createCallWithToken(token) { link, err, banned ->
+        val call = createCallWithToken(token) { link, err, banned ->
             if (!cont.isActive) return@createCallWithToken
             val result = if (!link.isNullOrBlank()) {
                 Log.i(TAG, "Быстрое создание звонка УСПЕШНО")
@@ -83,6 +104,7 @@ object VKCallHelper {
             }
             cont.resume(result)
         }
+        cont.invokeOnCancellation { call?.cancel() }
     }
 
     fun extractAccessToken(rawUrl: String?): String? {
@@ -130,8 +152,8 @@ object VKCallHelper {
             }
         }
 
-        // 2. Fallback: HTTP OAuth redirect chain
-        val redirect = URLEncoder.encode(REDIRECT_URI, "UTF-8")
+        // 2. Fallback: HTTP OAuth redirect chain (strictly HTTPS + trusted VK hosts only)
+        val redirect = java.net.URLEncoder.encode(REDIRECT_URI, "UTF-8")
         var currentUrl = "https://oauth.vk.com/authorize" +
             "?client_id=$VK_CLIENT_ID" +
             "&display=mobile" +
@@ -142,143 +164,155 @@ object VKCallHelper {
             "&v=$OAUTH_API_VERSION"
 
         for (step in 0 until MAX_OAUTH_STEPS) {
-            var conn: HttpURLConnection? = null
             try {
-                conn = URL(currentUrl).openConnection() as HttpURLConnection
-                conn.instanceFollowRedirects = false
-                conn.connectTimeout = HTTP_TIMEOUT_MS
-                conn.readTimeout = HTTP_TIMEOUT_MS
-                conn.setRequestProperty("User-Agent", userAgent)
+                val parsed = currentUrl.toHttpUrlOrNull() ?: break
+                if (parsed.scheme != "https" || !isTrustedVkHost(parsed.host)) {
+                    Log.w(TAG, "Blocked untrusted OAuth URL host=${parsed.host}")
+                    break
+                }
                 val mergedCookie = cookieJar.entries.joinToString("; ") { "${it.key}=${it.value}" }
-                conn.setRequestProperty("Cookie", mergedCookie)
-                conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                val request = Request.Builder()
+                    .url(parsed)
+                    .header("User-Agent", userAgent)
+                    .header("Cookie", mergedCookie)
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .build()
 
-                val code = conn.responseCode
-                conn.headerFields["Set-Cookie"]?.forEach { rawCookie ->
-                    val nv = rawCookie.substringBefore(";").trim()
-                    val eq = nv.indexOf('=')
-                    if (eq > 0) {
-                        val k = nv.substring(0, eq).trim()
-                        val v = nv.substring(eq + 1).trim()
-                        if (v.isNotEmpty() && v != "DELETED") {
-                            cookieJar[k] = v
+                httpClient.newCall(request).execute().use { resp ->
+                    resp.headers("Set-Cookie").forEach { rawCookie ->
+                        val nv = rawCookie.substringBefore(";").trim()
+                        val eq = nv.indexOf('=')
+                        if (eq > 0) {
+                            val k = nv.substring(0, eq).trim()
+                            val v = nv.substring(eq + 1).trim()
+                            if (v.isNotEmpty() && v != "DELETED") {
+                                cookieJar[k] = v
+                            }
                         }
                     }
-                }
-                val location = conn.getHeaderField("Location") ?: ""
+                    val location = resp.header("Location") ?: ""
+                    extractAccessToken(location)?.let { return it }
 
-                extractAccessToken(location)?.let { return it }
-
-                if (code in 300..399 && location.isNotBlank()) {
-                    currentUrl = if (location.startsWith("http://") || location.startsWith("https://")) {
-                        location
-                    } else {
-                        URL(URL(currentUrl), location).toString()
+                    if (resp.isRedirect && location.isNotBlank()) {
+                        val nextUrl = parsed.resolve(location) ?: break
+                        if (nextUrl.scheme != "https" || !isTrustedVkHost(nextUrl.host)) {
+                            Log.w(TAG, "Blocked untrusted OAuth redirect host=${nextUrl.host}")
+                            break
+                        }
+                        currentUrl = nextUrl.toString()
+                        continue
                     }
-                    continue
+
+                    val body = readBoundedBody(resp)
+                    extractAccessToken(body)?.let { return it }
+
+                    val hrefMatch = Regex("""location\.href\s*=\s*["']([^"']+)["']""").find(body)
+                    extractAccessToken(hrefMatch?.groupValues?.getOrNull(1))?.let { return it }
+
+                    val grantMatch = Regex("""(https://login\.vk\.(?:com|ru)/\?act=grant_access[^"'\s<]+)""").find(body)
+                    val grantUrl = grantMatch?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
+                    if (!grantUrl.isNullOrBlank()) {
+                        currentUrl = grantUrl
+                        continue
+                    }
+                    break
                 }
-
-                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
-
-                extractAccessToken(body)?.let { return it }
-
-                val hrefMatch = Regex("""location\.href\s*=\s*["']([^"']+)["']""").find(body)
-                extractAccessToken(hrefMatch?.groupValues?.getOrNull(1))?.let { return it }
-
-                val grantMatch = Regex("""(https://login\.vk\.(?:com|ru)/\?act=grant_access[^"'\s<]+)""").find(body)
-                val grantUrl = grantMatch?.groupValues?.getOrNull(1)?.replace("&amp;", "&")
-                if (!grantUrl.isNullOrBlank()) {
-                    currentUrl = grantUrl
-                    continue
-                }
-                break
             } catch (e: Exception) {
                 Log.w(TAG, "OAuth HTTP step $step error: ${e.message}")
                 break
-            } finally {
-                runCatching { conn?.disconnect() }
             }
         }
         return null
+    }
+
+    private fun readBoundedBody(response: Response): String {
+        val body = response.body ?: return ""
+        val source = body.source()
+        source.request(MAX_VK_BODY_BYTES + 1)
+        val buffer = source.buffer
+        val count = minOf(buffer.size, MAX_VK_BODY_BYTES)
+        return buffer.readString(count, Charsets.UTF_8)
     }
 
     private fun requestWebToken(cookieHeader: String, ua: String): String? {
         val hosts = listOf("login.vk.ru", "login.vk.com")
         for (host in hosts) {
-            var conn: HttpURLConnection? = null
             try {
                 val origin = "https://${if (host.endsWith(".ru")) "vk.ru" else "vk.com"}"
-                val url = "https://$host/?act=web_token"
-                conn = URL(url).openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.instanceFollowRedirects = false
-                conn.connectTimeout = HTTP_TIMEOUT_MS
-                conn.readTimeout = HTTP_TIMEOUT_MS
-                conn.doOutput = true
-                conn.setRequestProperty("User-Agent", ua)
-                conn.setRequestProperty("Cookie", cookieHeader)
-                conn.setRequestProperty("Origin", origin)
-                conn.setRequestProperty("Referer", "$origin/")
-                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                conn.setRequestProperty("Accept", "application/json")
+                val form = FormBody.Builder()
+                    .add("version", "1")
+                    .add("app_id", VK_CLIENT_ID)
+                    .build()
+                val req = Request.Builder()
+                    .url("https://$host/?act=web_token")
+                    .post(form)
+                    .header("User-Agent", ua)
+                    .header("Cookie", cookieHeader)
+                    .header("Origin", origin)
+                    .header("Referer", "$origin/")
+                    .header("Accept", "application/json")
+                    .build()
 
-                val postData = "version=1&app_id=$VK_CLIENT_ID".toByteArray(Charsets.UTF_8)
-                conn.outputStream.use { it.write(postData) }
-
-                val code = conn.responseCode
-                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                val response = stream?.bufferedReader()?.use { it.readText() } ?: ""
-
-                if (response.contains("\"access_token\"")) {
-                    val map = Gson().fromJson(response, Map::class.java)
-                    val data = map["data"] as? Map<*, *>
-                    val token = data?.get("access_token") as? String
-                    if (!token.isNullOrBlank()) {
-                        return token
+                httpClient.newCall(req).execute().use { resp ->
+                    val response = readBoundedBody(resp)
+                    if (response.contains("\"access_token\"")) {
+                        val map = gson.fromJson(response, Map::class.java)
+                        val data = map["data"] as? Map<*, *>
+                        val token = data?.get("access_token") as? String
+                        if (!token.isNullOrBlank()) {
+                            return token
+                        }
                     }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "act=web_token $host error: ${e.message}")
-            } finally {
-                runCatching { conn?.disconnect() }
             }
         }
         return null
     }
 
+    fun interface CancelHandle {
+        fun cancel()
+    }
+
     fun createCallWithToken(
         token: String,
         onResult: (link: String?, error: String?, isBanned: Boolean) -> Unit
-    ) {
-        Thread {
-            val hosts = listOf("api.vk.ru", "api.vk.com", "api.vk.me")
+    ): CancelHandle {
+        val hosts = listOf("api.vk.ru", "api.vk.com", "api.vk.me")
+        val canceled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val currentCall = java.util.concurrent.atomic.AtomicReference<Call?>(null)
+        val handle = CancelHandle {
+            canceled.set(true)
+            currentCall.get()?.cancel()
+        }
+
+        // Run via okhttp dispatcher thread instead of spawning raw Thread objects
+        httpClient.dispatcher.executorService.execute {
             var lastError = "Не удалось связаться с серверами VK"
             var isBanned = false
 
             for (host in hosts) {
-                var conn: HttpURLConnection? = null
+                if (canceled.get()) break
                 try {
-                    val endpoint = "https://$host/method/calls.start"
-                    val postData = "access_token=${URLEncoder.encode(token, "UTF-8")}&v=$CALLS_API_VERSION"
-                    val postBytes = postData.toByteArray(Charsets.UTF_8)
-
-                    conn = URL(endpoint).openConnection() as HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.doOutput = true
-                    conn.connectTimeout = 6000
-                    conn.readTimeout = 6000
-                    conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                    conn.setRequestProperty("User-Agent", "SelykVPN/2.0")
-                    conn.setRequestProperty("Accept", "application/json")
-                    conn.setRequestProperty("Content-Length", postBytes.size.toString())
-
-                    conn.outputStream.use { it.write(postBytes) }
-
-                    val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
-                    val responseStr = stream?.let { BufferedReader(InputStreamReader(it)).use { r -> r.readText() } } ?: ""
-
-                    val map = Gson().fromJson(responseStr, Map::class.java)
+                    val form = FormBody.Builder()
+                        .add("access_token", token)
+                        .add("v", CALLS_API_VERSION)
+                        .build()
+                    val req = Request.Builder()
+                        .url("https://$host/method/calls.start")
+                        .post(form)
+                        .header("User-Agent", "SelykVPN/2.0")
+                        .header("Accept", "application/json")
+                        .build()
+                    val call = httpClient.newCall(req)
+                    currentCall.set(call)
+                    if (canceled.get()) {
+                        call.cancel()
+                        break
+                    }
+                    val responseStr = call.execute().use { resp -> readBoundedBody(resp) }
+                    val map = gson.fromJson(responseStr, Map::class.java)
                     if (map != null && map.containsKey("error")) {
                         val errMap = map["error"] as? Map<*, *>
                         val msg = errMap?.get("error_msg") as? String ?: "VK error"
@@ -307,16 +341,17 @@ object VKCallHelper {
                     val joinLink = respMap?.get("join_link") as? String
                     if (!joinLink.isNullOrBlank()) {
                         onResult(joinLink.trim(), null, false)
-                        return@Thread
+                        return@execute
                     }
                 } catch (e: Exception) {
+                    if (canceled.get()) break
                     lastError = "Сетевая ошибка ($host): ${e.message}"
-                } finally {
-                    runCatching { conn?.disconnect() }
                 }
             }
-
-            onResult(null, lastError, isBanned)
-        }.start()
+            if (!canceled.get()) {
+                onResult(null, lastError, isBanned)
+            }
+        }
+        return handle
     }
 }

@@ -412,6 +412,7 @@
     <string name="free_access_start_timeout">Couldn\'t start service. Check VPN permission and battery optimization.</string>
     <string name="free_access_handshake_timeout">Gateway didn\'t respond within %1$d s. Check your internet or refresh the VK call link.</string>
     <string name="vpn_start_failed_fgs">System blocked background VPN startup. Open the app and try again.</string>
+    <string name="free_access_ipv6_setup_failed">Failed to configure IPv6 leak protection</string>
     <string name="free_access_captcha_title">VK Verification</string>
     <string name="free_access_captcha_hint">Enter characters from the image</string>
     <string name="free_access_captcha_refresh">Refresh image</string>
@@ -434,5 +435,6 @@
     <string name="free_access_missing_keys">WireGuard keys are missing for Free Access. Refresh your key in the Telegram bot.</string>
     <string name="free_access_wrapa_dtls_timeout">Free Access gateway didn\'t reply to handshake (DTLS timeout). Check your key or try again later.</string>
     <string name="share_free_access_unsupported">HTTP/SOCKS proxy sharing is only available in Regular VPN mode. Switch to Regular VPN to share internet with other devices.</string>
+    <string name="open_url_failed">No app found to open this link</string>
 
 </resources>

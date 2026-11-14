@@ -68,8 +68,8 @@ object SubscriptionParser {
      */
     fun parseVlessList(body: String): List<JsonObject> {
         val text = body.trim()
-        val decoded = if (!text.startsWith("vless://") && !text.startsWith("[") && !text.startsWith("{")) {
-            text.decodeBase64()?.utf8() ?: text
+        val decoded = if (!text.startsWith("vless://", ignoreCase = true) && !text.startsWith("[") && !text.startsWith("{")) {
+            decodeFlexibleBase64Utf8(text) ?: text
         } else text
 
         return decoded.lines()
@@ -78,13 +78,44 @@ object SubscriptionParser {
             .mapNotNull { parseVlessUri(it) }
     }
 
+    private fun decodeFlexibleBase64Utf8(raw: String): String? {
+        val compact = raw.filterNot { it.isWhitespace() }
+        if (compact.isEmpty()) return null
+        val standard = compact.replace('-', '+').replace('_', '/')
+        val padded = standard + "=".repeat((4 - standard.length % 4) % 4)
+        return (padded.decodeBase64() ?: compact.decodeBase64())?.utf8()
+    }
+
+    private fun decodePercentLiteral(raw: String): String {
+        if ('%' !in raw) return raw
+        val out = ByteArray(raw.length)
+        var outLen = 0
+        var i = 0
+        while (i < raw.length) {
+            val ch = raw[i]
+            if (ch == '%' && i + 2 < raw.length) {
+                val hi = raw[i + 1].digitToIntOrNull(16)
+                val lo = raw[i + 2].digitToIntOrNull(16)
+                if (hi != null && lo != null) {
+                    out[outLen++] = ((hi shl 4) or lo).toByte()
+                    i += 3
+                    continue
+                }
+            }
+            val bytes = ch.toString().toByteArray(Charsets.UTF_8)
+            for (b in bytes) out[outLen++] = b
+            i++
+        }
+        return String(out, 0, outLen, Charsets.UTF_8)
+    }
+
     fun parseVlessUri(uriString: String): JsonObject? {
         return runCatching {
             val withoutScheme = uriString.substringAfter("://")
             val mainAndFragment = withoutScheme.split('#', limit = 2)
             val main = mainAndFragment[0]
             val remarks = if (mainAndFragment.size > 1) {
-                runCatching { java.net.URLDecoder.decode(mainAndFragment[1], "UTF-8") }.getOrDefault(mainAndFragment[1])
+                runCatching { decodePercentLiteral(mainAndFragment[1]) }.getOrDefault(mainAndFragment[1])
             } else "Server"
 
             val atSplit = main.split('@', limit = 2)
@@ -92,9 +123,17 @@ object SubscriptionParser {
             val uuid = atSplit[0]
 
             val hostAndQuery = atSplit[1].split('?', limit = 2)
-            val hostAndPort = hostAndQuery[0].split(':', limit = 2)
-            val address = hostAndPort[0].trim('[', ']')
-            val port = hostAndPort.getOrNull(1)?.toIntOrNull() ?: 443
+            val rawHostPort = hostAndQuery[0].trim()
+            val (address, port) = if (rawHostPort.startsWith('[')) {
+                val endBracket = rawHostPort.indexOf(']')
+                if (endBracket <= 1) return null
+                val addr = rawHostPort.substring(1, endBracket)
+                val portStr = rawHostPort.substring(endBracket + 1).removePrefix(":")
+                addr to (portStr.toIntOrNull() ?: 443)
+            } else {
+                val hostAndPort = rawHostPort.split(':', limit = 2)
+                hostAndPort[0] to (hostAndPort.getOrNull(1)?.toIntOrNull() ?: 443)
+            }
 
             val queryParams = mutableMapOf<String, String>()
             if (hostAndQuery.size > 1) {
@@ -102,7 +141,7 @@ object SubscriptionParser {
                     val kv = param.split('=', limit = 2)
                     if (kv.isNotEmpty()) {
                         val k = kv[0]
-                        val v = if (kv.size > 1) runCatching { java.net.URLDecoder.decode(kv[1], "UTF-8") }.getOrDefault(kv[1]) else ""
+                        val v = if (kv.size > 1) decodePercentLiteral(kv[1]) else ""
                         queryParams[k] = v
                     }
                 }
@@ -292,7 +331,9 @@ object SubscriptionParser {
     fun parseUserInfo(value: String?): Map<String, Long> =
         value.orEmpty().split(';').mapNotNull { part ->
             val (k, v) = part.split('=', limit = 2).takeIf { it.size == 2 } ?: return@mapNotNull null
-            v.trim().toDoubleOrNull()?.let { k.trim().lowercase() to it.toLong() }
+            val trimmed = v.trim()
+            val num = trimmed.toLongOrNull() ?: trimmed.toDoubleOrNull()?.toLong()
+            num?.let { k.trim().lowercase() to it }
         }.toMap()
 
     fun JsonObject.string(name: String): String? = (this[name] as? JsonPrimitive)?.content

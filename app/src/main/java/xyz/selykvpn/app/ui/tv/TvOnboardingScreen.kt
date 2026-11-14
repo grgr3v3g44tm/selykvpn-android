@@ -105,7 +105,10 @@ fun TvOnboardingScreen(viewModel: AppViewModel, onBack: (() -> Unit)?) {
             delay(5_000)
         }
     }
-    LaunchedEffect(Unit) { runCatching { manualFocus.requestFocus() } }
+    LaunchedEffect(Unit) {
+        androidx.compose.runtime.withFrameNanos { }
+        runCatching { manualFocus.requestFocus() }
+    }
 
     Scaffold(
         topBar = {

@@ -18,6 +18,8 @@ object FreeAccessLog {
     private const val CRED_POOL_FILE = "creds-pool.json"
     private const val MAX_BYTES = 1_024_000L
     private const val KEEP_BYTES = 256_000
+    private val fileLock = Any()
+    private val timeFormat = ThreadLocal.withInitial { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
 
     fun logDir(context: Context): File =
         File(context.filesDir, DIR_NAME).apply { mkdirs() }
@@ -26,11 +28,11 @@ object FreeAccessLog {
         File(logDir(context), FILE_NAME)
 
     /** Ensures the log directory exists and trims oversized logs before Go opens [logFile]. */
-    fun prepareForSession(context: Context): File {
+    fun prepareForSession(context: Context): File = synchronized(fileLock) {
         val file = logFile(context)
         file.parentFile?.mkdirs()
         trimIfOversized(file)
-        return file
+        file
     }
 
     /** Clears persisted TURN credential pool cache after a bootstrap deadlock/timeout. */
@@ -42,27 +44,34 @@ object FreeAccessLog {
     }
 
     fun appendLine(context: Context, tag: String, message: String) {
-        runCatching {
-            val file = logFile(context)
-            file.parentFile?.mkdirs()
-            val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
-            file.appendText("[$ts][$tag] $message\n")
+        synchronized(fileLock) {
+            runCatching {
+                val file = logFile(context)
+                file.parentFile?.mkdirs()
+                trimIfOversized(file)
+                val ts = timeFormat.get()?.format(Date()).orEmpty()
+                file.appendText("[$ts][$tag] $message\n")
+            }
         }
     }
 
-    fun readTail(context: Context, maxLines: Int = 250): List<String> = runCatching {
-        val file = logFile(context)
-        if (!file.exists() || file.length() == 0L) return@runCatching emptyList()
-        readLastBytes(file, KEEP_BYTES)
-            .lines()
-            .filter { it.isNotBlank() }
-            .takeLast(maxLines)
-    }.getOrDefault(emptyList())
-
-    fun clear(context: Context) {
+    fun readTail(context: Context, maxLines: Int = 250): List<String> = synchronized(fileLock) {
         runCatching {
             val file = logFile(context)
-            if (file.exists()) file.writeText("")
+            if (!file.exists() || file.length() == 0L) return@runCatching emptyList()
+            readLastBytes(file, KEEP_BYTES)
+                .lines()
+                .filter { it.isNotBlank() }
+                .takeLast(maxLines)
+        }.getOrDefault(emptyList())
+    }
+
+    fun clear(context: Context) {
+        synchronized(fileLock) {
+            runCatching {
+                val file = logFile(context)
+                if (file.exists()) file.writeText("")
+            }
         }
     }
 
@@ -80,8 +89,22 @@ object FreeAccessLog {
         val len = file.length()
         if (len <= maxBytes) return file.readText()
         file.inputStream().use { stream ->
-            stream.skip(len - maxBytes)
-            return stream.readBytes().toString(Charsets.UTF_8)
+            var remaining = len - maxBytes
+            while (remaining > 0L) {
+                val skipped = stream.skip(remaining)
+                if (skipped <= 0L) {
+                    if (stream.read() < 0) break
+                    remaining--
+                } else {
+                    remaining -= skipped
+                }
+            }
+            val bytes = stream.readBytes()
+            var offset = 0
+            while (offset < bytes.size && (bytes[offset].toInt() and 0xC0) == 0x80) {
+                offset++
+            }
+            return String(bytes, offset, bytes.size - offset, Charsets.UTF_8)
         }
     }
 }

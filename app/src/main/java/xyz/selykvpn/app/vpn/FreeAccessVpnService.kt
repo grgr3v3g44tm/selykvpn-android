@@ -8,8 +8,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.DeadObjectException
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
-import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.util.Log
@@ -30,6 +30,7 @@ import xyz.selykvpn.app.R
 import xyz.selykvpn.app.data.AppJson
 import xyz.selykvpn.app.model.FreeAccessConfig
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Isolated VPN service running inside android:process=":vkturn" so libwgturn.so's Go runtime
@@ -45,8 +46,7 @@ class FreeAccessVpnService : VpnService() {
     @Volatile
     private var running: Boolean = false
 
-    @Volatile
-    private var sessionGen: Long = 0L
+    private val sessionGen = AtomicLong(0L)
 
     @Volatile
     private var currentState: String = STATE_IDLE
@@ -66,9 +66,14 @@ class FreeAccessVpnService : VpnService() {
     @Volatile
     private var latestTraffic: VpnController.Traffic = VpnController.Traffic.ZERO
 
+    @Volatile
+    private var ipcThread: HandlerThread? = null
+
     private val ipcMessenger by lazy {
+        val thread = HandlerThread("FreeAccessIpc").apply { start() }
+        ipcThread = thread
         Messenger(
-            Handler(Looper.getMainLooper()) { msg ->
+            Handler(thread.looper) { msg ->
                 when (msg.what) {
                     MSG_REGISTER_CLIENT -> {
                         msg.replyTo?.let { client ->
@@ -159,7 +164,14 @@ class FreeAccessVpnService : VpnService() {
             ACTION_SOLVE_CAPTCHA -> {
                 val answer = intent.getStringExtra(EXTRA_CAPTCHA_ANSWER).orEmpty()
                 if (answer.isNotBlank()) {
-                    scope.launch { engine.solveCaptcha(answer) }
+                    scope.launch {
+                        if (engine.solveCaptcha(answer)) {
+                            captchaImageUrl = ""
+                            captchaSid = ""
+                            currentStage = getString(R.string.free_access_stage_vk)
+                            emitStatus()
+                        }
+                    }
                 }
             }
             ACTION_REFRESH_CAPTCHA -> {
@@ -187,7 +199,7 @@ class FreeAccessVpnService : VpnService() {
                 val cookie = intent.getStringExtra(EXTRA_COOKIE_HEADER)
                 val excluded = intent.getStringArrayListExtra(EXTRA_EXCLUDED_APPS)?.toSet().orEmpty()
                 val logEnabled = intent.getBooleanExtra(EXTRA_LOG_ENABLED, false)
-                val mySession = ++sessionGen
+                val mySession = sessionGen.incrementAndGet()
                 if (reconnect || !running) {
                     currentState = STATE_CONNECTING
                     if (currentStage == null) {
@@ -196,7 +208,7 @@ class FreeAccessVpnService : VpnService() {
                 }
                 scope.launch {
                     lock.withLock {
-                        if (sessionGen != mySession) return@withLock
+                        if (sessionGen.get() != mySession) return@withLock
                         if (!reconnect && running) {
                             emitStatus()
                             return@withLock
@@ -211,7 +223,7 @@ class FreeAccessVpnService : VpnService() {
 
     private fun requestStop(handoff: Boolean) {
         running = false
-        sessionGen++
+        sessionGen.incrementAndGet()
         scope.launch { lock.withLock { stopInternal(handoff = handoff) } }
     }
 
@@ -236,18 +248,18 @@ class FreeAccessVpnService : VpnService() {
             excludedApps = excluded,
             logEnabled = logEnabled,
             onStage = { stage ->
-                if (!running || sessionGen != mySession) return@start
+                if (!running || sessionGen.get() != mySession) return@start
                 currentStage = stage
                 emitStatus()
             },
             onCaptcha = { url, sid ->
-                if (!running || sessionGen != mySession) return@start
+                if (!running || sessionGen.get() != mySession) return@start
                 captchaImageUrl = url
                 captchaSid = sid
                 emitStatus()
             },
             onReady = {
-                if (!running || sessionGen != mySession) return@start
+                if (!running || sessionGen.get() != mySession) return@start
                 currentState = STATE_CONNECTED
                 currentStage = null
                 captchaImageUrl = ""
@@ -257,15 +269,15 @@ class FreeAccessVpnService : VpnService() {
                 emitStatus()
             },
             onTraffic = { t ->
-                if (!running || sessionGen != mySession) return@start
+                if (!running || sessionGen.get() != mySession) return@start
                 latestTraffic = t
                 if (currentState == STATE_CONNECTED) emitStatus()
             },
             onError = { msg ->
-                if (!running || sessionGen != mySession) return@start
+                if (!running || sessionGen.get() != mySession) return@start
                 Log.e(TAG, "Free access error: $msg")
                 running = false
-                sessionGen++
+                sessionGen.incrementAndGet()
                 scope.launch { lock.withLock { stopInternal(handoff = false, terminalError = msg) } }
             },
         )
@@ -367,9 +379,7 @@ class FreeAccessVpnService : VpnService() {
 
     override fun onDestroy() {
         running = false
-        sessionGen++
-        engine.stop()
-        runCatching { WgTurnCore.registerSocketProtector(null) }
+        sessionGen.incrementAndGet()
         if (currentState != STATE_IDLE) {
             currentState = STATE_IDLE
             currentStage = null
@@ -380,7 +390,13 @@ class FreeAccessVpnService : VpnService() {
             emitStatus()
         }
         clientMessengers.clear()
+        ipcThread?.quitSafely()
+        ipcThread = null
         scope.cancel()
+        CoroutineScope(NonCancellable + Dispatchers.IO).launch {
+            engine.destroy()
+            runCatching { WgTurnCore.registerSocketProtector(null) }
+        }
         super.onDestroy()
     }
 

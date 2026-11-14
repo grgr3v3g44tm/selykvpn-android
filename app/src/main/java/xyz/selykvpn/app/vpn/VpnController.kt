@@ -23,9 +23,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import xyz.selykvpn.app.R
@@ -35,6 +39,7 @@ import xyz.selykvpn.app.data.AppJson
 import xyz.selykvpn.app.data.exclusionSettings
 import xyz.selykvpn.app.model.FreeAccessConfig
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /** Process-wide VPN state shared by the service, the UI and the Quick Settings tile. */
 object VpnController {
@@ -87,12 +92,19 @@ object VpnController {
     private val _errors = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val errors: SharedFlow<String> = _errors.asSharedFlow()
 
-    @Volatile
-    var activeBackend: Backend = Backend.NONE
-        internal set
+    private val _activeBackend = MutableStateFlow(Backend.NONE)
+    val activeBackendState: StateFlow<Backend> = _activeBackend.asStateFlow()
+
+    var activeBackend: Backend
+        get() = _activeBackend.value
+        internal set(value) {
+            _activeBackend.value = value
+        }
 
     private val initialized = AtomicBoolean(false)
     private val controllerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val opMutex = Mutex()
+    private val opGen = AtomicLong(0L)
     private val ipcLock = Any()
 
     @Volatile
@@ -366,14 +378,12 @@ object VpnController {
         val now = runCatching { SystemClock.elapsedRealtime() }.getOrElse { System.currentTimeMillis() }
         lastFreeAccessEventMs = now
 
+        // Ignore all stale broadcasts/messages from :vkturn if user already switched to Regular mode.
+        if (activeBackend == Backend.REGULAR) {
+            return
+        }
         if (!snapshot.error.isNullOrBlank()) {
             reportError(snapshot.error)
-        }
-        // Ignore stale Idle/Stopping broadcasts from :vkturn if user already switched to Regular mode.
-        if (activeBackend == Backend.REGULAR &&
-            (snapshot.faState == FreeAccessVpnService.STATE_IDLE || snapshot.faState == FreeAccessVpnService.STATE_STOPPING)
-        ) {
-            return
         }
 
         when (snapshot.faState) {
@@ -426,13 +436,32 @@ object VpnController {
 
     val isActive: Boolean get() = state.value is State.Connected || state.value is State.Connecting
 
-    fun startRegular(context: Context) {
+    fun startRegular(context: Context, onFgsDenied: (() -> Unit)? = null) {
         val appCtx = context.applicationContext
         appContext = appCtx
         startWatchdogJob?.cancel()
         stopWatchdogJob?.cancel()
         syncWatchdogJob?.cancel()
-        if (activeBackend == Backend.FREE_ACCESS) {
+        val prevBackend = activeBackend
+        val prevState = state.value
+        val started = runCatching {
+            ContextCompat.startForegroundService(appCtx, intent(appCtx, SelykVpnService.ACTION_START))
+        }
+        if (started.isFailure) {
+            val err = started.exceptionOrNull()
+            Log.e(TAG, "Failed to start SelykVpnService", err)
+            if (prevBackend == Backend.NONE || prevState is State.Idle) {
+                activeBackend = Backend.NONE
+                state.value = State.Idle
+            }
+            if (onFgsDenied != null) {
+                onFgsDenied()
+            } else {
+                reportError(appCtx.getString(R.string.vpn_start_failed_fgs))
+            }
+            return
+        }
+        if (prevBackend == Backend.FREE_ACCESS) {
             if (!sendToRemote(FreeAccessVpnService.MSG_STOP, arg1 = 1)) {
                 runCatching { appCtx.startService(FreeAccessVpnService.stopIntent(appCtx, handoff = true)) }
             }
@@ -443,97 +472,105 @@ object VpnController {
         captcha.value = null
         state.value = State.Connecting
         traffic.value = Traffic.ZERO
-        runCatching {
-            ContextCompat.startForegroundService(appCtx, intent(appCtx, SelykVpnService.ACTION_START))
-        }.onFailure { e ->
-            Log.e(TAG, "Failed to start SelykVpnService", e)
-            activeBackend = Backend.NONE
-            state.value = State.Idle
-            reportError(appCtx.getString(R.string.vpn_start_failed_fgs))
-        }
     }
 
-    fun startFreeAccess(
+    suspend fun startFreeAccess(
         context: Context,
         config: FreeAccessConfig,
         excludedApps: Set<String>,
         reconnect: Boolean = false,
         logEnabled: Boolean = false,
+        onFgsDenied: (() -> Unit)? = null,
     ) {
         val appCtx = context.applicationContext
         appContext = appCtx
-        if (activeBackend == Backend.REGULAR) {
-            runCatching {
-                appCtx.startService(
-                    intent(appCtx, SelykVpnService.ACTION_STOP).putExtra(SelykVpnService.EXTRA_HANDOFF, true)
+        val prevBackend = activeBackend
+        val prevState = state.value
+
+        val (validCookie, effectiveConfig) = withContext(Dispatchers.IO) {
+            VKCookieStore.init(appCtx)
+            val cookie = if (config.useSessionAuth && VKCookieStore.hasValidLogin()) {
+                VKCookieStore.getValidCookieHeader()?.takeIf { it.isNotBlank() }
+            } else {
+                null
+            }
+            val cfg = if (config.deviceId.isBlank()) {
+                config.copy(deviceId = FreeAccessConfig.resolveStableDeviceId(appCtx))
+            } else {
+                config
+            }
+            cookie to cfg
+        }
+
+        withContext(Dispatchers.Main) {
+            val started = runCatching {
+                ContextCompat.startForegroundService(
+                    appCtx,
+                    FreeAccessVpnService.startIntent(
+                        appCtx,
+                        effectiveConfig,
+                        validCookie,
+                        excludedApps,
+                        reconnect = reconnect,
+                        logEnabled = logEnabled,
+                    ),
                 )
             }
-        }
-        VKCookieStore.init(appCtx)
-        val validCookie = if (config.useSessionAuth && VKCookieStore.hasValidLogin()) {
-            VKCookieStore.getValidCookieHeader()?.takeIf { it.isNotBlank() }
-        } else {
-            null
-        }
-        val effectiveConfig = if (config.deviceId.isBlank()) {
-            config.copy(deviceId = FreeAccessConfig.resolveStableDeviceId(appCtx))
-        } else {
-            config
-        }
+            if (started.isFailure) {
+                Log.e(TAG, "Failed to start FreeAccessVpnService", started.exceptionOrNull())
+                if (prevBackend == Backend.NONE || prevState is State.Idle) {
+                    activeBackend = Backend.NONE
+                    state.value = State.Idle
+                    freeAccessStage.value = null
+                    captcha.value = null
+                }
+                if (onFgsDenied != null) {
+                    onFgsDenied()
+                } else {
+                    reportError(appCtx.getString(R.string.vpn_start_failed_fgs))
+                }
+                return@withContext
+            }
 
-        val reqTime = SystemClock.elapsedRealtime()
-        lastFreeAccessStartReqMs = reqTime
-        activeBackend = Backend.FREE_ACCESS
-        stopWatchdogJob?.cancel()
-        syncWatchdogJob?.cancel()
-        if (!reconnect) {
-            state.value = State.Connecting
-            traffic.value = Traffic.ZERO
-            freeAccessStage.value = appCtx.getString(R.string.free_access_stage_vk)
-            captcha.value = null
-        }
+            if (prevBackend == Backend.REGULAR) {
+                runCatching {
+                    appCtx.startService(
+                        intent(appCtx, SelykVpnService.ACTION_STOP).putExtra(SelykVpnService.EXTRA_HANDOFF, true)
+                    )
+                }
+            }
 
-        val started = runCatching {
-            ContextCompat.startForegroundService(
-                appCtx,
-                FreeAccessVpnService.startIntent(
-                    appCtx,
-                    effectiveConfig,
-                    validCookie,
-                    excludedApps,
-                    reconnect = reconnect,
-                    logEnabled = logEnabled,
-                ),
-            )
-        }
-        if (started.isFailure) {
-            Log.e(TAG, "Failed to start FreeAccessVpnService", started.exceptionOrNull())
-            activeBackend = Backend.NONE
-            state.value = State.Idle
-            freeAccessStage.value = null
-            captcha.value = null
-            reportError(appCtx.getString(R.string.vpn_start_failed_fgs))
-            return
-        }
+            val reqTime = SystemClock.elapsedRealtime()
+            lastFreeAccessStartReqMs = reqTime
+            activeBackend = Backend.FREE_ACCESS
+            stopWatchdogJob?.cancel()
+            syncWatchdogJob?.cancel()
+            if (!reconnect) {
+                state.value = State.Connecting
+                traffic.value = Traffic.ZERO
+                freeAccessStage.value = appCtx.getString(R.string.free_access_stage_vk)
+                captcha.value = null
+            }
 
-        bindFreeAccessIfAlive(appCtx)
-        startWatchdogJob?.cancel()
-        startWatchdogJob = controllerScope.launch {
-            delay(START_WATCHDOG_MS)
-            val binderAlive = synchronized(ipcLock) { remoteBinder?.isBinderAlive == true }
-            if (activeBackend == Backend.FREE_ACCESS &&
-                state.value is State.Connecting &&
-                lastFreeAccessEventMs < reqTime &&
-                !binderAlive
-            ) {
-                Log.e(TAG, "FreeAccessVpnService startup timed out without IPC response")
-                recoverFromFreeAccessDeath(
-                    unexpected = true,
-                    errorMessage = appCtx.getString(R.string.free_access_start_timeout),
-                )
-                runCatching { appCtx.startService(FreeAccessVpnService.stopIntent(appCtx, handoff = false)) }
-            } else if (!binderAlive && activeBackend == Backend.FREE_ACCESS && state.value !is State.Idle) {
-                bindFreeAccessIfAlive(appCtx)
+            bindFreeAccessIfAlive(appCtx)
+            startWatchdogJob?.cancel()
+            startWatchdogJob = controllerScope.launch {
+                delay(START_WATCHDOG_MS)
+                val binderAlive = synchronized(ipcLock) { remoteBinder?.isBinderAlive == true }
+                if (activeBackend == Backend.FREE_ACCESS &&
+                    state.value is State.Connecting &&
+                    lastFreeAccessEventMs < reqTime &&
+                    !binderAlive
+                ) {
+                    Log.e(TAG, "FreeAccessVpnService startup timed out without IPC response")
+                    recoverFromFreeAccessDeath(
+                        unexpected = true,
+                        errorMessage = appCtx.getString(R.string.free_access_start_timeout),
+                    )
+                    runCatching { appCtx.startService(FreeAccessVpnService.stopIntent(appCtx, handoff = false)) }
+                } else if (!binderAlive && activeBackend == Backend.FREE_ACCESS && state.value !is State.Idle) {
+                    bindFreeAccessIfAlive(appCtx)
+                }
             }
         }
     }
@@ -618,26 +655,30 @@ object VpnController {
         return if (ready) mode else null
     }
 
-    fun start(context: Context, forceMode: String? = null) {
+    fun start(context: Context, forceMode: String? = null, onFgsDenied: (() -> Unit)? = null) {
         val appCtx = context.applicationContext
         appContext = appCtx
+        val myOp = opGen.incrementAndGet()
         controllerScope.launch {
-            val graph = SelykApp.graph
-            val mode = forceMode ?: runCatching { graph.settings.activeMode.first() }.getOrDefault("regular")
-            if (mode == "free_access") {
-                val cfgStr = runCatching { graph.settings.freeAccessConfig.first() }.getOrNull()
-                val cfg = cfgStr?.takeIf { it.isNotBlank() }?.let {
-                    runCatching { AppJson.decodeFromString<FreeAccessConfig>(it) }.getOrNull()
-                } ?: FreeAccessConfig()
-                val excluded = runCatching { exclusionSettings(graph.settings, graph.remoteConfig).first().effective }
-                    .getOrDefault(emptySet())
-                val logEnabled = runCatching { graph.settings.connectionLogNow() }.getOrDefault(false)
-                withContext(Dispatchers.Main) {
-                    startFreeAccess(appCtx, cfg, excluded, reconnect = false, logEnabled = logEnabled)
-                }
-            } else {
-                withContext(Dispatchers.Main) {
-                    startRegular(appCtx)
+            opMutex.withLock {
+                if (opGen.get() != myOp) return@withLock
+                val graph = SelykApp.graph
+                val mode = forceMode ?: runCatching { graph.settings.activeMode.first() }.getOrDefault("regular")
+                if (mode == "free_access") {
+                    val cfgStr = runCatching { graph.settings.freeAccessConfig.first() }.getOrNull()
+                    val cfg = cfgStr?.takeIf { it.isNotBlank() }?.let {
+                        runCatching { AppJson.decodeFromString<FreeAccessConfig>(it) }.getOrNull()
+                    } ?: FreeAccessConfig()
+                    val excluded = runCatching { exclusionSettings(graph.settings, graph.remoteConfig).first().effective }
+                        .getOrDefault(emptySet())
+                    val logEnabled = runCatching { graph.settings.connectionLogNow() }.getOrDefault(false)
+                    if (opGen.get() != myOp) return@withLock
+                    startFreeAccess(appCtx, cfg, excluded, reconnect = false, logEnabled = logEnabled, onFgsDenied = onFgsDenied)
+                } else {
+                    withContext(Dispatchers.Main) {
+                        if (opGen.get() != myOp) return@withContext
+                        startRegular(appCtx, onFgsDenied = onFgsDenied)
+                    }
                 }
             }
         }
@@ -651,34 +692,39 @@ object VpnController {
     fun stop(context: Context) {
         val appCtx = context.applicationContext
         appContext = appCtx
-        if (state.value == State.Idle && activeBackend == Backend.NONE) return
-        startWatchdogJob?.cancel()
-        syncWatchdogJob?.cancel()
-        when (activeBackend) {
-            Backend.FREE_ACCESS -> {
-                if (state.value !is State.Idle) {
-                    state.value = State.Stopping
-                }
-                freeAccessStage.value = null
-                captcha.value = null
-                val sentOverBinder = sendToRemote(FreeAccessVpnService.MSG_STOP, arg1 = 0)
-                runCatching { appCtx.startService(FreeAccessVpnService.stopIntent(appCtx, handoff = false)) }
-                if (!sentOverBinder && synchronized(ipcLock) { remoteBinder?.isBinderAlive != true }) {
-                    // Remote service was not reachable; try stop watchdog so UI never locks on Stopping.
-                    Log.d(TAG, "stop(): sent startService stop intent while unbound")
-                }
-                stopWatchdogJob?.cancel()
-                stopWatchdogJob = controllerScope.launch {
-                    delay(STOP_WATCHDOG_MS)
-                    if (activeBackend == Backend.FREE_ACCESS && state.value is State.Stopping) {
-                        Log.w(TAG, "Stop watchdog expired; forcing Idle state")
-                        unbindFreeAccess(appCtx)
-                        recoverFromFreeAccessDeath(unexpected = false)
+        val myOp = opGen.incrementAndGet()
+        controllerScope.launch {
+            opMutex.withLock {
+                if (opGen.get() != myOp) return@withLock
+                if (state.value == State.Idle && activeBackend == Backend.NONE) return@withLock
+                startWatchdogJob?.cancel()
+                syncWatchdogJob?.cancel()
+                when (activeBackend) {
+                    Backend.FREE_ACCESS -> {
+                        if (state.value !is State.Idle) {
+                            state.value = State.Stopping
+                        }
+                        freeAccessStage.value = null
+                        captcha.value = null
+                        val sentOverBinder = sendToRemote(FreeAccessVpnService.MSG_STOP, arg1 = 0)
+                        runCatching { appCtx.startService(FreeAccessVpnService.stopIntent(appCtx, handoff = false)) }
+                        if (!sentOverBinder && synchronized(ipcLock) { remoteBinder?.isBinderAlive != true }) {
+                            Log.d(TAG, "stop(): sent startService stop intent while unbound")
+                        }
+                        stopWatchdogJob?.cancel()
+                        stopWatchdogJob = controllerScope.launch {
+                            delay(STOP_WATCHDOG_MS)
+                            if (activeBackend == Backend.FREE_ACCESS && state.value is State.Stopping) {
+                                Log.w(TAG, "Stop watchdog expired; forcing Idle state")
+                                unbindFreeAccess(appCtx)
+                                recoverFromFreeAccessDeath(unexpected = false)
+                            }
+                        }
+                    }
+                    Backend.REGULAR, Backend.NONE -> {
+                        runCatching { appCtx.startService(intent(appCtx, SelykVpnService.ACTION_STOP)) }
                     }
                 }
-            }
-            Backend.REGULAR, Backend.NONE -> {
-                runCatching { appCtx.startService(intent(appCtx, SelykVpnService.ACTION_STOP)) }
             }
         }
     }
@@ -688,22 +734,25 @@ object VpnController {
         val appCtx = context.applicationContext
         appContext = appCtx
         if (state.value !is State.Connected) return
-        if (activeBackend == Backend.FREE_ACCESS) {
-            controllerScope.launch {
-                val graph = SelykApp.graph
-                val cfgStr = runCatching { graph.settings.freeAccessConfig.first() }.getOrNull()
-                val cfg = cfgStr?.takeIf { it.isNotBlank() }?.let {
-                    runCatching { AppJson.decodeFromString<FreeAccessConfig>(it) }.getOrNull()
-                } ?: return@launch
-                val excluded = runCatching { exclusionSettings(graph.settings, graph.remoteConfig).first().effective }
-                    .getOrDefault(emptySet())
-                val logEnabled = runCatching { graph.settings.connectionLogNow() }.getOrDefault(false)
-                withContext(Dispatchers.Main) {
+        val myOp = opGen.incrementAndGet()
+        controllerScope.launch {
+            opMutex.withLock {
+                if (opGen.get() != myOp) return@withLock
+                if (activeBackend == Backend.FREE_ACCESS) {
+                    val graph = SelykApp.graph
+                    val cfgStr = runCatching { graph.settings.freeAccessConfig.first() }.getOrNull()
+                    val cfg = cfgStr?.takeIf { it.isNotBlank() }?.let {
+                        runCatching { AppJson.decodeFromString<FreeAccessConfig>(it) }.getOrNull()
+                    } ?: return@withLock
+                    val excluded = runCatching { exclusionSettings(graph.settings, graph.remoteConfig).first().effective }
+                        .getOrDefault(emptySet())
+                    val logEnabled = runCatching { graph.settings.connectionLogNow() }.getOrDefault(false)
+                    if (opGen.get() != myOp) return@withLock
                     startFreeAccess(appCtx, cfg, excluded, reconnect = true, logEnabled = logEnabled)
+                } else {
+                    runCatching { appCtx.startService(intent(appCtx, SelykVpnService.ACTION_RECONNECT)) }
                 }
             }
-        } else {
-            runCatching { appCtx.startService(intent(appCtx, SelykVpnService.ACTION_RECONNECT)) }
         }
     }
 

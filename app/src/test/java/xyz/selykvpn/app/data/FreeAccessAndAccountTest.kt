@@ -238,4 +238,24 @@ class FreeAccessAndAccountTest {
         assertEquals(1, parsed.vkturnSlotsUsed)
         assertEquals(null, parsed.vkturnUri)
     }
+
+    @Test
+    fun freeAccessConfigDeterministicIdAndCleanUapi() {
+        val a = FreeAccessConfig(peerAddress = "144.31.226.239:56000")
+        val b = FreeAccessConfig(peerAddress = "144.31.226.239:56000")
+        assertEquals("default", a.id)
+        assertEquals(a.id, b.id)
+
+        val keyB64 = java.util.Base64.getEncoder().encodeToString(ByteArray(32) { (it + 1).toByte() })
+        val wgCfg = FreeAccessConfig(
+            mode = TunnelMode.SRTP,
+            privateKey = "$keyB64\n",
+            peerPublicKey = "  $keyB64\r\n",
+            peerAddress = "144.31.226.239:56000\n",
+            stealthLink = "https://vk.ru/call/join/test",
+        )
+        val uapi = wgCfg.toUAPIConfig()
+        assertTrue(uapi.contains("endpoint=144.31.226.239:56000\n"))
+        assertFalse(uapi.contains("\r"))
+    }
 }

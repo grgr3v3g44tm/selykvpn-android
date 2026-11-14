@@ -22,6 +22,7 @@ import kotlinx.coroutines.withContext
 class VpnTileService : TileService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var job: Job? = null
+    private var clickJob: Job? = null
 
     override fun onStartListening() {
         VpnController.syncState(this)
@@ -42,6 +43,7 @@ class VpnTileService : TileService() {
     }
 
     override fun onClick() {
+        if (clickJob?.isActive == true) return
         if (VpnController.isActive) {
             VpnController.stop(this)
             return
@@ -50,18 +52,17 @@ class VpnTileService : TileService() {
             openApp()
             return
         }
-        serviceScope.launch(Dispatchers.IO) {
+        clickJob = serviceScope.launch(Dispatchers.IO) {
             val mode = VpnController.quickStartModeIfReady(SelykApp.graph)
             withContext(Dispatchers.Main) {
                 if (mode == null) {
                     openApp()
                 } else {
-                    try {
-                        VpnController.start(this@VpnTileService, forceMode = mode)
-                    } catch (_: Exception) {
-                        // Background start restrictions: let the activity start it.
-                        openApp()
-                    }
+                    VpnController.start(
+                        this@VpnTileService,
+                        forceMode = mode,
+                        onFgsDenied = { serviceScope.launch(Dispatchers.Main) { openApp() } },
+                    )
                 }
             }
         }
@@ -72,6 +73,7 @@ class VpnTileService : TileService() {
         val intent = Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             .putExtra(MainActivity.EXTRA_CONNECT, true)
+            .putExtra(MainActivity.EXTRA_CONNECT_TOKEN, SelykApp.internalConnectToken)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startActivityAndCollapse(
                 PendingIntent.getActivity(this, 2, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT),

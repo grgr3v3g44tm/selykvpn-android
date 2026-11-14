@@ -1,11 +1,12 @@
 package xyz.selykvpn.app.auth
 
 import android.content.Context
-import android.content.SharedPreferences
 import android.util.Log
 import android.webkit.CookieManager
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
+import kotlinx.serialization.Serializable
+import xyz.selykvpn.app.data.AppJson
+import xyz.selykvpn.app.data.SecureBox
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -16,70 +17,120 @@ data class StoredCookie(
     val savedAtTimestamp: Long
 )
 
+@Serializable
+private data class PersistedVkSession(
+    val cookieHeader: String? = null,
+    val expiryTimestamp: Long = 0L,
+    val savedAtTimestamp: Long = 0L,
+    val enabled: Boolean = false,
+)
+
 /**
- * Manages persistent storage and domain-specific planting of VK session cookies (remixsid + p).
+ * Manages persistent hardware-encrypted storage and domain-specific planting of VK session cookies (remixsid + p).
  */
 object VKCookieStore {
     private const val TAG = "VKCookieStore"
     private const val PREFS_NAME = "selykvpn_vkauth_secure"
-    private const val KEY_COOKIE_HEADER = "cookie_header"
-    private const val KEY_EXPIRY = "cookie_expiry"
-    private const val KEY_SAVED_AT = "cookie_saved_at"
-    private const val KEY_ENABLED = "vkauth_enabled"
+    private const val FILE_NAME = "vk_session.enc"
+
+    private val lock = Any()
+    private val dateFormat = ThreadLocal.withInitial { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
 
     @Volatile
-    private var prefs: SharedPreferences? = null
+    private var appContext: Context? = null
+
+    @Volatile
+    private var session: PersistedVkSession? = null
 
     fun init(context: Context) {
-        if (prefs != null) return
-        prefs = createEncryptedPrefs(context.applicationContext)
+        val ctx = context.applicationContext
+        synchronized(lock) {
+            if (appContext == null) appContext = ctx
+            if (session != null) return
+            session = loadOrMigrateLocked(ctx)
+        }
         val hasLogin = hasValidLogin()
         Log.d(TAG, "Initialized: hasValidLogin=$hasLogin, expiry=${getFormattedExpiry()}")
     }
 
-    private fun createEncryptedPrefs(context: Context): SharedPreferences {
-        return try {
-            val masterKey = MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            EncryptedSharedPreferences.create(
-                context,
-                PREFS_NAME,
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+    private fun sessionFile(ctx: Context): File = File(ctx.filesDir, FILE_NAME)
+
+    private fun loadOrMigrateLocked(ctx: Context): PersistedVkSession {
+        val file = sessionFile(ctx)
+        val encryptedJson = SecureBox.readEncryptedOrMigrate(file)
+        if (!encryptedJson.isNullOrBlank()) {
+            return runCatching { AppJson.decodeFromString<PersistedVkSession>(encryptedJson) }
+                .getOrDefault(PersistedVkSession())
+        }
+        // Check and wipe any legacy fallback plaintext prefs if present from prior releases.
+        val legacyFallback = ctx.getSharedPreferences(PREFS_NAME + "_fallback", Context.MODE_PRIVATE)
+        val legacyHeader = legacyFallback.getString("cookie_header", null)
+        val legacyExpiry = legacyFallback.getLong("cookie_expiry", 0L)
+        val legacySavedAt = legacyFallback.getLong("cookie_saved_at", 0L)
+        val legacyEnabled = legacyFallback.getBoolean("vkauth_enabled", !legacyHeader.isNullOrBlank())
+        if (legacyFallback.all.isNotEmpty()) {
+            legacyFallback.edit().clear().apply()
+            runCatching { ctx.deleteSharedPreferences(PREFS_NAME + "_fallback") }
+        }
+        if (!legacyHeader.isNullOrBlank()) {
+            val migrated = PersistedVkSession(
+                cookieHeader = normalizeCookieString(legacyHeader),
+                expiryTimestamp = legacyExpiry,
+                savedAtTimestamp = legacySavedAt,
+                enabled = legacyEnabled,
             )
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to create encrypted prefs, falling back to standard prefs", e)
-            context.getSharedPreferences(PREFS_NAME + "_fallback", Context.MODE_PRIVATE)
+            persistLocked(migrated)
+            return migrated
+        }
+        return PersistedVkSession()
+    }
+
+    private fun persistLocked(next: PersistedVkSession) {
+        session = next
+        val ctx = appContext ?: return
+        runCatching {
+            SecureBox.writeEncryptedAtomically(
+                sessionFile(ctx),
+                AppJson.encodeToString(PersistedVkSession.serializer(), next),
+            )
+        }.onFailure { e ->
+            Log.e(TAG, "Failed to persist encrypted VK session", e)
         }
     }
 
-    fun isEnabled(): Boolean {
-        val store = prefs ?: return false
-        return store.getBoolean(KEY_ENABLED, hasStoredSession())
+    fun isEnabled(): Boolean = synchronized(lock) {
+        val s = session ?: return false
+        s.enabled || !s.cookieHeader.isNullOrBlank() && s.enabled
     }
 
     fun setEnabled(enabled: Boolean) {
-        prefs?.edit()?.putBoolean(KEY_ENABLED, enabled)?.apply()
+        synchronized(lock) {
+            val cur = session ?: PersistedVkSession()
+            persistLocked(cur.copy(enabled = enabled))
+        }
     }
 
     fun saveSession(rawCookieString: String, expiryTimestamp: Long) {
-        val store = prefs ?: return
         val normalized = normalizeCookieString(rawCookieString)
-        store.edit()
-            .putString(KEY_COOKIE_HEADER, normalized)
-            .putLong(KEY_EXPIRY, expiryTimestamp)
-            .putLong(KEY_SAVED_AT, System.currentTimeMillis())
-            .putBoolean(KEY_ENABLED, true)
-            .apply()
+        synchronized(lock) {
+            persistLocked(
+                PersistedVkSession(
+                    cookieHeader = normalized,
+                    expiryTimestamp = expiryTimestamp,
+                    savedAtTimestamp = System.currentTimeMillis(),
+                    enabled = true,
+                )
+            )
+        }
         Log.i(TAG, "Saved VK session cookies, expiry=${formatTimestamp(expiryTimestamp)}")
     }
 
     fun getStoredCookieHeaderIgnoreEnabled(): String? {
-        val store = prefs ?: return null
-        val header = store.getString(KEY_COOKIE_HEADER, null) ?: return null
-        val expiry = store.getLong(KEY_EXPIRY, 0L)
+        val (header, expiry) = synchronized(lock) {
+            val s = session ?: return null
+            s.cookieHeader to s.expiryTimestamp
+        }
+        if (header.isNullOrBlank()) return null
         val now = System.currentTimeMillis()
         if (expiry in 1..now) {
             Log.w(TAG, "Stored cookies expired at ${formatTimestamp(expiry)}, now=$now")
@@ -107,12 +158,9 @@ object VKCookieStore {
     }
 
     fun clearSession() {
-        prefs?.edit()
-            ?.remove(KEY_COOKIE_HEADER)
-            ?.remove(KEY_EXPIRY)
-            ?.remove(KEY_SAVED_AT)
-            ?.putBoolean(KEY_ENABLED, false)
-            ?.apply()
+        synchronized(lock) {
+            persistLocked(PersistedVkSession(enabled = false))
+        }
         clearWebViewCookies()
         Log.i(TAG, "Cleared VK session")
     }
@@ -256,8 +304,7 @@ object VKCookieStore {
     }
 
     fun getFormattedExpiry(): String {
-        val store = prefs ?: return "Н/Д"
-        val expiry = store.getLong(KEY_EXPIRY, 0L)
+        val expiry = synchronized(lock) { session?.expiryTimestamp ?: 0L }
         return if (expiry > 0) formatTimestamp(expiry) else "Бессрочно"
     }
 
@@ -276,6 +323,6 @@ object VKCookieStore {
     }
 
     private fun formatTimestamp(ts: Long): String {
-        return SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(ts))
+        return dateFormat.get()?.format(Date(ts)).orEmpty()
     }
 }

@@ -1,13 +1,16 @@
 package xyz.selykvpn.app.ui.scan
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -53,6 +56,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,7 +66,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import xyz.selykvpn.app.R
 import com.google.zxing.BarcodeFormat
@@ -93,10 +100,31 @@ fun ScanScreen(onResult: (String) -> Unit, onBack: () -> Unit) {
         if (delivered.compareAndSet(false, true)) scope.launch { latestOnResult(text) }
     }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
     var hasCamera by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
     }
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasCamera = it }
+    var permanentlyDenied by rememberSaveable { mutableStateOf(false) }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        hasCamera = granted
+        if (!granted) {
+            val activity = context as? Activity
+            permanentlyDenied = activity != null &&
+                !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.CAMERA)
+        } else {
+            permanentlyDenied = false
+        }
+    }
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasCamera = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                if (hasCamera) permanentlyDenied = false
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     LaunchedEffect(Unit) { if (!hasCamera) permission.launch(Manifest.permission.CAMERA) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -139,7 +167,18 @@ fun ScanScreen(onResult: (String) -> Unit, onBack: () -> Unit) {
                 ) {
                     Text(stringResource(R.string.scan_camera_denied), textAlign = TextAlign.Center)
                     Spacer(Modifier.height(16.dp))
-                    Button(onClick = { permission.launch(Manifest.permission.CAMERA) }) {
+                    Button(onClick = {
+                        if (permanentlyDenied) {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            }
+                        } else {
+                            permission.launch(Manifest.permission.CAMERA)
+                        }
+                    }) {
                         Text(stringResource(R.string.scan_grant))
                     }
                 }
@@ -194,10 +233,28 @@ private fun CameraPreview(onCode: (String) -> Unit) {
             provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
         }
     }
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, cameraProvider) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
+                runCatching { cameraProvider?.unbindAll() }
+            } else if (event == Lifecycle.Event.ON_RESUME && cameraProvider != null) {
+                val provider = cameraProvider ?: return@LifecycleEventObserver
+                val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                val analysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                    .also { it.setAnalyzer(executor, QrAnalyzer { text -> previewView.post { latestOnCode(text) } }) }
+                runCatching {
+                    provider.unbindAll()
+                    provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
             runCatching { cameraProvider?.unbindAll() }
-            executor.shutdown()
+            executor.shutdownNow()
         }
     }
     AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
@@ -242,10 +299,21 @@ private fun decodeImage(context: Context, uri: Uri): String? = runCatching {
             if (largest > 2000) decoder.setTargetSampleSize(largest / 1500)
         }
     } else {
-        context.contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it) }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        val largest = maxOf(bounds.outWidth, bounds.outHeight)
+        var sample = 1
+        while (largest / sample > 1500) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+            ?: return@runCatching null
     }
-    val pixels = IntArray(bitmap.width * bitmap.height)
-    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-    val source = RGBLuminanceSource(bitmap.width, bitmap.height, pixels)
-    decode(source) ?: decode(source.invert())
+    try {
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+        val source = RGBLuminanceSource(bitmap.width, bitmap.height, pixels)
+        decode(source) ?: decode(source.invert())
+    } finally {
+        bitmap.recycle()
+    }
 }.getOrNull()

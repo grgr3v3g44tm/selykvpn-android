@@ -39,22 +39,26 @@ class ShortcutActivity : Activity() {
                 if (mode == null) {
                     openAppForConnect()
                 } else {
-                    try {
-                        VpnController.start(applicationContext, forceMode = mode)
-                        Toast.makeText(applicationContext, R.string.shortcut_connecting, Toast.LENGTH_SHORT).show()
-                    } catch (_: Exception) {
-                        openAppForConnect()
-                    }
+                    val appCtx = applicationContext
+                    VpnController.start(
+                        appCtx,
+                        forceMode = mode,
+                        onFgsDenied = {
+                            graph.scope.launch(Dispatchers.Main) { openAppForConnect(appCtx) }
+                        },
+                    )
+                    Toast.makeText(appCtx, R.string.shortcut_connecting, Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
 
-    private fun openAppForConnect() {
-        startActivity(
-            Intent(this, MainActivity::class.java)
+    private fun openAppForConnect(ctx: android.content.Context = this) {
+        ctx.startActivity(
+            Intent(ctx, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                .putExtra(MainActivity.EXTRA_CONNECT, true),
+                .putExtra(MainActivity.EXTRA_CONNECT, true)
+                .putExtra(MainActivity.EXTRA_CONNECT_TOKEN, SelykApp.internalConnectToken),
         )
     }
 

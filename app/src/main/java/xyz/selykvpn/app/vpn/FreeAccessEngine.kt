@@ -70,6 +70,7 @@ class FreeAccessEngine(private val vpnService: VpnService) {
     }
 
     private val nativeLock = Any()
+    private val nativeOpLock = Any()
 
     @Volatile
     private var tunnelHandle: Int = -1
@@ -299,12 +300,16 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                     builder.addAddress(ip, prefix)
                     builder.addRoute("0.0.0.0", 0)
 
-                    // Trap IPv6 to prevent cellular leaks
+                    // Trap IPv6 to prevent cellular leaks — fail closed instead of silently leaking IPv6
                     try {
                         builder.addAddress("fd00:77:77::2", 64)
                         builder.addRoute("::", 0)
                     } catch (e: Exception) {
-                        Log.w(TAG, "Failed to configure IPv6 route: ${e.message}")
+                        Log.e(TAG, "Failed to configure IPv6 route: ${e.message}")
+                        logDiagnostic("Aborted: failed to configure IPv6 route: ${e.message}")
+                        tearDownNative()
+                        if (!isAborted()) onError(vpnService.getString(R.string.free_access_ipv6_setup_failed))
+                        return@withLock
                     }
 
                     for (dns in dnsServers.split(",")) {
@@ -340,7 +345,16 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                         return@withLock
                     }
 
-                    val attachRes = WgTurnCore.attachWireGuard(handle, uapiConfig, pfd.fd)
+                    val attachRes = synchronized(nativeOpLock) {
+                        val stillValid = synchronized(nativeLock) {
+                            !isAborted() && tunnelHandle == handle && tunPfd == pfd
+                        }
+                        if (!stillValid) -99 else WgTurnCore.attachWireGuard(handle, uapiConfig, pfd.fd)
+                    }
+                    if (attachRes == -99) {
+                        tearDownNative()
+                        return@withLock
+                    }
                     if (attachRes < 0) {
                         Log.e(TAG, "attachWireGuard failed with code $attachRes")
                         logDiagnostic("attachWireGuard failed: $attachRes")
@@ -353,13 +367,14 @@ class FreeAccessEngine(private val vpnService: VpnService) {
                     logDiagnostic("TUN attached, awaiting WireGuard handshake")
                     onStage(vpnService.getString(R.string.free_access_stage_handshake))
                     startStatsAndHandshake(handle, myGen, onReady, onTraffic, onError)
-                } catch (_: CancellationException) {
+                } catch (e: CancellationException) {
                     tearDownNative()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error starting Free Access tunnel", e)
-                    logDiagnostic("Start exception: ${e.message}")
+                    throw e
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Error starting Free Access tunnel", t)
+                    logDiagnostic("Start error: ${t.message}")
                     tearDownNative()
-                    if (!isAborted()) onError(e.message ?: "Ошибка подключения")
+                    if (!isAborted()) onError(t.message ?: "Ошибка подключения")
                 }
             }
         }
@@ -529,8 +544,10 @@ class FreeAccessEngine(private val vpnService: VpnService) {
 
         if (handleToClose > 0) {
             logDiagnostic("Closing tunnel handle=$handleToClose")
-            runCatching { WgTurnCore.turnOff(handleToClose) }
-                .onFailure { Log.w(TAG, "Error in turnOff", it) }
+            synchronized(nativeOpLock) {
+                runCatching { WgTurnCore.turnOff(handleToClose) }
+                    .onFailure { Log.w(TAG, "Error in turnOff", it) }
+            }
         }
 
         runCatching { pfdToClose?.close() }
@@ -544,5 +561,10 @@ class FreeAccessEngine(private val vpnService: VpnService) {
         startJob?.cancel()
         startJob = null
         tearDownNative()
+    }
+
+    fun destroy() {
+        stop()
+        scope.cancel()
     }
 }

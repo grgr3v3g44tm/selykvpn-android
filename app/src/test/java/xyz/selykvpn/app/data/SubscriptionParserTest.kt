@@ -2,7 +2,11 @@ package xyz.selykvpn.app.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 class SubscriptionParserTest {
 
@@ -64,5 +68,24 @@ class SubscriptionParserTest {
             mapOf("upload" to 1L, "download" to 2L, "total" to 0L, "expire" to 1790000000L),
             SubscriptionParser.parseUserInfo("upload=1; download=2; total=0; expire=1790000000"),
         )
+    }
+
+    @Test
+    fun vlessIpv6AndPlusInQueryAndUnpaddedBase64() {
+        val vless = "vless://uuid-1@[2001:db8::42]:8443?type=tcp&security=reality&pbk=abc+def/123=&sni=example.com#EU%20V6"
+        val configs = SubscriptionParser.parseVlessList(vless)
+        assertEquals(1, configs.size)
+        val obj = configs[0]
+        assertEquals("EU V6", obj["remarks"]!!.jsonPrimitive.content)
+        val vnext = obj["outbounds"]!!.jsonArray[0].jsonObject["settings"]!!.jsonObject["vnext"]!!.jsonArray[0].jsonObject
+        assertEquals("2001:db8::42", vnext["address"]!!.jsonPrimitive.content)
+        assertEquals(8443, vnext["port"]!!.jsonPrimitive.content.toInt())
+        val pbk = obj["outbounds"]!!.jsonArray[0].jsonObject["streamSettings"]!!.jsonObject["realitySettings"]!!.jsonObject["publicKey"]!!.jsonPrimitive.content
+        assertEquals("abc+def/123=", pbk)
+
+        // Unpadded URL-safe base64 subscription payload
+        val unpadded = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(vless.toByteArray())
+        val decodedConfigs = SubscriptionParser.parseVlessList(unpadded)
+        assertEquals(1, decodedConfigs.size)
     }
 }

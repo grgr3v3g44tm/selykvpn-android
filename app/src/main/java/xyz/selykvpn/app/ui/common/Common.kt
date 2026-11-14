@@ -63,15 +63,19 @@ fun isWideWindow(): Boolean = LocalConfiguration.current.screenWidthDp >= 600
 
 /** [title] names the link on a TV, where it is shown as a QR code (e.g. "Telegram"). */
 fun Context.openUrl(url: String, title: String? = null) {
+    val uri = runCatching { Uri.parse(url.trim()) }.getOrNull() ?: return
+    val scheme = uri.scheme?.lowercase()
+    if (scheme !in setOf("https", "http", "mailto", "tg")) return
     // A TV has no browser or Telegram to open it in: the link is shown as a QR code for the phone.
     if (isTv()) {
         LinkQr.show(url, title)
         return
     }
     runCatching {
-        val uri = Uri.parse(url)
-        val intent = if (uri.scheme == "mailto") Intent(Intent.ACTION_SENDTO, uri) else Intent(Intent.ACTION_VIEW, uri)
+        val intent = if (scheme == "mailto") Intent(Intent.ACTION_SENDTO, uri) else Intent(Intent.ACTION_VIEW, uri)
         startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }.onFailure {
+        runCatching { Toast.makeText(this, getString(R.string.open_url_failed), Toast.LENGTH_SHORT).show() }
     }
 }
 
@@ -91,15 +95,28 @@ object LinkQr {
     }
 }
 
+private object AppIconCache {
+    val lru = android.util.LruCache<String, ImageBitmap>(48)
+}
+
 /** Icon of an installed app, loaded in the background; empty space while loading or when unknown. */
 @Composable
 fun AppIcon(packageName: String?, size: Dp = 40.dp) {
     val context = LocalContext.current
-    val icon by produceState<ImageBitmap?>(initialValue = null, packageName) {
-        value = packageName?.let { pkg ->
-            withContext(Dispatchers.IO) {
-                runCatching { context.packageManager.getApplicationIcon(pkg).toBitmap(96, 96).asImageBitmap() }.getOrNull()
-            }
+    val cached = remember(packageName) { packageName?.let { AppIconCache.lru.get(it) } }
+    val icon by produceState<ImageBitmap?>(initialValue = cached, packageName) {
+        if (packageName == null) {
+            value = null
+            return@produceState
+        }
+        AppIconCache.lru.get(packageName)?.let {
+            value = it
+            return@produceState
+        }
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                context.packageManager.getApplicationIcon(packageName).toBitmap(96, 96).asImageBitmap()
+            }.getOrNull()?.also { AppIconCache.lru.put(packageName, it) }
         }
     }
     Box(Modifier.size(size)) {

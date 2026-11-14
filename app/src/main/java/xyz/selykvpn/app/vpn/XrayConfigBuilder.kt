@@ -182,15 +182,25 @@ object XrayConfigBuilder {
         val templateRules = (routingSection["rules"] as? JsonArray).orEmpty()
         val rules = templateRules.toMutableList()
         // The user's own rules go before the panel's ones.
-        if (routing != null && routing.enabled) {
-            rules.addAll(0, userRules(routing, templateOutbounds, templateRules, outbounds))
-        }
-        rules.add(0, buildJsonObject {
+        val dnsRule = buildJsonObject {
             put("type", "field")
             putJsonArray("inboundTag") { add(TUN_TAG) }
             put("port", "53")
             put("outboundTag", dnsTag)
-        })
+        }
+        val user = if (routing != null && routing.enabled) {
+            userRules(routing, templateOutbounds, templateRules, outbounds)
+        } else {
+            emptyList()
+        }
+        val effectiveBlockTag = templateOutbounds.firstOrNull { it.string("protocol") == "blackhole" }?.string("tag") ?: USER_BLOCK_TAG
+        val blockCount = user.takeWhile { it.string("outboundTag") == effectiveBlockTag }.size
+        val orderedUser = if (user.isNotEmpty()) {
+            user.take(blockCount) + dnsRule + user.drop(blockCount)
+        } else {
+            listOf(dnsRule)
+        }
+        rules.addAll(0, orderedUser)
         if (share != null) {
             rules.add(0, buildJsonObject {
                 put("type", "field")
@@ -216,15 +226,19 @@ object XrayConfigBuilder {
 
         // Servers are reached over IPv4; AAAA answers would make apps try IPv6 destinations
         // that the TUN accepts but the proxy cannot reach.
-        val dns: MutableMap<String, JsonElement> = (source["dns"] as? JsonObject)?.toMutableMap() ?: mutableMapOf(
-            "servers" to buildJsonArray { add("1.1.1.1"); add("8.8.8.8") },
-        )
+        val dns: MutableMap<String, JsonElement> = (source["dns"] as? JsonObject)?.toMutableMap() ?: mutableMapOf()
+        val rawServers = (dns["servers"] as? JsonArray).orEmpty()
+        val effectiveServers = if (rawServers.isNotEmpty()) {
+            rawServers
+        } else {
+            buildJsonArray { add("1.1.1.1"); add("8.8.8.8") }
+        }
         dns["queryStrategy"] = JsonPrimitive("UseIPv4")
         // A plain (UDP) nameserver keeps one connection through whichever server auto-select picked
         // when it opened, and every DNS query of the phone (and of routing) goes through it for as
         // long as answers keep coming: a slow server keeps all DNS slow even after auto-select has
         // moved on. Over TCP every query is a new connection that the balancer sends to a live server.
-        dns["servers"] = JsonArray((dns["servers"] as? JsonArray).orEmpty().map { overTcp(it) })
+        dns["servers"] = JsonArray(effectiveServers.map { overTcp(it) })
         // An expired answer is given right away while a fresh one is fetched in the background, so a
         // server switch doesn't stall every site for the length of a DNS query.
         if ("serveStale" !in dns) dns["serveStale"] = JsonPrimitive(true)
@@ -270,10 +284,12 @@ object XrayConfigBuilder {
                 }
 
         val catchAll = templateRules.mapNotNull { it as? JsonObject }
-            .lastOrNull { rule -> rule.keys.none { it in RULE_CONDITIONS } && (rule["balancerTag"] != null || rule["outboundTag"] != null) }
+            .lastOrNull { rule -> rule.keys.none { it in RULE_CONDITIONS } && (!rule.string("balancerTag").isNullOrBlank() || !rule.string("outboundTag").isNullOrBlank()) }
+        val balancerTag = catchAll?.string("balancerTag")?.takeIf { it.isNotBlank() }
+        val outboundTag = catchAll?.string("outboundTag")?.takeIf { it.isNotBlank() }
         val proxyTarget: Pair<String, String> = when {
-            catchAll?.get("balancerTag") != null -> "balancerTag" to catchAll.string("balancerTag")!!
-            catchAll?.get("outboundTag") != null -> "outboundTag" to catchAll.string("outboundTag")!!
+            balancerTag != null -> "balancerTag" to balancerTag
+            outboundTag != null -> "outboundTag" to outboundTag
             else -> "outboundTag" to (
                 templateOutbounds.firstOrNull { it.string("protocol") in PROXY_PROTOCOLS }?.string("tag")
                     ?: templateOutbounds.firstOrNull()?.string("tag") ?: "proxy"

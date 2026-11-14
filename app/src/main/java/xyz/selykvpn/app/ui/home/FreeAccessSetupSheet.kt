@@ -60,7 +60,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import xyz.selykvpn.app.R
 import xyz.selykvpn.app.auth.FastCallResult
 import xyz.selykvpn.app.auth.VKAuthActivity
@@ -83,7 +85,7 @@ fun FreeAccessSetupSheet(
     val currentConfig by viewModel.freeAccessConfig.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
-        VKCookieStore.init(context)
+        withContext(Dispatchers.IO) { VKCookieStore.init(context) }
     }
 
     var isCreatingCall by remember { mutableStateOf(false) }
@@ -94,19 +96,22 @@ fun FreeAccessSetupSheet(
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val callLink = result.data?.getStringExtra(VKAuthActivity.EXTRA_CALL_LINK).orEmpty()
-            VKCookieStore.setEnabled(true)
-            val updated = if (callLink.isNotBlank()) {
-                currentConfig.copy(
-                    stealthLink = callLink,
-                    needsStealthLink = false,
-                    useSessionAuth = true,
-                )
-            } else {
-                currentConfig.copy(useSessionAuth = true)
-            }
-            viewModel.updateFreeAccessConfig(updated)
-            if (callLink.isNotBlank()) {
-                Toast.makeText(context, R.string.free_access_call_linked, Toast.LENGTH_SHORT).show()
+            scope.launch {
+                withContext(Dispatchers.IO) { VKCookieStore.setEnabled(true) }
+                val latest = viewModel.freeAccessConfig.value
+                val updated = if (callLink.isNotBlank()) {
+                    latest.copy(
+                        stealthLink = callLink,
+                        needsStealthLink = false,
+                        useSessionAuth = true,
+                    )
+                } else {
+                    latest.copy(useSessionAuth = true)
+                }
+                viewModel.updateFreeAccessConfig(updated)
+                if (callLink.isNotBlank()) {
+                    Toast.makeText(context, R.string.free_access_call_linked, Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -120,39 +125,45 @@ fun FreeAccessSetupSheet(
             config = currentConfig,
             isCreatingCall = isCreatingCall,
             onCreateCallViaVk = {
-                if (VKCookieStore.hasValidLogin()) {
-                    isCreatingCall = true
-                    scope.launch {
-                        val res = VKCallHelper.createCallFast(context)
+                if (isCreatingCall) return@FreeAccessSetupSheetContent
+                isCreatingCall = true
+                scope.launch {
+                    val hasValid = withContext(Dispatchers.IO) {
+                        VKCookieStore.init(context)
+                        VKCookieStore.hasValidLogin()
+                    }
+                    if (!hasValid) {
                         isCreatingCall = false
-                        when (res) {
-                            is FastCallResult.Success -> {
-                                VKCookieStore.setEnabled(true)
-                                val updated = currentConfig.copy(
-                                    stealthLink = res.joinLink,
-                                    needsStealthLink = false,
-                                    useSessionAuth = true,
-                                )
-                                viewModel.updateFreeAccessConfig(updated)
-                                Toast.makeText(context, R.string.free_access_call_linked, Toast.LENGTH_SHORT).show()
-                            }
-                            is FastCallResult.Error -> {
-                                if (res.isAccountBanned) {
-                                    VKCookieStore.clearSession()
-                                    Toast.makeText(context, res.message, Toast.LENGTH_LONG).show()
-                                } else {
-                                    vkAuthLauncher.launch(VKAuthActivity.createCallIntent(context))
-                                }
+                        vkAuthLauncher.launch(VKAuthActivity.createCallIntent(context))
+                        return@launch
+                    }
+                    val res = VKCallHelper.createCallFast(context)
+                    isCreatingCall = false
+                    when (res) {
+                        is FastCallResult.Success -> {
+                            withContext(Dispatchers.IO) { VKCookieStore.setEnabled(true) }
+                            val updated = viewModel.freeAccessConfig.value.copy(
+                                stealthLink = res.joinLink,
+                                needsStealthLink = false,
+                                useSessionAuth = true,
+                            )
+                            viewModel.updateFreeAccessConfig(updated)
+                            Toast.makeText(context, R.string.free_access_call_linked, Toast.LENGTH_SHORT).show()
+                        }
+                        is FastCallResult.Error -> {
+                            if (res.isAccountBanned) {
+                                withContext(Dispatchers.IO) { VKCookieStore.clearSession() }
+                                Toast.makeText(context, res.message, Toast.LENGTH_LONG).show()
+                            } else {
+                                vkAuthLauncher.launch(VKAuthActivity.createCallIntent(context))
                             }
                         }
                     }
-                } else {
-                    vkAuthLauncher.launch(VKAuthActivity.createCallIntent(context))
                 }
             },
             onManualLinkClick = { showManualLinkDialog = true },
             onUnlinkCall = {
-                val updated = currentConfig.copy(
+                val updated = viewModel.freeAccessConfig.value.copy(
                     stealthLink = "",
                     needsStealthLink = true,
                     useSessionAuth = false,
@@ -199,7 +210,7 @@ fun FreeAccessSetupSheet(
                     onClick = {
                         val trimmed = inputLink.trim()
                         if (trimmed.contains("call/join/")) {
-                            val updated = currentConfig.withCallLink(trimmed)
+                            val updated = viewModel.freeAccessConfig.value.withCallLink(trimmed)
                             viewModel.updateFreeAccessConfig(updated)
                             showManualLinkDialog = false
                             Toast.makeText(context, R.string.free_access_call_linked, Toast.LENGTH_SHORT).show()

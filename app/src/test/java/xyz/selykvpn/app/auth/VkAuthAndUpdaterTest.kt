@@ -39,8 +39,10 @@ class VkAuthAndUpdaterTest {
         assertTrue(VKAuthActivity.shouldBlockScheme("vk"))
 
         assertFalse(VKAuthActivity.shouldBlockScheme("https"))
-        assertFalse(VKAuthActivity.shouldBlockScheme("http"))
-        assertFalse(VKAuthActivity.shouldBlockScheme("about"))
+        assertTrue(VKAuthActivity.shouldBlockScheme("http"))
+        assertTrue(VKAuthActivity.shouldBlockScheme("about"))
+        assertTrue(VKAuthActivity.shouldBlockScheme("javascript"))
+        assertTrue(VKAuthActivity.shouldBlockScheme("data"))
     }
 
     @Test

@@ -29,7 +29,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -260,12 +259,11 @@ private fun CaptchaDialog(
     onRefresh: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var answer by remember(challenge.imageUrl) { mutableStateOf("") }
-    var refreshNonce by remember { mutableIntStateOf(0) }
-    var bitmap by remember(challenge.imageUrl) { mutableStateOf<Bitmap?>(null) }
-    var loading by remember(challenge.imageUrl) { mutableStateOf(true) }
+    var answer by remember(challenge) { mutableStateOf("") }
+    var bitmap by remember(challenge) { mutableStateOf<Bitmap?>(null) }
+    var loading by remember(challenge) { mutableStateOf(true) }
 
-    LaunchedEffect(challenge.imageUrl, refreshNonce) {
+    LaunchedEffect(challenge) {
         loading = true
         bitmap = loadBitmap(challenge.imageUrl)
         loading = false
@@ -304,12 +302,15 @@ private fun CaptchaDialog(
                                 color = Color.DarkGray,
                             )
                         }
-                        bmp != null -> Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit,
-                        )
+                        bmp != null -> {
+                            val imageBitmap = remember(bmp) { bmp.asImageBitmap() }
+                            Image(
+                                bitmap = imageBitmap,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Fit,
+                            )
+                        }
                         else -> Text(
                             stringResource(R.string.free_access_captcha_load_failed),
                             style = MaterialTheme.typography.bodySmall,
@@ -331,7 +332,7 @@ private fun CaptchaDialog(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     TextButton(onClick = {
-                        refreshNonce++
+                        loading = true
                         onRefresh()
                     }) {
                         Text(stringResource(R.string.free_access_captcha_refresh))
