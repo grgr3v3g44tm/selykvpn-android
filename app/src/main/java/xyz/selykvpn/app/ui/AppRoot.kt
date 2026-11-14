@@ -102,8 +102,8 @@ fun AppRoot(viewModel: AppViewModel, onConnect: () -> Unit) {
         val root = if (hasKey) HomeKey else OnboardingKey
         val onKeyScreens = backStack.lastOrNull() == ChangeKeyKey || backStack.lastOrNull() == ScanKey
         if (backStack.firstOrNull() != root || (hasKey && onKeyScreens)) {
-            backStack.clear()
             backStack.add(root)
+            while (backStack.size > 1) backStack.removeAt(0)
         }
     }
 
@@ -116,7 +116,7 @@ fun AppRoot(viewModel: AppViewModel, onConnect: () -> Unit) {
     Box(Modifier.fillMaxSize()) {
         NavDisplay(
             backStack = backStack,
-            onBack = { backStack.removeLastOrNull() },
+            onBack = { if (backStack.size > 1) backStack.removeLastOrNull() },
             entryProvider = entryProvider {
                 entry<OnboardingKey> {
                     if (tv) TvOnboardingScreen(viewModel = viewModel, onBack = null)
