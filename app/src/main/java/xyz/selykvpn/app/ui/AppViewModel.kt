@@ -467,6 +467,11 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
             val prevUrl = subscription.value?.url
             val wasConnected = VpnController.isActive
             val wasFreeAccess = VpnController.activeBackend == VpnController.Backend.FREE_ACCESS
+            val preCheckStatus = key.url.takeIf { it.startsWith("http", ignoreCase = true) }
+                ?.let { graph.account.checkStatus(it) }
+            if (preCheckStatus != null && preCheckStatus.found && preCheckStatus.isWhitelist && preCheckStatus.vkturnDeviceLimitReached) {
+                throw SubscriptionError.FreeAccessDeviceLimit()
+            }
             graph.subscriptions.import(key)
             _pings.value = emptyMap()
             graph.account.clear()
@@ -477,23 +482,8 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
                 graph.settings.setWhitelistAutoSwitched(null)
             }
-            val accountStatus = graph.account.refresh(key.url, force = true)
-            if (accountStatus != null && accountStatus.found && accountStatus.isWhitelist && accountStatus.vkturnDeviceLimitReached) {
-                graph.subscriptions.clear()
-                graph.account.clear()
-                val cleared = freeAccessConfig.value.clearGatewayCredentials()
-                if (cleared != freeAccessConfig.value) {
-                    graph.settings.setFreeAccessConfig(AppJson.encodeToString(cleared))
-                }
-                graph.settings.setWhitelistAutoSwitched(null)
-                if (activeMode.value == "free_access") {
-                    graph.settings.setActiveMode("regular")
-                }
-                if (wasConnected) {
-                    VpnController.stop(app)
-                }
-                throw SubscriptionError.FreeAccessDeviceLimit()
-            }
+            val accountStatus = preCheckStatus?.also { graph.account.save(it) }
+                ?: graph.account.refresh(key.url, force = true)
             syncFreeAccessFromStatus(accountStatus)
             val updatedCfg = graph.settings.freeAccessConfigNow()
             val allowedNow = TariffAccess.isFreeAccessAllowed(
@@ -534,11 +524,20 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun logout() = viewModelScope.launch {
+        pingAll?.cancel()
+        _pinging.value = false
+        _importState.value = ImportState.Idle
+        _pendingImport.value = null
+        _tvSend.value = null
+        _keyError.value = null
         VpnController.stop(app)
         graph.subscriptions.clear()
         graph.account.clear()
         val currentCfg = freeAccessConfig.value
-        val clearedCfg = currentCfg.clearGatewayCredentials()
+        val clearedCfg = currentCfg.clearGatewayCredentials().copy(
+            stealthLink = "",
+            useSessionAuth = false,
+        )
         if (clearedCfg != currentCfg) {
             graph.settings.setFreeAccessConfig(AppJson.encodeToString(clearedCfg))
         }

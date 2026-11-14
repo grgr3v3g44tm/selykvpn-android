@@ -101,6 +101,12 @@ class AccountRepository(context: Context, private val http: Http) {
         if (!force && cached != null && System.currentTimeMillis() - cached.fetchedAt < 10 * 60_000L) {
             return@withContext cached
         }
+        checkStatus(subscriptionUrl)?.also { save(it) }
+    }
+
+    /** Queries `/api/v1/subscription/status` without mutating persisted state or UI flows. */
+    suspend fun checkStatus(subscriptionUrl: String): AccountStatus? = withContext(Dispatchers.IO) {
+        if (!subscriptionUrl.startsWith("http", ignoreCase = true)) return@withContext null
         runCatching {
             val hwid = FreeAccessConfig.resolveStableDeviceId(appContext)
             val reqBody = StatusRequest(
@@ -123,13 +129,15 @@ class AccountRepository(context: Context, private val http: Http) {
                     response.body.string()
                 }
             }
-            val status = parseResponse(text, System.currentTimeMillis())
-            file.writeText(AppJson.encodeToString(AccountStatus.serializer(), status))
-            _state.value = status
-            status
+            parseResponse(text, System.currentTimeMillis())
         }.onFailure { err ->
-            Log.w("AccountRepository", "Failed to refresh subscription status: ${err.message}")
+            Log.w("AccountRepository", "Failed to check subscription status: ${err.message}")
         }.getOrNull()
+    }
+
+    fun save(status: AccountStatus) {
+        file.writeText(AppJson.encodeToString(AccountStatus.serializer(), status))
+        _state.value = status
     }
 
     fun clear() {
