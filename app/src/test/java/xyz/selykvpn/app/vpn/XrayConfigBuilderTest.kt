@@ -67,10 +67,10 @@ class XrayConfigBuilderTest {
         )
         val cfg = AppJson.parseToJsonElement(XrayConfigBuilder.build(auto, null, "error", null, routing)).jsonObject
         val rules = cfg["routing"]!!.jsonObject["rules"]!!.jsonArray.map { it.jsonObject }
-        // dns hijack, block (domain, ip), direct (domain, LAN ip), proxy, then the panel's rules
-        assertEquals("dns-out", rules[0]["outboundTag"]!!.jsonPrimitive.content)
+        // user block (domain, ip), dns hijack, direct (domain, LAN ip), proxy, then the panel's rules
+        assertEquals("block", rules[0]["outboundTag"]!!.jsonPrimitive.content)
         assertEquals("block", rules[1]["outboundTag"]!!.jsonPrimitive.content)
-        assertEquals("block", rules[2]["outboundTag"]!!.jsonPrimitive.content)
+        assertEquals("dns-out", rules[2]["outboundTag"]!!.jsonPrimitive.content)
         assertEquals("direct", rules[3]["outboundTag"]!!.jsonPrimitive.content)
         assertEquals("direct", rules[4]["outboundTag"]!!.jsonPrimitive.content)
         assertTrue(rules[4]["ip"]!!.jsonArray.any { it.jsonPrimitive.content == "192.168.0.0/16" })
@@ -126,5 +126,15 @@ class XrayConfigBuilderTest {
         assertEquals("password", socks["settings"]!!.jsonObject["auth"]!!.jsonPrimitive.content)
         val account = socks["settings"]!!.jsonObject["accounts"]!!.jsonArray[0].jsonObject
         assertEquals("selyk_1", account["user"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun missingDnsServersKeepsDefaults() {
+        val noDnsServers = """{"outbounds":[{"tag":"proxy","protocol":"vless"}],"dns":{"queryStrategy":"UseIP"}}"""
+        val cfg = AppJson.parseToJsonElement(XrayConfigBuilder.build(noDnsServers, null, "error")).jsonObject
+        val dns = cfg["dns"]!!.jsonObject
+        val servers = dns["servers"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertTrue("1.1.1.1" in servers || "tcp://1.1.1.1:53" in servers)
+        assertEquals("UseIPv4", dns["queryStrategy"]!!.jsonPrimitive.content)
     }
 }

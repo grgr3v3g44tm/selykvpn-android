@@ -66,7 +66,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import xyz.selykvpn.app.R
 import xyz.selykvpn.app.data.ShareSettings
 import xyz.selykvpn.app.ui.AppViewModel
@@ -88,13 +91,17 @@ fun ShareScreen(viewModel: AppViewModel, onBack: () -> Unit) {
     val share by viewModel.share.collectAsStateWithLifecycle()
     val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
     val activeMode by viewModel.activeMode.collectAsStateWithLifecycle()
+    val activeBackend by VpnController.activeBackendState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    // Addresses change when Wi-Fi or the hotspot is switched, so re-read them while the screen is open.
+    // Addresses change when Wi-Fi or the hotspot is switched, so re-read them while the screen is visible.
     var addresses by remember { mutableStateOf(emptyList<LocalAddress>()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            addresses = withContext(Dispatchers.IO) { localAddresses() }
-            delay(3_000)
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                addresses = withContext(Dispatchers.IO) { localAddresses() }
+                delay(3_000)
+            }
         }
     }
 
@@ -139,14 +146,14 @@ fun ShareScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                 }
             }
 
-            if (activeMode == "free_access" || VpnController.activeBackend == VpnController.Backend.FREE_ACCESS) {
+            if (activeMode == "free_access" || activeBackend == VpnController.Backend.FREE_ACCESS) {
                 InfoCard(stringResource(R.string.share_free_access_unsupported))
             }
 
             AnimatedVisibility(visible = enabled) {
                 val connected = vpnState is VpnController.State.Connected && share != null
                 when {
-                    activeMode == "free_access" || VpnController.activeBackend == VpnController.Backend.FREE_ACCESS -> Unit
+                    activeMode == "free_access" || activeBackend == VpnController.Backend.FREE_ACCESS -> Unit
                     !connected -> InfoCard(stringResource(R.string.share_waiting))
                     addresses.isEmpty() -> InfoCard(stringResource(R.string.share_no_network))
                     else -> DetailsCard(addresses, httpPort, socksPort)

@@ -54,11 +54,13 @@ class SubscriptionRepository(
     private var configs: List<String>? = null
 
     private fun loadInfo(): SubscriptionInfo? =
-        runCatching { AppJson.decodeFromString<SubscriptionInfo>(infoFile.readText()) }.getOrNull()
+        runCatching {
+            val raw = SecureBox.readEncryptedOrMigrate(infoFile) ?: return@runCatching null
+            AppJson.decodeFromString<SubscriptionInfo>(raw)
+        }.getOrNull()
 
     /** Downloads and stores the subscription for a new key. */
     suspend fun import(key: KeyParser.Key): SubscriptionInfo = mutex.withLock {
-        android.util.Log.i("SubscriptionRepository", "importing key.url=${key.url}, directConfigs count=${key.directConfigs?.size}")
         val downloaded = if (!key.directConfigs.isNullOrEmpty()) {
             Downloaded(
                 configs = key.directConfigs,
@@ -75,23 +77,21 @@ class SubscriptionRepository(
     }
 
     /** Re-downloads the current subscription; keeps the old copy on failure. */
-    suspend fun refresh(): SubscriptionInfo? {
-        val current = _state.value ?: return null
-        if (current.url.startsWith("vless://")) return current
+    suspend fun refresh(): SubscriptionInfo? = mutex.withLock {
+        val current = _state.value ?: return@withLock null
+        if (current.url.startsWith("vless://", ignoreCase = true)) return@withLock current
         val key = (KeyParser.parse(current.url, remoteConfig.state.value.allowedSubscriptionHosts) as? KeyParser.Result.Ok)?.key
-            ?: return null
-        return mutex.withLock {
-            _refreshing.value = true
-            try {
-                val downloaded = if (!key.directConfigs.isNullOrEmpty()) {
-                    Downloaded(configs = key.directConfigs, headers = Headers.Builder().add("profile-title", "Selyk VPN").build())
-                } else {
-                    download(key)
-                }
-                save(key, downloaded)
-            } finally {
-                _refreshing.value = false
+            ?: return@withLock null
+        _refreshing.value = true
+        try {
+            val downloaded = if (!key.directConfigs.isNullOrEmpty()) {
+                Downloaded(configs = key.directConfigs, headers = Headers.Builder().add("profile-title", "Selyk VPN").build())
+            } else {
+                download(key)
             }
+            save(key, downloaded)
+        } finally {
+            _refreshing.value = false
         }
     }
 
@@ -104,10 +104,12 @@ class SubscriptionRepository(
     }
 
     /** Raw Xray config of a server, as served by the panel. */
-    suspend fun configFor(serverKey: String): String? = withContext(Dispatchers.IO) {
-        val info = _state.value ?: return@withContext null
-        val index = info.servers.indexOfFirst { it.key == serverKey }.takeIf { it >= 0 } ?: return@withContext null
-        loadConfigs().getOrNull(index)
+    suspend fun configFor(serverKey: String): String? = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            val info = _state.value ?: return@withContext null
+            val index = info.servers.indexOfFirst { it.key == serverKey }.takeIf { it >= 0 } ?: return@withContext null
+            loadConfigs().getOrNull(index)
+        }
     }
 
     /** The selected server, falling back to the first selectable one. */
@@ -130,7 +132,8 @@ class SubscriptionRepository(
     private fun loadConfigs(): List<String> {
         configs?.let { return it }
         val list = runCatching {
-            AppJson.parseToJsonElement(configsFile.readText()).jsonArray.map { it.toString() }
+            val raw = SecureBox.readEncryptedOrMigrate(configsFile) ?: return@runCatching emptyList()
+            AppJson.parseToJsonElement(raw).jsonArray.map { it.toString() }
         }.getOrDefault(emptyList())
         configs = list
         return list
@@ -168,20 +171,11 @@ class SubscriptionRepository(
             fetchedAt = System.currentTimeMillis(),
             servers = entries,
         )
-        writeAtomically(configsFile, JsonArray(downloaded.configs).toString())
-        writeAtomically(infoFile, AppJson.encodeToString(SubscriptionInfo.serializer(), info))
+        SecureBox.writeEncryptedAtomically(configsFile, JsonArray(downloaded.configs).toString())
+        SecureBox.writeEncryptedAtomically(infoFile, AppJson.encodeToString(SubscriptionInfo.serializer(), info))
         configs = downloaded.configs.map { it.toString() }
         _state.value = info
         info
-    }
-
-    private fun writeAtomically(file: File, text: String) {
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(text)
-        if (!tmp.renameTo(file)) {
-            file.delete()
-            tmp.renameTo(file)
-        }
     }
 
     /**
@@ -196,10 +190,12 @@ class SubscriptionRepository(
             add(key.url)
             config.subscriptionMirrors.forEach { mirror ->
                 val base = mirror.trim().trimEnd('/')
-                val host = base.substringAfter("://").substringBefore('/').substringBefore(':')
-                if (host.isNotEmpty() && host != key.host && KeyParser.hostAllowed(host, allowed)) {
-                    add(base + key.path + "/json")
-                    add(base + key.path)
+                if (base.startsWith("https://", ignoreCase = true)) {
+                    val host = base.substringAfter("://").substringBefore('/').substringBefore(':')
+                    if (host.isNotEmpty() && host != key.host && KeyParser.hostAllowed(host, allowed)) {
+                        add(base + key.path + "/json")
+                        add(base + key.path)
+                    }
                 }
             }
         }.distinct()
@@ -209,27 +205,58 @@ class SubscriptionRepository(
 
     private suspend fun fetch(url: String, hwid: String, allowed: List<String>): Downloaded = withContext(Dispatchers.IO) {
         http.withClient { client ->
-            val request = Request.Builder()
-                .url(url)
-                .header("Accept", "application/json, text/plain, */*")
-                .header("x-hwid", hwid)
-                .header("x-device-os", "Android")
-                .header("x-ver-os", Build.VERSION.RELEASE.orEmpty())
-                .header("x-device-model", Device.model)
+            val safeClient = client.newBuilder()
+                .followRedirects(false)
+                .followSslRedirects(false)
                 .build()
-            client.newCall(request).await().use { response ->
-                // Redirects must not lead outside our domains.
-                if (!KeyParser.hostAllowed(response.request.url.host, allowed)) throw SubscriptionError.Foreign()
-                if (response.code == 404) throw SubscriptionError.NotFound()
-                if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
-                val body = response.body.string()
-                val parsed = runCatching { SubscriptionParser.parseConfigs(body) }.getOrNull()
-                    ?.takeIf { it.isNotEmpty() }
-                    ?: runCatching { SubscriptionParser.parseVlessList(body) }.getOrNull()
-                if (parsed.isNullOrEmpty()) throw SubscriptionError.BadFormat()
-                Downloaded(parsed, response.headers)
+            var currentUrl = url
+            var hops = 0
+            while (true) {
+                val request = Request.Builder()
+                    .url(currentUrl)
+                    .header("Accept", "application/json, text/plain, */*")
+                    .header("x-hwid", hwid)
+                    .header("x-device-os", "Android")
+                    .header("x-ver-os", Build.VERSION.RELEASE.orEmpty())
+                    .header("x-device-model", Device.model)
+                    .build()
+                if (request.url.scheme != "https" || !KeyParser.hostAllowed(request.url.host, allowed)) {
+                    throw SubscriptionError.Foreign()
+                }
+                safeClient.newCall(request).await().use { response ->
+                    if (response.isRedirect && hops < 4) {
+                        val loc = response.header("Location") ?: throw IOException("Empty redirect")
+                        val resolved = request.url.resolve(loc) ?: throw SubscriptionError.Foreign()
+                        if (resolved.scheme != "https" || !KeyParser.hostAllowed(resolved.host, allowed)) {
+                            throw SubscriptionError.Foreign()
+                        }
+                        currentUrl = resolved.toString()
+                        hops++
+                        return@use
+                    }
+                    if (response.code == 404) throw SubscriptionError.NotFound()
+                    if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
+                    val len = response.body.contentLength()
+                    if (len > MAX_SUB_BYTES) throw IOException("Subscription too large")
+                    val bodyBytes = response.body.source().let { src ->
+                        if (src.request(MAX_SUB_BYTES + 1)) throw IOException("Subscription exceeds size limit")
+                        src.readByteArray()
+                    }
+                    val body = bodyBytes.toString(Charsets.UTF_8)
+                    val parsed = runCatching { SubscriptionParser.parseConfigs(body) }.getOrNull()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: runCatching { SubscriptionParser.parseVlessList(body) }.getOrNull()
+                    if (parsed.isNullOrEmpty()) throw SubscriptionError.BadFormat()
+                    return@withClient Downloaded(parsed, response.headers)
+                }
             }
+            @Suppress("UNREACHABLE_CODE")
+            throw IOException("Too many redirects")
         }
+    }
+
+    private companion object {
+        const val MAX_SUB_BYTES = 10L * 1024L * 1024L
     }
 }
 

@@ -21,8 +21,8 @@ android {
         applicationId = "xyz.selykvpn.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 20009
-        versionName = "2.0.9"
+        versionCode = 20100
+        versionName = "2.1.0"
         buildConfigField("String", "API_BASE", "\"https://tgapp.selykvpn.xyz\"")
     }
 

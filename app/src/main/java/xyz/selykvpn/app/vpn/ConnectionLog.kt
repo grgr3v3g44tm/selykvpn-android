@@ -136,16 +136,26 @@ object ConnectionLog {
         /** The app whose socket this is, or -1 when it is already closed. */
         private fun ownerUid(udp: Boolean, srcIP: String, srcPort: Int, dstIP: String, dstPort: Int): Int {
             if (srcIP.isEmpty() || dstIP.isEmpty()) return -1
+            if (srcPort !in 0..65535 || dstPort !in 0..65535) return -1
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return ProcNet.uid(udp, srcIP, srcPort)
+            val cm = connectivity ?: return -1
             val protocol = if (udp) OsConstants.IPPROTO_UDP else OsConstants.IPPROTO_TCP
-            val remote = InetSocketAddress(InetAddress.getByName(dstIP), dstPort)
-            fun lookup(local: String) = runCatching {
-                connectivity!!.getConnectionOwnerUid(protocol, InetSocketAddress(InetAddress.getByName(local), srcPort), remote)
+            val remoteAddr = parseNumericIp(dstIP) ?: return -1
+            val remote = runCatching { InetSocketAddress(remoteAddr, dstPort) }.getOrNull() ?: return -1
+            fun lookup(local: String): Int = runCatching {
+                val localAddr = parseNumericIp(local) ?: return -1
+                cm.getConnectionOwnerUid(protocol, InetSocketAddress(localAddr, srcPort), remote)
             }.getOrDefault(-1)
             val uid = lookup(srcIP)
             if (uid >= 0 || !udp) return uid
             // Unconnected UDP sockets (QUIC in many apps) are bound to the wildcard address.
             return listOf("::", "0.0.0.0").firstNotNullOfOrNull { any -> lookup(any).takeIf { it >= 0 } } ?: -1
+        }
+
+        private fun parseNumericIp(ip: String): InetAddress? {
+            if (ip.isBlank() || ip.length > 45) return null
+            if (!ip.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' || it == '.' || it == ':' }) return null
+            return runCatching { InetAddress.getByName(ip) }.getOrNull()
         }
 
         private fun app(uid: Int): Triple<String, String?, String> {

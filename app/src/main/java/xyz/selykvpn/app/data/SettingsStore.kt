@@ -51,11 +51,22 @@ class SettingsStore(private val context: Context) {
         val freeAccessConfig = stringPreferencesKey("free_access_config")
     }
 
+    private fun decryptOrPlain(raw: String?): String? {
+        if (raw.isNullOrEmpty()) return raw
+        return if (SecureBox.isEncrypted(raw)) {
+            SecureBox.decryptString(raw)
+        } else {
+            raw
+        }
+    }
+
+    private fun encryptField(plain: String): String = SecureBox.encryptString(plain)
+
     private val data: Flow<Preferences> get() = context.dataStore.data
 
     val activeMode: Flow<String> = data.map { it[Keys.activeMode] ?: "regular" }
     val themePalette: Flow<String> = data.map { it[Keys.themePalette] ?: "selyk" }
-    val freeAccessConfig: Flow<String?> = data.map { it[Keys.freeAccessConfig] }
+    val freeAccessConfig: Flow<String?> = data.map { decryptOrPlain(it[Keys.freeAccessConfig]) }
 
     suspend fun setActiveMode(mode: String) {
         context.dataStore.edit { it[Keys.activeMode] = mode }
@@ -67,12 +78,16 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setFreeAccessConfig(cfgJson: String?) {
         context.dataStore.edit {
-            if (cfgJson != null) it[Keys.freeAccessConfig] = cfgJson else it.remove(Keys.freeAccessConfig)
+            if (cfgJson != null) it[Keys.freeAccessConfig] = encryptField(cfgJson) else it.remove(Keys.freeAccessConfig)
         }
     }
 
     suspend fun freeAccessConfigNow(): FreeAccessConfig {
-        val raw = data.first()[Keys.freeAccessConfig].orEmpty()
+        val rawStored = data.first()[Keys.freeAccessConfig]
+        if (!rawStored.isNullOrBlank() && !SecureBox.isEncrypted(rawStored)) {
+            runCatching { setFreeAccessConfig(rawStored) }
+        }
+        val raw = decryptOrPlain(rawStored).orEmpty()
         if (raw.isBlank()) return FreeAccessConfig()
         return runCatching { AppJson.decodeFromString(FreeAccessConfig.serializer(), raw) }
             .getOrDefault(FreeAccessConfig())
@@ -105,8 +120,8 @@ class SettingsStore(private val context: Context) {
             httpPort = p[Keys.shareHttpPort] ?: ShareSettings.DEFAULT_HTTP_PORT,
             socksPort = p[Keys.shareSocksPort] ?: ShareSettings.DEFAULT_SOCKS_PORT,
             auth = p[Keys.shareAuth] == true,
-            user = p[Keys.shareUser].orEmpty(),
-            password = p[Keys.sharePassword].orEmpty(),
+            user = decryptOrPlain(p[Keys.shareUser]).orEmpty(),
+            password = decryptOrPlain(p[Keys.sharePassword]).orEmpty(),
         )
     }
 
@@ -165,15 +180,20 @@ class SettingsStore(private val context: Context) {
     /** Turns proxy authorization on, creating a login and password the first time. */
     suspend fun setShareAuth(enabled: Boolean) = context.dataStore.edit {
         it[Keys.shareAuth] = enabled
-        if (enabled && it[Keys.shareUser].isNullOrEmpty()) {
-            it[Keys.shareUser] = ShareSettings.newUser()
-            it[Keys.sharePassword] = ShareSettings.newPassword()
+        val curUser = decryptOrPlain(it[Keys.shareUser]).orEmpty()
+        val curPass = decryptOrPlain(it[Keys.sharePassword]).orEmpty()
+        if (enabled && curUser.isEmpty()) {
+            it[Keys.shareUser] = encryptField(ShareSettings.newUser())
+            it[Keys.sharePassword] = encryptField(ShareSettings.newPassword())
+        } else if (curUser.isNotEmpty() && !SecureBox.isEncrypted(it[Keys.shareUser])) {
+            it[Keys.shareUser] = encryptField(curUser)
+            if (curPass.isNotEmpty()) it[Keys.sharePassword] = encryptField(curPass)
         }
     }
 
     suspend fun resetShareCredentials() = context.dataStore.edit {
-        it[Keys.shareUser] = ShareSettings.newUser()
-        it[Keys.sharePassword] = ShareSettings.newPassword()
+        it[Keys.shareUser] = encryptField(ShareSettings.newUser())
+        it[Keys.sharePassword] = encryptField(ShareSettings.newPassword())
     }
 
     suspend fun setRoutingEnabled(enabled: Boolean) = context.dataStore.edit { it[Keys.routingEnabled] = enabled }
@@ -272,10 +292,20 @@ class SettingsStore(private val context: Context) {
     /** Stable per-device id sent as x-hwid, so the panel's device limit works when it is enabled. */
     @SuppressLint("HardwareIds")
     suspend fun deviceId(): String {
-        data.first()[Keys.deviceId]?.let { return it }
-        val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
-        val id = androidId?.takeIf { it.isNotBlank() && it != "9774d56d682e549c" } ?: UUID.randomUUID().toString()
-        context.dataStore.edit { it[Keys.deviceId] = id }
+        val rawStored = data.first()[Keys.deviceId]
+        val decrypted = decryptOrPlain(rawStored)?.takeIf { it.isNotBlank() }
+        if (decrypted != null) {
+            if (!SecureBox.isEncrypted(rawStored)) {
+                runCatching {
+                    val enc = encryptField(decrypted)
+                    context.dataStore.edit { it[Keys.deviceId] = enc }
+                }
+            }
+            return decrypted
+        }
+        val id = FreeAccessConfig.resolveStableDeviceId(context)
+        val enc = encryptField(id)
+        context.dataStore.edit { it[Keys.deviceId] = enc }
         return id
     }
 }

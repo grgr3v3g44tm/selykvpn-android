@@ -9,6 +9,10 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.currentStateAsState
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -433,11 +437,14 @@ private fun StatusHeader(state: VpnController.State, freeAccessStage: String? = 
         }
         val since = (state as? VpnController.State.Connected)?.since
         if (since != null) {
+            val lifecycleOwner = LocalLifecycleOwner.current
             var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-            LaunchedEffect(since) {
-                while (true) {
-                    now = System.currentTimeMillis()
-                    delay(1_000)
+            LaunchedEffect(since, lifecycleOwner) {
+                lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                    while (true) {
+                        now = System.currentTimeMillis()
+                        delay(1_000)
+                    }
                 }
             }
             Text(
@@ -456,20 +463,28 @@ private fun ConnectButton(state: VpnController.State, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val container by animateColorAsState(if (connected) colors.primary else colors.surfaceContainerHigh, label = "container")
     val content by animateColorAsState(if (connected) colors.onPrimary else colors.onSurface, label = "content")
-    val pulse = rememberInfiniteTransition(label = "pulse")
-    val haloScale by pulse.animateFloat(
-        initialValue = 0.92f,
-        targetValue = 1.06f,
-        animationSpec = infiniteRepeatable(tween(1600), RepeatMode.Reverse),
-        label = "halo",
-    )
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    val animateHalo = connected && lifecycleState.isAtLeast(Lifecycle.State.STARTED)
 
     Box(contentAlignment = Alignment.Center, modifier = Modifier.size(200.dp)) {
-        if (connected) {
+        if (animateHalo) {
+            val pulse = rememberInfiniteTransition(label = "pulse")
+            val haloScale by pulse.animateFloat(
+                initialValue = 0.92f,
+                targetValue = 1.06f,
+                animationSpec = infiniteRepeatable(tween(1600), RepeatMode.Reverse),
+                label = "halo",
+            )
             Box(
                 Modifier
                     .size(190.dp)
                     .scale(haloScale)
+                    .background(colors.primary.copy(alpha = 0.14f), CircleShape),
+            )
+        } else if (connected) {
+            Box(
+                Modifier
+                    .size(190.dp)
                     .background(colors.primary.copy(alpha = 0.14f), CircleShape),
             )
         }

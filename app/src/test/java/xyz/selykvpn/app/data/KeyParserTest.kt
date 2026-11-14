@@ -149,4 +149,10 @@ class KeyParserTest {
         println("Entries: $entries")
         assertFalse(entries.none { it.kind != ServerKind.SEPARATOR })
     }
+
+    @Test
+    fun testParseVlessIpv6ForeignRejected() {
+        val ipv6Foreign = "vless://b8bd454d-c4e9-4ebb-9467-d012a1497acb@[2001:db8::1]:8443?type=tcp&security=none#V6"
+        assertEquals(KeyParser.Result.Foreign, KeyParser.parse(ipv6Foreign, allowed))
+    }
 }

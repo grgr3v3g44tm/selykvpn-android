@@ -53,15 +53,15 @@ class Http {
             .build()
     }
 
-    /** Runs [block] through the tunnel when connected and falls back to a direct connection. */
+    /** Runs [block] through the tunnel when connected, falling back to direct only if local proxy cannot be reached. */
     suspend fun <T> withClient(block: suspend (OkHttpClient) -> T): T {
         tunnel()?.let { client ->
             try {
                 return block(client)
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                // fall through to the direct attempt
+            } catch (_: java.net.ConnectException) {
+                // Local Xray HTTP inbound is not reachable yet; allow fallback to direct.
             }
         }
         return block(direct)

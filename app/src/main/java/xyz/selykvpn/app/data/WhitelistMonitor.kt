@@ -136,7 +136,7 @@ class WhitelistMonitor(
     val events: SharedFlow<WhitelistEvent> = _events.asSharedFlow()
 
     @Volatile
-    var checkedAt: Long = 0L
+    var checkedAt: Long = -1L
         private set
 
     /** Network ("netId:kind") of the last finished check and of the running one. */
@@ -197,7 +197,8 @@ class WhitelistMonitor(
 
     /** Called when the app comes to the foreground. */
     fun checkIfStale() {
-        if (SystemClock.elapsedRealtime() - checkedAt > 60_000 && pending?.isActive != true) schedule(delayMs = 0)
+        val elapsed = SystemClock.elapsedRealtime()
+        if ((checkedAt < 0L || elapsed - checkedAt > 60_000) && pending?.isActive != true) schedule(delayMs = 0)
     }
 
     fun checkNow() = schedule(delayMs = 0)

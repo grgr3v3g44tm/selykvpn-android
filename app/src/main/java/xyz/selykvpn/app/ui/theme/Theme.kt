@@ -227,8 +227,13 @@ fun TvAdaptations(content: @Composable () -> Unit) {
             rippleAlpha = RippleAlpha(draggedAlpha = 0.16f, focusedAlpha = 0.32f, hoveredAlpha = 0.08f, pressedAlpha = 0.24f),
         ),
         LocalUriHandler provides remember {
-            object : UriHandler {
-                override fun openUri(uri: String) = LinkQr.show(uri)
+            object : androidx.compose.ui.platform.UriHandler {
+                override fun openUri(uri: String) {
+                    val scheme = runCatching { android.net.Uri.parse(uri.trim()).scheme?.lowercase() }.getOrNull()
+                    if (scheme in setOf("https", "http", "mailto", "tg")) {
+                        LinkQr.show(uri)
+                    }
+                }
             }
         },
         content = content,

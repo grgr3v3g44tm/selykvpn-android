@@ -21,42 +21,49 @@ data class ServerCheck(val tag: String, val alive: Boolean = false, val delay: L
 /** Kotlin facade over the gomobile-generated Xray-core binding (core/libxray). */
 object Xray {
     private const val TAG = "Xray"
-    private val initialized = AtomicBoolean(false)
+    @Volatile
+    private var initialized = false
+    private val initLock = Any()
 
     /**
      * Extracts bundled geoip.dat and geosite.dat from assets into the app's files/xray directory
      * so Xray routing rules (geoip:private, geosite:category-ads-all, etc.) resolve properly.
      */
     fun ensureGeoFiles(context: Context, xrayDir: File) {
-        val geoFiles = listOf("geoip.dat", "geosite.dat")
-        for (fileName in geoFiles) {
-            val target = File(xrayDir, fileName)
-            if (!target.exists() || target.length() == 0L) {
-                try {
-                    val assetPath = "xray/$fileName"
-                    context.assets.open(assetPath).use { input ->
-                        val tempFile = File(xrayDir, "$fileName.tmp")
-                        FileOutputStream(tempFile).use { output ->
-                            input.copyTo(output)
+        synchronized(initLock) {
+            val geoFiles = listOf("geoip.dat", "geosite.dat")
+            for (fileName in geoFiles) {
+                val target = File(xrayDir, fileName)
+                if (!target.exists() || target.length() == 0L) {
+                    try {
+                        val assetPath = "xray/$fileName"
+                        context.assets.open(assetPath).use { input ->
+                            val tempFile = File(xrayDir, "$fileName.tmp")
+                            FileOutputStream(tempFile).use { output ->
+                                input.copyTo(output)
+                            }
+                            if (tempFile.exists() && tempFile.length() > 0) {
+                                if (target.exists()) target.delete()
+                                tempFile.renameTo(target)
+                                Log.i(TAG, "Extracted geodata asset $fileName (${target.length()} bytes)")
+                            }
                         }
-                        if (tempFile.exists() && tempFile.length() > 0) {
-                            if (target.exists()) target.delete()
-                            tempFile.renameTo(target)
-                            Log.i(TAG, "Extracted geodata asset $fileName (${target.length()} bytes)")
-                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not extract asset $fileName: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not extract asset $fileName: ${e.message}")
                 }
             }
         }
     }
 
     private fun init(context: Context) {
-        if (initialized.compareAndSet(false, true)) {
-            val assets = File(context.filesDir, "xray").apply { mkdirs() }
-            ensureGeoFiles(context, assets)
-            Libxray.initEnv(assets.absolutePath)
+        synchronized(initLock) {
+            if (!initialized) {
+                val assets = File(context.filesDir, "xray").apply { mkdirs() }
+                ensureGeoFiles(context, assets)
+                Libxray.initEnv(assets.absolutePath)
+                initialized = true
+            }
         }
     }
 

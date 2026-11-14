@@ -49,8 +49,17 @@ object KeyParser {
     fun mergedAllowedHosts(allowedHosts: List<String>): List<String> =
         (allowedHosts + OUR_DEFAULT_DOMAINS).distinct()
 
+    internal fun extractHostFromAddress(hostOrEndpoint: String): String {
+        val trimmed = hostOrEndpoint.trim()
+        return when {
+            trimmed.startsWith("[") -> trimmed.substringAfter("[").substringBefore("]")
+            trimmed.count { it == ':' } == 1 -> trimmed.substringBefore(':')
+            else -> trimmed
+        }.lowercase().trimEnd('.')
+    }
+
     fun isOurServerHostOrIp(hostOrIp: String, allowedHosts: List<String>): Boolean {
-        val clean = hostOrIp.trim().lowercase().trimEnd('.').substringBefore(':').trim('[', ']')
+        val clean = extractHostFromAddress(hostOrIp)
         if (clean in OUR_SERVER_IPS) return true
         if (hostAllowed(clean, mergedAllowedHosts(allowedHosts))) return true
         return false
@@ -80,7 +89,7 @@ object KeyParser {
 
         // Check if it is a Free Access / VK TURN key or link (must point to our trusted gateways)
         xyz.selykvpn.app.model.FreeAccessConfig.parse(text)?.let { cfg ->
-            val peerHost = cfg.peerAddress.substringBefore(':')
+            val peerHost = extractHostFromAddress(cfg.peerAddress)
             return if (isOurServerHostOrIp(peerHost, allowedHosts)) {
                 Result.FreeAccess(cfg)
             } else {

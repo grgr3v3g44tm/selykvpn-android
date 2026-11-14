@@ -8,6 +8,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
@@ -20,6 +22,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicLong
 
 /** Plan and expiry of the subscription owner, from https://tgapp.selykvpn.xyz/api/v1/subscription/status. */
 @Serializable
@@ -89,19 +92,36 @@ object TariffAccess {
 class AccountRepository(context: Context, private val http: Http) {
     private val appContext = context.applicationContext
     private val file = File(context.filesDir, "account.json")
+    private val fileLock = Any()
+    private val refreshMutex = Mutex()
+    private val clearGen = AtomicLong(0L)
     private val _state = MutableStateFlow(load())
     val state: StateFlow<AccountStatus?> = _state.asStateFlow()
 
-    private fun load(): AccountStatus? =
-        runCatching { AppJson.decodeFromString<AccountStatus>(file.readText()) }.getOrNull()
+    private fun load(): AccountStatus? = synchronized(fileLock) {
+        runCatching {
+            val raw = SecureBox.readEncryptedOrMigrate(file) ?: return@runCatching null
+            AppJson.decodeFromString<AccountStatus>(raw)
+        }.getOrNull()
+    }
 
     suspend fun refresh(subscriptionUrl: String, force: Boolean = false): AccountStatus? = withContext(Dispatchers.IO) {
-        if (!subscriptionUrl.startsWith("http", ignoreCase = true)) return@withContext null
-        val cached = _state.value
-        if (!force && cached != null && System.currentTimeMillis() - cached.fetchedAt < 10 * 60_000L) {
-            return@withContext cached
+        if (!subscriptionUrl.startsWith("https://", ignoreCase = true) &&
+            !subscriptionUrl.startsWith("http://", ignoreCase = true)
+        ) {
+            return@withContext null
         }
-        checkStatus(subscriptionUrl)?.also { save(it) }
+        refreshMutex.withLock {
+            val cached = _state.value
+            if (!force && cached != null && System.currentTimeMillis() - cached.fetchedAt < 10 * 60_000L) {
+                return@withLock cached
+            }
+            val genBefore = clearGen.get()
+            val fresh = checkStatus(subscriptionUrl) ?: return@withLock null
+            if (clearGen.get() != genBefore) return@withLock null
+            save(fresh)
+            fresh
+        }
     }
 
     /** Queries `/api/v1/subscription/status` without mutating persisted state or UI flows. */
@@ -136,13 +156,18 @@ class AccountRepository(context: Context, private val http: Http) {
     }
 
     fun save(status: AccountStatus) {
-        file.writeText(AppJson.encodeToString(AccountStatus.serializer(), status))
-        _state.value = status
+        synchronized(fileLock) {
+            SecureBox.writeEncryptedAtomically(file, AppJson.encodeToString(AccountStatus.serializer(), status))
+            _state.value = status
+        }
     }
 
     fun clear() {
-        file.delete()
-        _state.value = null
+        clearGen.incrementAndGet()
+        synchronized(fileLock) {
+            file.delete()
+            _state.value = null
+        }
     }
 
     companion object {

@@ -16,6 +16,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,20 +31,25 @@ import androidx.compose.ui.unit.dp
 import xyz.selykvpn.app.R
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
+import com.google.zxing.common.BitMatrix
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.floor
 
 /** Black on white with a quiet zone in both themes: phone cameras read that best. */
 @Composable
 fun QrCode(text: String, modifier: Modifier = Modifier) {
-    val matrix = remember(text) {
-        runCatching {
-            QRCodeWriter().encode(
-                text, BarcodeFormat.QR_CODE, 0, 0,
-                mapOf(EncodeHintType.MARGIN to 0, EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M),
-            )
-        }.getOrNull()
+    val matrix by produceState<BitMatrix?>(initialValue = null, text) {
+        value = withContext(Dispatchers.Default) {
+            runCatching {
+                QRCodeWriter().encode(
+                    text, BarcodeFormat.QR_CODE, 0, 0,
+                    mapOf(EncodeHintType.MARGIN to 0, EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M),
+                )
+            }.getOrNull()
+        }
     }
     Box(
         modifier

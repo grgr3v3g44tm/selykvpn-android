@@ -54,11 +54,14 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 sealed interface Ping {
     data object Testing : Ping
@@ -341,6 +344,8 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val _updateProgress = MutableStateFlow<UpdateProgress?>(null)
     val updateProgress: StateFlow<UpdateProgress?> = _updateProgress.asStateFlow()
+    private val subscriptionMutex = Mutex()
+    private var pingJob: Job? = null
     private var updateJob: Job? = null
     private var pendingInstallInfo: UpdateInfo? = null
 
@@ -351,6 +356,9 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { graph.remoteConfig.refresh() }
         viewModelScope.launch {
             VpnController.errors.collect { _messages.emit(UiMessage(R.string.vpn_error, listOf(it))) }
+        }
+        viewModelScope.launch {
+            Updater.installErrors.collect { _messages.emit(UiMessage(R.string.update_failed)) }
         }
         viewModelScope.launch {
             graph.whitelist.events.collect { event ->
@@ -416,8 +424,8 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
                 val current = subscription.value
                 when {
                     current == null -> import(result.key)
-                    !result.key.directConfigs.isNullOrEmpty() -> import(result.key)
-                    current.url == result.key.url -> refreshSubscription(showMessage = true)
+                    current.url == result.key.url && result.key.directConfigs.isNullOrEmpty() ->
+                        refreshSubscription(showMessage = true)
                     else -> _importState.value = ImportState.ConfirmReplace(result.key)
                 }
             }
@@ -462,90 +470,98 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     private fun import(key: KeyParser.Key) = viewModelScope.launch {
-        _importState.value = ImportState.Loading
-        try {
-            val prevUrl = subscription.value?.url
-            val wasConnected = VpnController.isActive
-            val wasFreeAccess = VpnController.activeBackend == VpnController.Backend.FREE_ACCESS
-            val preCheckStatus = key.url.takeIf { it.startsWith("http", ignoreCase = true) }
-                ?.let { graph.account.checkStatus(it) }
-            if (preCheckStatus != null && preCheckStatus.found && preCheckStatus.isWhitelist && preCheckStatus.vkturnDeviceLimitReached) {
-                throw SubscriptionError.FreeAccessDeviceLimit()
-            }
-            graph.subscriptions.import(key)
-            _pings.value = emptyMap()
-            graph.account.clear()
-            if (prevUrl != null && prevUrl != key.url) {
-                val cleared = freeAccessConfig.value.clearGatewayCredentials()
-                if (cleared != freeAccessConfig.value) {
-                    graph.settings.setFreeAccessConfig(AppJson.encodeToString(cleared))
+        subscriptionMutex.withLock {
+            _importState.value = ImportState.Loading
+            try {
+                val prevUrl = subscription.value?.url
+                val wasConnected = VpnController.isActive
+                val wasFreeAccess = VpnController.activeBackend == VpnController.Backend.FREE_ACCESS
+                val preCheckStatus = key.url.takeIf { it.startsWith("http", ignoreCase = true) }
+                    ?.let { graph.account.checkStatus(it) }
+                if (preCheckStatus != null && preCheckStatus.found && preCheckStatus.isWhitelist && preCheckStatus.vkturnDeviceLimitReached) {
+                    throw SubscriptionError.FreeAccessDeviceLimit()
                 }
-                graph.settings.setWhitelistAutoSwitched(null)
-            }
-            val accountStatus = preCheckStatus?.also { graph.account.save(it) }
-                ?: graph.account.refresh(key.url, force = true)
-            syncFreeAccessFromStatus(accountStatus)
-            val updatedCfg = graph.settings.freeAccessConfigNow()
-            val allowedNow = TariffAccess.isFreeAccessAllowed(
-                hasSubscription = true,
-                account = accountStatus,
-                freeAccessConfig = updatedCfg,
-            )
-            _messages.emit(UiMessage(R.string.key_added))
-            if (wasConnected) {
-                if (wasFreeAccess && !allowedNow) {
-                    VpnController.stop(app)
-                } else {
-                    VpnController.reconnect(app)
+                graph.subscriptions.import(key)
+                _pings.value = emptyMap()
+                graph.account.clear()
+                if (prevUrl != null && (prevUrl != key.url || !key.directConfigs.isNullOrEmpty())) {
+                    val cleared = freeAccessConfig.value.clearGatewayCredentials()
+                    if (cleared != freeAccessConfig.value) {
+                        graph.settings.setFreeAccessConfig(AppJson.encodeToString(cleared))
+                    }
+                    graph.settings.setWhitelistAutoSwitched(null)
                 }
+                val accountStatus = preCheckStatus?.also { graph.account.save(it) }
+                    ?: graph.account.refresh(key.url, force = true)
+                syncFreeAccessFromStatus(accountStatus)
+                val updatedCfg = graph.settings.freeAccessConfigNow()
+                val allowedNow = TariffAccess.isFreeAccessAllowed(
+                    hasSubscription = true,
+                    account = accountStatus,
+                    freeAccessConfig = updatedCfg,
+                )
+                _messages.emit(UiMessage(R.string.key_added))
+                if (wasConnected) {
+                    if (wasFreeAccess && !allowedNow) {
+                        VpnController.stop(app)
+                    } else {
+                        VpnController.reconnect(app)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.e("AppViewModel", "Import failed with exception", e)
+                _keyError.value = e.messageRes()
+            } finally {
+                _importState.value = ImportState.Idle
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            android.util.Log.e("AppViewModel", "Import failed with exception", e)
-            _keyError.value = e.messageRes()
-        } finally {
-            _importState.value = ImportState.Idle
         }
     }
 
     fun refreshSubscription(showMessage: Boolean = true) = viewModelScope.launch {
-        try {
-            graph.subscriptions.refresh()
-            subscription.value?.let {
-                launch { syncFreeAccessFromStatus(graph.account.refresh(it.url, force = true)) }
+        subscriptionMutex.withLock {
+            try {
+                graph.subscriptions.refresh()
+                subscription.value?.let {
+                    syncFreeAccessFromStatus(graph.account.refresh(it.url, force = true))
+                }
+                if (showMessage) _messages.emit(UiMessage(R.string.servers_updated))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _messages.emit(UiMessage(e.messageRes()))
             }
-            if (showMessage) _messages.emit(UiMessage(R.string.servers_updated))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            _messages.emit(UiMessage(e.messageRes()))
         }
     }
 
     fun logout() = viewModelScope.launch {
-        pingAll?.cancel()
-        _pinging.value = false
-        _importState.value = ImportState.Idle
-        _pendingImport.value = null
-        _tvSend.value = null
-        _keyError.value = null
-        VpnController.stop(app)
-        graph.subscriptions.clear()
-        graph.account.clear()
-        val currentCfg = freeAccessConfig.value
-        val clearedCfg = currentCfg.clearGatewayCredentials().copy(
-            stealthLink = "",
-            useSessionAuth = false,
-        )
-        if (clearedCfg != currentCfg) {
-            graph.settings.setFreeAccessConfig(AppJson.encodeToString(clearedCfg))
+        subscriptionMutex.withLock {
+            pingAll?.cancel()
+            pingJob?.cancel()
+            pingJob = null
+            _pinging.value = false
+            _importState.value = ImportState.Idle
+            _pendingImport.value = null
+            _tvSend.value = null
+            _keyError.value = null
+            VpnController.stop(app)
+            graph.subscriptions.clear()
+            graph.account.clear()
+            val currentCfg = freeAccessConfig.value
+            val clearedCfg = currentCfg.clearGatewayCredentials().copy(
+                stealthLink = "",
+                useSessionAuth = false,
+            )
+            if (clearedCfg != currentCfg) {
+                graph.settings.setFreeAccessConfig(AppJson.encodeToString(clearedCfg))
+            }
+            graph.settings.setWhitelistAutoSwitched(null)
+            if (activeMode.value == "free_access") {
+                graph.settings.setActiveMode("regular")
+            }
+            _pings.value = emptyMap()
         }
-        graph.settings.setWhitelistAutoSwitched(null)
-        if (activeMode.value == "free_access") {
-            graph.settings.setActiveMode("regular")
-        }
-        _pings.value = emptyMap()
     }
 
     // endregion
@@ -599,7 +615,8 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     /** Long press on a server or auto-select: ping just this one, also when it waits in the "ping all" queue. */
     fun pingServer(entry: ServerEntry) {
         if (!entry.pingable || entry.key in measuring) return
-        viewModelScope.launch {
+        pingJob?.cancel()
+        pingJob = viewModelScope.launch {
             _pings.update { it + (entry.key to Ping.Testing) }
             measure(entry)
         }
@@ -642,7 +659,9 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
                 _messages.tryEmit(UiMessage(msgRes))
                 return
             }
-            VpnController.startFreeAccess(app, cfg, exclusions.value.effective, logEnabled = connectionLog.value)
+            viewModelScope.launch {
+                VpnController.startFreeAccess(app, cfg, exclusions.value.effective, logEnabled = connectionLog.value)
+            }
             return
         }
         if (subscription.value == null) return
@@ -674,11 +693,22 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     suspend fun loadCaptchaBitmap(url: String): android.graphics.Bitmap? = withContext(Dispatchers.IO) {
         runCatching {
+            val parsed = url.toHttpUrlOrNull() ?: return@runCatching null
+            if (!parsed.isHttps) return@runCatching null
             graph.http.withClient { client ->
-                client.newCall(okhttp3.Request.Builder().url(url).build()).await().use { resp ->
+                client.newCall(okhttp3.Request.Builder().url(parsed).build()).await().use { resp ->
                     if (!resp.isSuccessful) return@withClient null
-                    val bytes = resp.body.bytes()
-                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    val bytes = resp.body.byteStream().readNBytesCompat(MAX_CAPTCHA_BYTES)
+                    if (bytes.isEmpty() || bytes.size >= MAX_CAPTCHA_BYTES) return@withClient null
+                    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withClient null
+                    var sample = 1
+                    while (bounds.outWidth / sample > 1024 || bounds.outHeight / sample > 1024) {
+                        sample *= 2
+                    }
+                    val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
                 }
             }
         }.getOrNull()
@@ -686,7 +716,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun installUpdate() {
         val info = update.value ?: return
-        if (_updateProgress.value != null) return
+        if (updateJob?.isActive == true || _updateProgress.value != null) return
         if (!Updater.canInstallPackages(app)) {
             pendingInstallInfo = info
             _messages.tryEmit(UiMessage(R.string.update_permission_needed))
@@ -697,15 +727,14 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     private fun startUpdateDownloadOrInstall(info: UpdateInfo) {
-        if (_updateProgress.value != null) return
-        updateJob?.cancel()
+        if (updateJob?.isActive == true || _updateProgress.value != null) return
+        _updateProgress.value = UpdateProgress()
         updateJob = viewModelScope.launch {
-            _updateProgress.value = UpdateProgress()
             try {
                 val file = Updater.download(app, graph.http, info) { _updateProgress.value = it }
                 if (Updater.canInstallPackages(app)) {
                     pendingInstallInfo = null
-                    Updater.install(app, file)
+                    withContext(Dispatchers.IO) { Updater.install(app, file) }
                 } else {
                     pendingInstallInfo = info
                     _messages.emit(UiMessage(R.string.update_permission_needed))
@@ -716,6 +745,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
             } catch (_: Exception) {
                 _messages.emit(UiMessage(R.string.update_failed))
             } finally {
+                updateJob = null
                 _updateProgress.value = null
             }
         }
@@ -731,6 +761,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     /** Hides the update card until a newer version is published. */
     fun skipUpdate() {
         val info = update.value ?: return
+        pendingInstallInfo = null
         viewModelScope.launch { graph.settings.setSkippedUpdate(info.versionCode) }
     }
 
@@ -749,6 +780,9 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     // endregion
+    companion object {
+        private const val MAX_CAPTCHA_BYTES = 2 * 1024 * 1024
+    }
 }
 
 /** Reads at most [limit] bytes (InputStream.readNBytes needs Android 13). */

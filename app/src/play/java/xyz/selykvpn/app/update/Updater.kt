@@ -8,6 +8,7 @@ import java.io.File
 /** Google Play build: updates are delivered by the store only. */
 object Updater {
     const val SUPPORTED = false
+    val installErrors: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.emptyFlow()
 
     fun canInstallPackages(context: Context): Boolean = false
 

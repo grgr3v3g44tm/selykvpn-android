@@ -19,10 +19,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import xyz.selykvpn.app.R
 import xyz.selykvpn.app.data.TransferKind
 import xyz.selykvpn.app.ui.AppViewModel
@@ -32,6 +36,7 @@ import java.io.File
 @Composable
 fun TransferMenu(kind: TransferKind, viewModel: AppViewModel) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var open by remember { mutableStateOf(false) }
     val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) viewModel.saveExport(kind, uri)
@@ -47,7 +52,7 @@ fun TransferMenu(kind: TransferKind, viewModel: AppViewModel) {
                 leadingIcon = { Icon(Icons.Rounded.Share, null) },
                 onClick = {
                     open = false
-                    context.shareSettings(kind, viewModel.exportText(kind))
+                    scope.launch { context.shareSettings(kind) { viewModel.exportText(kind) } }
                 },
             )
             DropdownMenuItem(
@@ -72,11 +77,16 @@ fun TransferMenu(kind: TransferKind, viewModel: AppViewModel) {
 }
 
 /** Opens the share sheet with the settings as a .json file (Telegram, e-mail, Drive...). */
-private fun Context.shareSettings(kind: TransferKind, text: String) {
+private suspend fun Context.shareSettings(kind: TransferKind, buildText: () -> String) {
+    val uri = withContext(Dispatchers.IO) {
+        runCatching {
+            val text = buildText()
+            val dir = File(cacheDir, "exports").apply { mkdirs() }
+            val file = File(dir, kind.fileName).apply { writeText(text) }
+            FileProvider.getUriForFile(this@shareSettings, "$packageName.exports", file)
+        }.getOrNull()
+    } ?: return
     runCatching {
-        val dir = File(cacheDir, "exports").apply { mkdirs() }
-        val file = File(dir, kind.fileName).apply { writeText(text) }
-        val uri = FileProvider.getUriForFile(this, "$packageName.exports", file)
         val send = Intent(Intent.ACTION_SEND)
             .setType("application/json")
             .putExtra(Intent.EXTRA_STREAM, uri)

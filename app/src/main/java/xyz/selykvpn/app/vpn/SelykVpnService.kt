@@ -51,12 +51,16 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.util.concurrent.atomic.AtomicBoolean
 
 class SelykVpnService : VpnService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Mutex()
+    @Volatile
     private var tun: ParcelFileDescriptor? = null
+    private val destroyed = AtomicBoolean(false)
+    private val receiverLock = Any()
 
     private val isTunnelActive: Boolean
         get() = tun != null
@@ -84,14 +88,20 @@ class SelykVpnService : VpnService() {
     private var autoInUse: Set<String> = emptySet()
     private var lastHealthRestart = 0L
     private var screenOffAt = 0L
+    @Volatile
+    private var screenOn = true
 
     // After a long sleep the connections to the servers may be dead (the operator dropped them):
     // check auto-select's servers as soon as the screen turns on instead of waiting for its next round.
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                Intent.ACTION_SCREEN_OFF -> screenOffAt = SystemClock.elapsedRealtime()
+                Intent.ACTION_SCREEN_OFF -> {
+                    screenOn = false
+                    screenOffAt = SystemClock.elapsedRealtime()
+                }
                 Intent.ACTION_SCREEN_ON -> {
+                    screenOn = true
                     val off = screenOffAt
                     if (off > 0 && SystemClock.elapsedRealtime() - off >= LONG_SLEEP_MS) scope.launch { checkAutoSelect(afterSleep = true) }
                 }
@@ -103,7 +113,7 @@ class SelykVpnService : VpnService() {
     private val healthLock = Mutex()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null) {
+        if (intent == null || destroyed.get()) {
             // Do not blindly restart on sticky null intents after failure/kill.
             stopSelf()
             return START_NOT_STICKY
@@ -114,12 +124,20 @@ class SelykVpnService : VpnService() {
                 scope.launch { lock.withLock { stopInternal(handoff = handoff) } }
             }
             ACTION_RECONNECT -> scope.launch {
-                lock.withLock { if (isTunnelActive) startInternal(reconnect = true) }
+                lock.withLock { if (!destroyed.get() && isTunnelActive) startInternal(reconnect = true) }
             }
             else -> {
                 // ACTION_START from the app or SERVICE_INTERFACE for always-on VPN.
-                enterForeground(getString(R.string.notification_connecting), connected = false)
-                scope.launch { lock.withLock { if (!isTunnelActive) startInternal(reconnect = false) } }
+                if (!enterForeground(getString(R.string.notification_connecting), connected = false)) {
+                    if (VpnController.activeBackend == VpnController.Backend.REGULAR) {
+                        VpnController.activeBackend = VpnController.Backend.NONE
+                        VpnController.state.value = VpnController.State.Idle
+                    }
+                    VpnController.reportError(getString(R.string.vpn_start_failed_fgs))
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                scope.launch { lock.withLock { if (!destroyed.get() && !isTunnelActive) startInternal(reconnect = false) } }
             }
         }
         return START_NOT_STICKY
@@ -127,6 +145,7 @@ class SelykVpnService : VpnService() {
 
     /** Must be called with [lock] held. */
     private suspend fun startInternal(reconnect: Boolean) {
+        if (destroyed.get()) return
         val graph = SelykApp.graph
         val previous = VpnController.state.value as? VpnController.State.Connected
         try {
@@ -214,6 +233,7 @@ class SelykVpnService : VpnService() {
             .addAddress(TUN_IPV4, 30)
             .addAddress(TUN_IPV6, 126)
             .addDnsServer(TUN_DNS)
+            .addRoute(TUN_DNS, 32)
             .setConfigureIntent(
                 PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE),
             )
@@ -281,13 +301,15 @@ class SelykVpnService : VpnService() {
                     checkAutoSelect(afterSleep = false)
                 }
             }
-            if (!screenReceiverRegistered) {
-                val filter = IntentFilter().apply {
-                    addAction(Intent.ACTION_SCREEN_ON)
-                    addAction(Intent.ACTION_SCREEN_OFF)
+            synchronized(receiverLock) {
+                if (!screenReceiverRegistered) {
+                    val filter = IntentFilter().apply {
+                        addAction(Intent.ACTION_SCREEN_ON)
+                        addAction(Intent.ACTION_SCREEN_OFF)
+                    }
+                    ContextCompat.registerReceiver(this@SelykVpnService, screenReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+                    screenReceiverRegistered = true
                 }
-                ContextCompat.registerReceiver(this@SelykVpnService, screenReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
-                screenReceiverRegistered = true
             }
             combine(exclusionSettings(graph.settings, graph.remoteConfig), graph.settings.share, graph.settings.routing) { exclusions, share, routing ->
                 Applied(exclusions.effective, share.takeIf { it.enabled }, routing)
@@ -362,6 +384,7 @@ class SelykVpnService : VpnService() {
     }
 
     private suspend fun checkAutoSelectLocked(afterSleep: Boolean) {
+        if (!afterSleep && !screenOn) return
         val serverKey = (VpnController.state.value as? VpnController.State.Connected)?.serverKey ?: return
         if (serverKey == "free_access") return
         if (afterSleep) Xray.recheckServers()
@@ -439,9 +462,9 @@ class SelykVpnService : VpnService() {
         }
         statsJob?.cancel()
         statsJob = null
+        Xray.setConnectionListener(null)
         if (tun != null) {
             Xray.stop()
-            Xray.setConnectionListener(null)
         }
         unregisterScreenReceiver()
         VpnController.appProxy.value = null
@@ -464,9 +487,9 @@ class SelykVpnService : VpnService() {
         watchJob = null
     }
 
-    private fun enterForeground(text: String, connected: Boolean) {
+    private fun enterForeground(text: String, connected: Boolean): Boolean {
         val notification = Notifications.vpn(this, text, connected)
-        try {
+        return try {
             ServiceCompat.startForeground(
                 this,
                 Notifications.ID_VPN,
@@ -477,9 +500,10 @@ class SelykVpnService : VpnService() {
                     0
                 },
             )
+            true
         } catch (e: Exception) {
-            Log.w(TAG, "startForeground failed", e)
-            runCatching { NotificationManagerCompat.from(this).notify(Notifications.ID_VPN, notification) }
+            Log.e(TAG, "startForeground failed", e)
+            false
         }
     }
 
@@ -489,26 +513,34 @@ class SelykVpnService : VpnService() {
     }
 
     private fun unregisterScreenReceiver() {
-        if (screenReceiverRegistered) {
-            runCatching { unregisterReceiver(screenReceiver) }
-            screenReceiverRegistered = false
+        synchronized(receiverLock) {
+            if (screenReceiverRegistered) {
+                runCatching { unregisterReceiver(screenReceiver) }
+                screenReceiverRegistered = false
+            }
         }
     }
 
     override fun onDestroy() {
+        destroyed.set(true)
         unregisterScreenReceiver()
-        if (tun != null) {
-            Xray.stop()
-        }
-        runCatching { tun?.close() }
+        Xray.setConnectionListener(null)
+        val tunToClose = tun
         tun = null
         VpnController.appProxy.value = null
         VpnController.share.value = null
         if (VpnController.activeBackend == VpnController.Backend.REGULAR) {
             VpnController.activeBackend = VpnController.Backend.NONE
+            VpnController.traffic.value = VpnController.Traffic.ZERO
             VpnController.state.value = VpnController.State.Idle
         }
         scope.cancel()
+        if (tunToClose != null) {
+            CoroutineScope(NonCancellable + Dispatchers.IO).launch {
+                runCatching { Xray.stop() }
+                runCatching { tunToClose.close() }
+            }
+        }
         super.onDestroy()
     }
 

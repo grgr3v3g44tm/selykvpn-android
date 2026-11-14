@@ -37,13 +37,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import org.json.JSONTokener
 import xyz.selykvpn.app.R
 import xyz.selykvpn.app.ui.theme.SelykVpnTheme
 import xyz.selykvpn.app.vpn.VpnController
@@ -78,12 +85,27 @@ class VKAuthActivity : ComponentActivity() {
 
         internal fun isAllowedWebScheme(scheme: String?): Boolean {
             val s = scheme?.lowercase() ?: return false
-            return s == "http" || s == "https" || s == "about" || s == "javascript" || s == "data"
+            return s == "https"
         }
 
         internal fun shouldBlockScheme(scheme: String?): Boolean {
             val s = scheme?.lowercase() ?: return false
             return s in BLOCKED_EXTERNAL_SCHEMES || !isAllowedWebScheme(s)
+        }
+
+        internal fun isTrustedNavigationHost(host: String?): Boolean {
+            val h = host?.trim()?.lowercase()?.trimEnd('.') ?: return false
+            return VKCallHelper.isTrustedVkHost(h) ||
+                h == "mail.ru" || h.endsWith(".mail.ru") ||
+                h == "vk-cdn.net" || h.endsWith(".vk-cdn.net") ||
+                h == "userapi.com" || h.endsWith(".userapi.com") ||
+                h == "my.com" || h.endsWith(".my.com") ||
+                h == "vk.link" || h.endsWith(".vk.link")
+        }
+
+        internal fun isTrustedTokenUrl(rawUrl: String?): Boolean {
+            val url = rawUrl?.toHttpUrlOrNull() ?: return false
+            return url.scheme == "https" && VKCallHelper.isTrustedVkHost(url.host)
         }
 
         internal fun isOAuthFlowUrl(rawUrl: String?): Boolean {
@@ -177,6 +199,8 @@ class VKAuthActivity : ComponentActivity() {
     private var lastBlockedSchemeToastMs = 0L
     private var onApiExecutionStateChange: ((Boolean, String) -> Unit)? = null
     private var onErrorStateChange: ((String?) -> Unit)? = null
+    @Volatile
+    private var activeCall: VKCallHelper.CancelHandle? = null
 
     @OptIn(ExperimentalMaterial3Api::class)
     @SuppressLint("SetJavaScriptEnabled")
@@ -442,9 +466,9 @@ class VKAuthActivity : ComponentActivity() {
         settings.domStorageEnabled = true
         settings.databaseEnabled = true
         settings.userAgentString = "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
-        settings.setSupportMultipleWindows(true)
-        settings.javaScriptCanOpenWindowsAutomatically = true
-        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        settings.setSupportMultipleWindows(false)
+        settings.javaScriptCanOpenWindowsAutomatically = false
+        settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
         settings.allowFileAccess = false
         settings.allowContentAccess = false
         settings.cacheMode = WebSettings.LOAD_DEFAULT
@@ -457,18 +481,6 @@ class VKAuthActivity : ComponentActivity() {
         cm.setAcceptThirdPartyCookies(webView, true)
 
         webView.webChromeClient = object : WebChromeClient() {
-            override fun onCreateWindow(
-                view: WebView,
-                isDialog: Boolean,
-                isUserGesture: Boolean,
-                resultMsg: Message
-            ): Boolean {
-                val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
-                transport.webView = view
-                resultMsg.sendToTarget()
-                return true
-            }
-
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 onProgressChange(newProgress, view?.canGoBack() == true)
                 if (newProgress >= 100) cancelPageLoadWatchdog()
@@ -495,6 +507,7 @@ class VKAuthActivity : ComponentActivity() {
                 Log.w(TAG, "SSL error in VK WebView for ${error?.url}: $error")
                 cancelPageLoadWatchdog()
                 handler?.cancel()
+                onErrorStateChange?.invoke("Ошибка проверки SSL-сертификата VK (${error?.primaryError ?: -1})")
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
@@ -519,8 +532,8 @@ class VKAuthActivity : ComponentActivity() {
                     VKCookieStore.clearWebViewCookies()
                 }
                 val handled = url?.let { checkUrlForTokensOrCall(it, view) } ?: false
-                view?.evaluateJavascript("window.location.href + ' ' + window.location.hash") { jsHrefAndHash ->
-                    checkUrlForTokensOrCall(jsHrefAndHash, view)
+                if (!handled && isOAuthBlankPage(url)) {
+                    evaluateWindowHrefAndCheck(view)
                 }
                 if (!handled &&
                     mode == MODE_CREATE_CALL &&
@@ -549,14 +562,20 @@ class VKAuthActivity : ComponentActivity() {
 
                 if (checkUrlForTokensOrCall(nextUrl, view)) return true
 
-                // Block external app deep links so auth completes inside WebView
+                // Block non-HTTPS, external schemes, and untrusted main-frame hosts
                 if (shouldBlockScheme(scheme)) {
-                    Log.i(TAG, "Blocked external intent scheme: $scheme")
-                    val now = SystemClock.elapsedRealtime()
-                    if (now - lastBlockedSchemeToastMs > 4_000L) {
-                        lastBlockedSchemeToastMs = now
-                        Toast.makeText(this@VKAuthActivity, R.string.vk_auth_external_blocked, Toast.LENGTH_SHORT).show()
+                    Log.i(TAG, "Blocked external/non-HTTPS scheme: $scheme")
+                    if (scheme in BLOCKED_EXTERNAL_SCHEMES) {
+                        val now = SystemClock.elapsedRealtime()
+                        if (now - lastBlockedSchemeToastMs > 4_000L) {
+                            lastBlockedSchemeToastMs = now
+                            Toast.makeText(this@VKAuthActivity, R.string.vk_auth_external_blocked, Toast.LENGTH_SHORT).show()
+                        }
                     }
+                    return true
+                }
+                if (request.isForMainFrame && !isTrustedNavigationHost(uri.host)) {
+                    Log.w(TAG, "Blocked navigation to untrusted host: ${uri.host}")
                     return true
                 }
 
@@ -610,20 +629,28 @@ class VKAuthActivity : ComponentActivity() {
     }
 
     private fun loadInitialUrl(webView: WebView) {
-        if (mode == MODE_LOGIN || !VKCookieStore.hasValidLogin()) {
-            oauthStartVisited = false
-            hasRedirectedToOAuth = false
-            oauthRedirectAttempts = 0
-            staleCookieHeader = null
-            VKCookieStore.clearWebViewCookies()
-            webView.loadUrl(VK_LOGIN_URL)
-        } else {
-            hasRedirectedToOAuth = true
-            oauthStartVisited = true
-            oauthRedirectAttempts = 1
-            staleCookieHeader = VKCookieStore.getValidCookieHeader()
-            VKCookieStore.plantCookiesIntoWebView()
-            webView.postDelayed({ webView.loadUrl(VK_OAUTH_URL) }, 150)
+        lifecycleScope.launch {
+            if (VpnController.state.value !is VpnController.State.Idle) {
+                withTimeoutOrNull(2_000L) {
+                    VpnController.state.first { it is VpnController.State.Idle }
+                }
+            }
+            if (isFinishing || isDestroyed || isDone) return@launch
+            if (mode == MODE_LOGIN || !VKCookieStore.hasValidLogin()) {
+                oauthStartVisited = false
+                hasRedirectedToOAuth = false
+                oauthRedirectAttempts = 0
+                staleCookieHeader = null
+                VKCookieStore.clearWebViewCookies()
+                webView.loadUrl(VK_LOGIN_URL)
+            } else {
+                hasRedirectedToOAuth = true
+                oauthStartVisited = true
+                oauthRedirectAttempts = 1
+                staleCookieHeader = VKCookieStore.getValidCookieHeader()
+                VKCookieStore.plantCookiesIntoWebView()
+                webView.loadUrl(VK_OAUTH_URL)
+            }
         }
     }
 
@@ -635,7 +662,9 @@ class VKAuthActivity : ComponentActivity() {
             onApiExecutionStateChange?.invoke(true, "Токен получен, создаём ссылку звонка…")
             runCatching { webView?.stopLoading() }
         }
-        VKCallHelper.createCallWithToken(token) { callLink, err, isBanned ->
+        activeCall?.cancel()
+        activeCall = VKCallHelper.createCallWithToken(token) { callLink, err, isBanned ->
+            activeCall = null
             runOnUiThread {
                 if (!callLink.isNullOrBlank()) {
                     finishWithSuccess(callLink, VKCookieStore.getValidCookieHeader())
@@ -714,12 +743,26 @@ class VKAuthActivity : ComponentActivity() {
         }
     }
 
+    private fun evaluateWindowHrefAndCheck(webView: WebView?) {
+        webView?.evaluateJavascript("window.location.href + ' ' + window.location.hash") { rawJs ->
+            val decoded = runCatching { JSONTokener(rawJs).nextValue() as? String }.getOrNull() ?: return@evaluateJavascript
+            for (part in decoded.split(' ')) {
+                val trimmed = part.trim()
+                if (trimmed.isNotEmpty() && checkUrlForTokensOrCall(trimmed, webView)) {
+                    break
+                }
+            }
+        }
+    }
+
     private fun checkUrlForTokensOrCall(rawUrl: String?, webView: WebView?): Boolean {
         if (isDone || isApiInFlight || rawUrl.isNullOrBlank()) return false
         val url = rawUrl.trim('"', '\'', ' ')
+        if (!isTrustedTokenUrl(url)) return false
 
         if (url.contains("call/join/")) {
-            val cleanLink = url.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") } ?: url
+            val cleanLink = url.lines().map { it.trim() }.firstOrNull { it.contains("call/join/") && isTrustedTokenUrl(it) }
+                ?: url
             finishWithSuccess(cleanLink, VKCookieStore.getValidCookieHeader())
             return true
         }
@@ -751,61 +794,60 @@ class VKAuthActivity : ComponentActivity() {
         }
 
         if (isOAuthBlankPage(url)) {
-            webView?.evaluateJavascript("window.location.href + ' ' + window.location.hash") { jsCombined ->
-                if (!jsCombined.isNullOrBlank() && jsCombined.contains("access_token=")) {
-                    checkUrlForTokensOrCall(jsCombined, webView)
-                }
-            }
+            evaluateWindowHrefAndCheck(webView)
         }
         return false
     }
 
     private fun startCookiePolling() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            val cm = CookieManager.getInstance()
-            var lastSavedHeader: String? = null
-            while (isActive && !isDone) {
-                delay(800)
-                if (isDone) break
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                withContext(Dispatchers.IO) {
+                    val cm = CookieManager.getInstance()
+                    var lastSavedHeader: String? = null
+                    while (isActive && !isDone) {
+                        delay(1_200)
+                        if (isDone) break
 
-                val fullCookies = VKCookieStore.extractFullCookiesFromManager(cm)
-                if (!fullCookies.remixsid.isNullOrBlank()) {
-                    val header = fullCookies.toCookieHeader()
-                    if (header == staleCookieHeader) {
-                        continue
-                    }
-                    if (header != lastSavedHeader) {
-                        lastSavedHeader = header
-                        val oneYearAhead = System.currentTimeMillis() + (365L * 24 * 3600 * 1000)
-                        VKCookieStore.saveSession(header, oneYearAhead)
-                    }
+                        val fullCookies = VKCookieStore.extractFullCookiesFromManager(cm)
+                        if (!fullCookies.remixsid.isNullOrBlank()) {
+                            val header = fullCookies.toCookieHeader()
+                            if (header == staleCookieHeader) {
+                                continue
+                            }
+                            if (header != lastSavedHeader) {
+                                lastSavedHeader = header
+                                val oneYearAhead = System.currentTimeMillis() + (365L * 24 * 3600 * 1000)
+                                VKCookieStore.saveSession(header, oneYearAhead)
+                            }
 
-                    if (mode == MODE_LOGIN) {
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(this@VKAuthActivity, "Авторизация VK успешна!", Toast.LENGTH_SHORT).show()
-                            finishWithSuccess("", header)
-                        }
-                        break
-                    } else if (!hasRedirectedToOAuth && !isApiInFlight && !isTokenLookupInFlight) {
-                        withContext(Dispatchers.Main) {
-                            val currentUrl = webViewInstance?.url ?: ""
-                            if (isOAuthFlowUrl(currentUrl)) {
-                                hasRedirectedToOAuth = true
-                                oauthStartVisited = true
-                            } else {
-                                hasRedirectedToOAuth = true
-                                oauthStartVisited = true
-                                tryObtainTokenFromSessionOrRedirectToOAuth(webViewInstance, header)
+                            if (mode == MODE_LOGIN) {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(this@VKAuthActivity, "Авторизация VK успешна!", Toast.LENGTH_SHORT).show()
+                                    finishWithSuccess("", header)
+                                }
+                                break
+                            } else if (!hasRedirectedToOAuth && !isApiInFlight && !isTokenLookupInFlight) {
+                                withContext(Dispatchers.Main) {
+                                    val currentUrl = webViewInstance?.url ?: ""
+                                    if (isOAuthFlowUrl(currentUrl)) {
+                                        hasRedirectedToOAuth = true
+                                        oauthStartVisited = true
+                                    } else {
+                                        hasRedirectedToOAuth = true
+                                        oauthStartVisited = true
+                                        tryObtainTokenFromSessionOrRedirectToOAuth(webViewInstance, header)
+                                    }
+                                }
                             }
                         }
-                    }
-                }
 
-                if (!isApiInFlight) {
-                    withContext(Dispatchers.Main) {
-                        webViewInstance?.evaluateJavascript("window.location.href + ' ' + window.location.hash") { jsCombined ->
-                            if (!jsCombined.isNullOrBlank() && jsCombined.contains("access_token=")) {
-                                checkUrlForTokensOrCall(jsCombined, webViewInstance)
+                        if (!isApiInFlight) {
+                            withContext(Dispatchers.Main) {
+                                val currentUrl = webViewInstance?.url
+                                if (isOAuthBlankPage(currentUrl) || currentUrl?.contains("call/join/") == true) {
+                                    evaluateWindowHrefAndCheck(webViewInstance)
+                                }
                             }
                         }
                     }
@@ -836,12 +878,19 @@ class VKAuthActivity : ComponentActivity() {
 
     override fun onDestroy() {
         cancelPageLoadWatchdog()
+        activeCall?.cancel()
+        activeCall = null
+        onApiExecutionStateChange = null
+        onErrorStateChange = null
         runCatching {
             webViewInstance?.apply {
                 stopLoading()
+                webChromeClient = WebChromeClient()
+                webViewClient = WebViewClient()
                 clearHistory()
                 loadUrl("about:blank")
                 onPause()
+                (parent as? ViewGroup)?.removeView(this)
                 destroy()
             }
         }

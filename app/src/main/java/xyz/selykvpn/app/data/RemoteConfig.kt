@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import java.io.File
 import java.net.IDN
@@ -166,26 +167,43 @@ class RemoteConfigRepository(context: Context, private val http: Http) {
                 }
             }
             val config = sanitize(AppJson.decodeFromString<RemoteConfig>(body))
-            file.writeText(AppJson.encodeToString(RemoteConfig.serializer(), config))
+            SecureBox.writeRawAtomically(file, AppJson.encodeToString(RemoteConfig.serializer(), config))
             fetchedAt = System.currentTimeMillis()
             _state.value = config
         }.isSuccess
     }
 
+    private fun isHttpsUrl(url: String): Boolean = url.trim().toHttpUrlOrNull()?.scheme == "https"
+
     /** A broken server response must never lock users out: empty lists fall back to defaults. */
     private fun sanitize(config: RemoteConfig): RemoteConfig {
         val defaults = RemoteConfig()
+        val safeUpdate = config.update?.takeIf { isHttpsUrl(it.url) }?.let { upd ->
+            upd.copy(
+                url = upd.url.trim(),
+                abiUrls = upd.abiUrls.filterValues { isHttpsUrl(it) }.mapValues { (_, u) -> u.trim() },
+            )
+        }
+        val safeSupport = config.support.filter { isHttpsUrl(it.url) }.ifEmpty { defaults.support }
+        val safeLinks = config.links.filter { it.url.isBlank() || isHttpsUrl(it.url) }
+        val safeWhitelist = WhitelistConfig(
+            blockedProbes = config.whitelist.blockedProbes.filter { isHttpsUrl(it) }.ifEmpty { defaults.whitelist.blockedProbes },
+            allowedProbes = config.whitelist.allowedProbes.filter { isHttpsUrl(it) }.ifEmpty { defaults.whitelist.allowedProbes },
+        )
         return config.copy(
             allowedSubscriptionHosts = config.allowedSubscriptionHosts.ifEmpty { defaults.allowedSubscriptionHosts },
-            support = config.support.ifEmpty { defaults.support },
-            links = config.links.filter { it.url.isNotBlank() },
+            subscriptionMirrors = config.subscriptionMirrors.filter { isHttpsUrl(it) },
+            support = safeSupport,
+            links = safeLinks,
             telegramProxies = config.telegramProxies.filter { it.valid },
             site = config.site.sanitized(),
             defaultExcludedApps = config.defaultExcludedApps.map { it.trim() }.filter { it.isNotEmpty() },
             serverFilters = config.serverFilters.filter { it.emoji.isNotBlank() },
-            telegramBotUrl = config.telegramBotUrl.ifBlank { defaults.telegramBotUrl },
-            renewUrl = config.renewUrl.ifBlank { defaults.renewUrl },
-            delayTestUrl = config.delayTestUrl.ifBlank { defaults.delayTestUrl },
+            whitelist = safeWhitelist,
+            telegramBotUrl = config.telegramBotUrl.takeIf { isHttpsUrl(it) } ?: defaults.telegramBotUrl,
+            renewUrl = config.renewUrl.takeIf { isHttpsUrl(it) } ?: defaults.renewUrl,
+            delayTestUrl = config.delayTestUrl.takeIf { isHttpsUrl(it) } ?: defaults.delayTestUrl,
+            update = safeUpdate,
         )
     }
 }

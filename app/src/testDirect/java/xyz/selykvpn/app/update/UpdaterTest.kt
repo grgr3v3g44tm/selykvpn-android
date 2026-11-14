@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -39,9 +40,27 @@ class UpdaterTest {
         assertEquals(apkFile, matched)
 
         // Mismatched hash removes the corrupt cached file.
-        val badInfo = info.copy(abiSha256 = mapOf("arm64-v8a" to "deadbeef"))
+        val badInfo = info.copy(abiSha256 = mapOf("arm64-v8a" to "0".repeat(64)))
         val rejected = Updater.findCachedApk(dir, badInfo, arrayOf("arm64-v8a"))
         assertNull(rejected)
         assertFalse(apkFile.exists())
+
+        // Missing sha256 -> cache is never accepted.
+        val missingSha = info.copy(abiSha256 = emptyMap(), sha256 = null)
+        assertNull(Updater.findCachedApk(dir, missingSha, arrayOf("arm64-v8a")))
+    }
+
+    @Test
+    fun updateUrlAndVersionSanitizationAreStrict() {
+        assertTrue(Updater.isTrustedUpdateUrl("https://cdn-1.selykvpn.xyz/android/SelykVPN-2.1.0.apk"))
+        assertTrue(Updater.isTrustedUpdateUrl("https://github.com/grgr3v3g44tm/selykvpn-releases/releases/download/v2.1.0/app.apk"))
+        assertFalse(Updater.isTrustedUpdateUrl("http://cdn-1.selykvpn.xyz/android/app.apk"))
+        assertFalse(Updater.isTrustedUpdateUrl("https://evil.example.com/app.apk"))
+
+        assertEquals("2.1.0", Updater.sanitizeVersionName("2.1.0"))
+        assertFalse(Updater.sanitizeVersionName("../../etc/passwd").contains("/"))
+        assertFalse(Updater.sanitizeVersionName("../../etc/passwd").contains(".."))
+        assertTrue(Updater.isValidSha256("a".repeat(64)))
+        assertFalse(Updater.isValidSha256("not-sha256"))
     }
 }

@@ -33,11 +33,11 @@ class SelykApp : Application() {
             // Skip DataStore/AppGraph/Xray initialization to avoid multi-process conflicts and dual Go runtimes.
             return
         }
-        VKCookieStore.init(this)
         VpnController.init(this)
         graph = AppGraph(this)
         graph.whitelist.start()
         graph.scope.launch(Dispatchers.IO) {
+            VKCookieStore.init(this@SelykApp)
             val xrayDir = java.io.File(filesDir, "xray").apply { mkdirs() }
             xyz.selykvpn.app.vpn.Xray.ensureGeoFiles(this@SelykApp, xrayDir)
         }
@@ -59,6 +59,8 @@ class SelykApp : Application() {
     companion object {
         lateinit var instance: SelykApp
             private set
+
+        val internalConnectToken: String = java.util.UUID.randomUUID().toString()
 
         val graph: AppGraph get() = instance.graph
     }

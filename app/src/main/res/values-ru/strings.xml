@@ -416,6 +416,7 @@
     <string name="free_access_start_timeout">Не удалось запустить службу. Проверьте разрешение VPN и экономию батареи.</string>
     <string name="free_access_handshake_timeout">Шлюз не ответил за %1$d сек. Проверьте интернет или обновите ссылку на звонок VK.</string>
     <string name="vpn_start_failed_fgs">Система заблокировала запуск VPN в фоне. Откройте приложение и попробуйте снова.</string>
+    <string name="free_access_ipv6_setup_failed">Не удалось настроить защиту от утечки IPv6</string>
     <string name="free_access_captcha_title">Подтверждение VK</string>
     <string name="free_access_captcha_hint">Введите символы с картинки</string>
     <string name="free_access_captcha_refresh">Другая картинка</string>
@@ -438,5 +439,6 @@
     <string name="free_access_missing_keys">В конфигурации Свободного доступа отсутствуют ключи WireGuard. Обновите ключ в Telegram-боте.</string>
     <string name="free_access_wrapa_dtls_timeout">Шлюз Свободного доступа не отвечает на рукопожатие (DTLS timeout). Проверьте ключ или попробуйте позже.</string>
     <string name="share_free_access_unsupported">Раздача прокси (HTTP/SOCKS5) доступна только в режиме «Обычный VPN». Переключите режим на главном экране.</string>
+    <string name="open_url_failed">Не найдено приложение для открытия ссылки</string>
 
 </resources>

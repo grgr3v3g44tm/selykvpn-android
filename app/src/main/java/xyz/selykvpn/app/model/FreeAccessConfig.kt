@@ -20,7 +20,7 @@ enum class TunnelMode {
 
 @Serializable
 data class FreeAccessConfig(
-    val id: String = UUID.randomUUID().toString(),
+    val id: String = "default",
     var name: String = "Свободный доступ",
     var mode: TunnelMode = TunnelMode.SRTP_WRAP_A,
     var stealthLink: String = "",
@@ -201,15 +201,20 @@ data class FreeAccessConfig(
         if (mode == TunnelMode.SRTP_WRAP_A) {
             return ""
         }
+        fun cleanLine(value: String) = value.replace("\r", "").replace("\n", "").trim()
+        val privHex = keyToHex(cleanLine(privateKey))
+        val pubHex = keyToHex(cleanLine(peerPublicKey))
+        val endpoint = cleanLine(peerAddress)
+        val pskHex = if (presharedKey.isNotBlank()) keyToHex(cleanLine(presharedKey)) else ""
         val sb = StringBuilder()
-        sb.append("private_key=").append(keyToHex(privateKey)).append("\n")
+        sb.append("private_key=").append(privHex).append("\n")
         sb.append("replace_peers=true\n")
-        sb.append("public_key=").append(keyToHex(peerPublicKey)).append("\n")
-        sb.append("endpoint=").append(peerAddress).append("\n")
+        sb.append("public_key=").append(pubHex).append("\n")
+        sb.append("endpoint=").append(endpoint).append("\n")
         sb.append("persistent_keepalive_interval=25\n")
         sb.append("allowed_ip=0.0.0.0/0\n")
-        if (presharedKey.isNotBlank()) {
-            sb.append("preshared_key=").append(keyToHex(presharedKey)).append("\n")
+        if (pskHex.isNotEmpty()) {
+            sb.append("preshared_key=").append(pskHex).append("\n")
         }
         return sb.toString()
     }
@@ -260,7 +265,7 @@ data class FreeAccessConfig(
                 val idx = part.indexOf('=')
                 if (idx > 0 && part.substring(0, idx) == "data") {
                     val encoded = part.substring(idx + 1).substringBefore('#')
-                    return runCatching { URLDecoder.decode(encoded, "UTF-8") }.getOrDefault(encoded)
+                    return runCatching { URLDecoder.decode(encoded.replace("+", "%2B"), "UTF-8") }.getOrDefault(encoded)
                 }
             }
             return null
@@ -463,8 +468,15 @@ data class FreeAccessConfig(
         private fun normalizePeerEndpoint(rawEndpoint: String): String {
             val trimmed = rawEndpoint.trim()
             if (trimmed.isEmpty()) return "media-stream.xamudhabibi.qzz.io:56000"
-            val hostPart = trimmed.substringBefore(':').trim().trim('[', ']').lowercase()
-            val portPart = trimmed.substringAfter(':', "").takeIf { it.all(Char::isDigit) && it.isNotEmpty() } ?: "56000"
+            val hostPart: String
+            val portPart: String
+            if (trimmed.startsWith("[")) {
+                hostPart = trimmed.substringAfter("[").substringBefore("]").trim().lowercase()
+                portPart = trimmed.substringAfter("]:", "").takeIf { it.all(Char::isDigit) && it.isNotEmpty() } ?: "56000"
+            } else {
+                hostPart = trimmed.substringBefore(':').trim().lowercase()
+                portPart = trimmed.substringAfter(':', "").takeIf { it.all(Char::isDigit) && it.isNotEmpty() } ?: "56000"
+            }
             return if (hostPart in xyz.selykvpn.app.data.KeyParser.OUR_SERVER_IPS || hostPart == "turn.selykvpn.xyz") {
                 "media-stream.xamudhabibi.qzz.io:$portPart"
             } else {
@@ -477,12 +489,9 @@ data class FreeAccessConfig(
             if (trimmed.length == 64 && trimmed.matches(Regex("^[0-9a-fA-F]+$"))) {
                 return trimmed.lowercase()
             }
-            return try {
-                val bytes = Base64.decode(trimmed, Base64.DEFAULT)
-                bytes.joinToString("") { "%02x".format(it) }
-            } catch (_: Throwable) {
-                trimmed
-            }
+            val bytes = decodeBase64Flexible(trimmed) ?: return ""
+            if (bytes.size != 32) return ""
+            return bytes.joinToString("") { "%02x".format(it) }
         }
 
         /**
@@ -491,17 +500,32 @@ data class FreeAccessConfig(
          */
         fun resolveStableDeviceId(context: android.content.Context): String {
             val prefs = context.getSharedPreferences("vkturn_device_prefs", android.content.Context.MODE_PRIVATE)
-            var hwid = prefs.getString("device_hwid", null)
-            if (hwid.isNullOrBlank()) {
-                val androidId = runCatching {
-                    android.provider.Settings.Secure.getString(
-                        context.contentResolver,
-                        android.provider.Settings.Secure.ANDROID_ID
-                    )
-                }.getOrNull()
-                hwid = androidId?.takeIf { it.isNotBlank() && it != "9774d56d682e549c" }
-                    ?: UUID.randomUUID().toString()
-                prefs.edit().putString("device_hwid", hwid).apply()
+            val stored = prefs.getString("device_hwid", null)
+            val existing = if (stored.isNullOrBlank()) {
+                null
+            } else if (xyz.selykvpn.app.data.SecureBox.isEncrypted(stored)) {
+                xyz.selykvpn.app.data.SecureBox.decryptString(stored)?.takeIf { it.isNotBlank() }
+            } else {
+                stored
+            }
+            if (existing != null) {
+                if (!xyz.selykvpn.app.data.SecureBox.isEncrypted(stored)) {
+                    runCatching {
+                        prefs.edit().putString("device_hwid", xyz.selykvpn.app.data.SecureBox.encryptString(existing)).apply()
+                    }
+                }
+                return existing
+            }
+            val androidId = runCatching {
+                android.provider.Settings.Secure.getString(
+                    context.contentResolver,
+                    android.provider.Settings.Secure.ANDROID_ID
+                )
+            }.getOrNull()
+            val hwid = androidId?.takeIf { it.isNotBlank() && it != "9774d56d682e549c" }
+                ?: UUID.randomUUID().toString()
+            runCatching {
+                prefs.edit().putString("device_hwid", xyz.selykvpn.app.data.SecureBox.encryptString(hwid)).apply()
             }
             return hwid
         }
