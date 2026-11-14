@@ -207,9 +207,35 @@ class FreeAccessAndAccountTest {
         assertFalse(
             TariffAccess.isFreeAccessAllowed(
                 hasSubscription = true,
+                account = AccountStatus(found = true, isWhitelist = true, vkturnDeviceLimitReached = true),
+                freeAccessConfig = readySrtp,
+            ),
+        )
+        assertFalse(
+            TariffAccess.isFreeAccessAllowed(
+                hasSubscription = true,
                 account = AccountStatus(found = false),
                 freeAccessConfig = FreeAccessConfig(),
             ),
         )
+    }
+
+    @Test
+    fun accountStatusParsesVkturnDeviceLimitFields() {
+        val raw = """
+            {
+              "found": true,
+              "planId": "selyk_whitelist",
+              "isWhitelist": true,
+              "vkturnDeviceLimitReached": true,
+              "vkturnSlotsLimit": 1,
+              "vkturnSlotsUsed": 1
+            }
+        """.trimIndent()
+        val parsed = AccountRepository.parseResponse(raw, fetchedAt = 456L)
+        assertTrue(parsed.vkturnDeviceLimitReached)
+        assertEquals(1, parsed.vkturnSlotsLimit)
+        assertEquals(1, parsed.vkturnSlotsUsed)
+        assertEquals(null, parsed.vkturnUri)
     }
 }

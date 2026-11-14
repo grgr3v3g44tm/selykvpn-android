@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B-blue)](https://android.com)
 [![Android TV](https://img.shields.io/badge/Android%20TV-Supported-emerald)](https://android.com/tv/)
-[![VirusTotal](https://img.shields.io/badge/VirusTotal-0%2F70%20Clean-brightgreen)](https://www.virustotal.com/gui/file/10f861730f200d4ecc2ddd1472077ff8c50082b52312c3aa141da014bc253c03)
+[![VirusTotal](https://img.shields.io/badge/VirusTotal-0%2F70%20Clean-brightgreen)](https://www.virustotal.com/gui/file/b8fce1d6a1763d2d8f907571e98c925e08169f54d58eab392e0d7e2b3a9e0d44)
 
 Официальный Android-клиент сетевого комплекса **Селюк VPN**, объединяющий два режима защиты в одном приложении:
 1. **Обычный VPN**: Высокоскоростное ядро **Xray-core** (VLESS + Reality XHTTP / Vision) для максимальной скорости (до 1 Гбит/с), стриминга YouTube в 4K и свободного доступа к мировым сервисам.
@@ -16,11 +16,11 @@
 - **100% Открытый исходный код**: Никаких скрытых трекеров, рекламы или сторонних сборщиков данных.
 - **Стандартные системные разрешения**: Используется только стандартный Android `VpnService` для создания туннеля.
 - **Встроенные базы GeoIP & GeoSite**: Полноценные актуальные базы маршрутизации `geoip.dat` и `geosite.dat` поставляются в комплекте с автоматическим фоновым обновлением.
-- **Верификация VirusTotal (Релиз 2.0.7)**:
-  - **arm64-v8a**: [VirusTotal Report (Clean)](https://www.virustotal.com/gui/file/10f861730f200d4ecc2ddd1472077ff8c50082b52312c3aa141da014bc253c03)  
-    `SHA-256: 10f861730f200d4ecc2ddd1472077ff8c50082b52312c3aa141da014bc253c03`
-  - **Universal**: [VirusTotal Report (Clean)](https://www.virustotal.com/gui/file/315a9cacfb0f6ef496ba1906b2db3c489b4f98a2febe23274beebff16cbdbf0d)  
-    `SHA-256: 315a9cacfb0f6ef496ba1906b2db3c489b4f98a2febe23274beebff16cbdbf0d`
+- **Верификация VirusTotal (Релиз 2.0.8)**:
+  - **arm64-v8a**: [VirusTotal Report (Clean)](https://www.virustotal.com/gui/file/b8fce1d6a1763d2d8f907571e98c925e08169f54d58eab392e0d7e2b3a9e0d44)  
+    `SHA-256: b8fce1d6a1763d2d8f907571e98c925e08169f54d58eab392e0d7e2b3a9e0d44`
+  - **Universal**: [VirusTotal Report (Clean)](https://www.virustotal.com/gui/file/33b7af3d7f177b8be09c4c023b1aa2bb306ed0d86ae6d12203a325727cc06786)  
+    `SHA-256: 33b7af3d7f177b8be09c4c023b1aa2bb306ed0d86ae6d12203a325727cc06786`
 
 ---
 
