@@ -4,6 +4,11 @@ import android.app.ActivityManager
 import android.app.Application
 import android.os.Build
 import android.os.Process
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import xyz.selykvpn.app.auth.VKCookieStore
 import xyz.selykvpn.app.data.AccountRepository
 import xyz.selykvpn.app.data.Http
@@ -14,10 +19,12 @@ import xyz.selykvpn.app.data.TvPairing
 import xyz.selykvpn.app.data.WhitelistMonitor
 import xyz.selykvpn.app.vpn.Notifications
 import xyz.selykvpn.app.vpn.VpnController
+import xyz.selykvpn.app.work.VkturnRefreshWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.util.concurrent.TimeUnit
 
 class SelykApp : Application() {
 
@@ -41,6 +48,22 @@ class SelykApp : Application() {
             val xrayDir = java.io.File(filesDir, "xray").apply { mkdirs() }
             xyz.selykvpn.app.vpn.Xray.ensureGeoFiles(this@SelykApp, xrayDir)
         }
+        scheduleVkturnRefresh()
+    }
+
+    private fun scheduleVkturnRefresh() {
+        val request = PeriodicWorkRequestBuilder<VkturnRefreshWorker>(12, TimeUnit.HOURS)
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
+            .build()
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            VkturnRefreshWorker.WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            request,
+        )
     }
 
     private fun isVkTurnProcess(): Boolean {

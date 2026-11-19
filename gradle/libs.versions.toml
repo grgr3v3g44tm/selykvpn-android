@@ -15,6 +15,7 @@ datastore = "1.2.1"
 camerax = "1.6.2"
 zxing = "3.5.4"
 junit = "4.13.2"
+workManager = "2.10.1"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -42,6 +43,7 @@ zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 security-crypto = { module = "androidx.security:security-crypto", version = "1.1.0-alpha06" }
 gson = { module = "com.google.code.gson:gson", version = "2.11.0" }
 junit = { module = "junit:junit", version.ref = "junit" }
+androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "workManager" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
