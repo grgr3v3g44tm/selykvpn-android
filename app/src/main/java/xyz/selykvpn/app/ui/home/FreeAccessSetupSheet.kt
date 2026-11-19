@@ -61,6 +61,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import xyz.selykvpn.app.R
@@ -137,26 +139,35 @@ fun FreeAccessSetupSheet(
                         vkAuthLauncher.launch(VKAuthActivity.createCallIntent(context))
                         return@launch
                     }
-                    val res = VKCallHelper.createCallFast(context)
+                    // Создаём 3 звонка параллельно для надёжности подключения
+                    val results = withContext(Dispatchers.IO) {
+                        (1..3).map {
+                            async { VKCallHelper.createCallFast(context) }
+                        }.awaitAll()
+                    }
                     isCreatingCall = false
-                    when (res) {
-                        is FastCallResult.Success -> {
-                            withContext(Dispatchers.IO) { VKCookieStore.setEnabled(true) }
-                            val updated = viewModel.freeAccessConfig.value.copy(
-                                stealthLink = res.joinLink,
-                                needsStealthLink = false,
-                                useSessionAuth = true,
-                            )
-                            viewModel.updateFreeAccessConfig(updated)
-                            Toast.makeText(context, R.string.free_access_call_linked, Toast.LENGTH_SHORT).show()
-                        }
-                        is FastCallResult.Error -> {
-                            if (res.isAccountBanned) {
-                                withContext(Dispatchers.IO) { VKCookieStore.clearSession() }
-                                Toast.makeText(context, res.message, Toast.LENGTH_LONG).show()
-                            } else {
-                                vkAuthLauncher.launch(VKAuthActivity.createCallIntent(context))
-                            }
+                    val successLinks = results.filterIsInstance<FastCallResult.Success>()
+                        .map { it.joinLink }
+                        .distinct()
+                    val firstError = results.filterIsInstance<FastCallResult.Error>().firstOrNull()
+                    if (successLinks.isNotEmpty()) {
+                        withContext(Dispatchers.IO) { VKCookieStore.setEnabled(true) }
+                        val updated = viewModel.freeAccessConfig.value.copy(
+                            stealthLink = successLinks.joinToString("\n"),
+                            needsStealthLink = false,
+                            useSessionAuth = true,
+                        )
+                        viewModel.updateFreeAccessConfig(updated)
+                        val msg = if (successLinks.size > 1)
+                            "Создано ${successLinks.size} ссылки на звонок"
+                        else context.getString(R.string.free_access_call_linked)
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    } else if (firstError != null) {
+                        if (firstError.isAccountBanned) {
+                            withContext(Dispatchers.IO) { VKCookieStore.clearSession() }
+                            Toast.makeText(context, firstError.message, Toast.LENGTH_LONG).show()
+                        } else {
+                            vkAuthLauncher.launch(VKAuthActivity.createCallIntent(context))
                         }
                     }
                 }
